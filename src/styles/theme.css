@@ -5,7 +5,7 @@
 
 :root {
   /* 形状 */
-  --r-lg: 18px;
+  --r-lg: 16px;
   --r-md: 12px;
   --r-sm: 9px;
   --r-full: 999px;
@@ -46,31 +46,34 @@
 /* ---------------- 白色主题 ---------------- */
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg-app: #eef1f8;
-  --bg-canvas: #f4f6fb;
-  --dot: #c9d2e6;
+  --bg-app: #e8eaef;
+  --bg-canvas: #edeef2;
+  --dot: #d9dee6;
 
-  --panel: rgba(255, 255, 255, 0.86);
+  --panel: rgba(255, 255, 255, 0.92);
   --panel-solid: #ffffff;
-  --panel-border: rgba(30, 45, 90, 0.1);
-  --panel-shadow: 0 12px 40px rgba(28, 42, 84, 0.12);
+  --panel-border: rgba(24, 32, 56, 0.09);
+  --panel-shadow: 0 10px 36px rgba(24, 32, 56, 0.12);
 
-  --node-bg: rgba(255, 255, 255, 0.94);
-  --node-border: rgba(30, 45, 90, 0.12);
-  --node-shadow: 0 6px 24px rgba(28, 42, 84, 0.1);
+  --node-bg: #ffffff;
+  --node-border: rgba(24, 32, 56, 0.08);
+  /* 去掉硬边框后，靠更明显的三层柔光投影把白卡从浅灰底上"托"起来 */
+  --node-shadow: 0 1px 3px rgba(24, 32, 56, 0.05), 0 6px 18px rgba(24, 32, 56, 0.07), 0 18px 44px rgba(24, 32, 56, 0.08);
+  --node-shadow-hover: 0 2px 6px rgba(24, 32, 56, 0.07), 0 12px 30px rgba(24, 32, 56, 0.1), 0 28px 64px rgba(24, 32, 56, 0.11);
+  --node-ring: rgba(91, 140, 255, 0.42);
 
-  --text-1: #1b2438;
-  --text-2: #556181;
-  --text-3: #97a1bd;
+  --text-1: #1c2333;
+  --text-2: #5a6376;
+  --text-3: #9aa0ae;
 
   --hover: rgba(30, 60, 140, 0.06);
   --active: rgba(30, 60, 140, 0.1);
   --input-bg: rgba(20, 40, 90, 0.045);
   --input-border: rgba(30, 45, 90, 0.14);
 
-  --edge: #a9b6d6;
+  --edge: #b7bdc9;
   --selection: rgba(91, 140, 255, 0.1);
-  --titlebar: rgba(255, 255, 255, 0.75);
+  --titlebar: rgba(255, 255, 255, 0.82);
 }
 
 /* ------------- 深空蓝黑主题（偏蓝、不过黑） ------------- */
@@ -78,7 +81,7 @@
   color-scheme: dark;
   --bg-app: #161f36;
   --bg-canvas: #121a2e;
-  --dot: #2a3554;
+  --dot: #1e2942;
 
   --panel: rgba(26, 36, 62, 0.88);
   --panel-solid: #1c2644;
@@ -86,8 +89,10 @@
   --panel-shadow: 0 14px 44px rgba(5, 10, 26, 0.5);
 
   --node-bg: rgba(27, 37, 66, 0.95);
-  --node-border: rgba(126, 156, 255, 0.16);
-  --node-shadow: 0 8px 28px rgba(5, 10, 26, 0.42);
+  --node-border: rgba(126, 156, 255, 0.14);
+  --node-shadow: 0 2px 8px rgba(5, 10, 26, 0.38), 0 12px 34px rgba(5, 10, 26, 0.5);
+  --node-shadow-hover: 0 4px 14px rgba(5, 10, 26, 0.45), 0 20px 52px rgba(5, 10, 26, 0.62);
+  --node-ring: rgba(120, 150, 255, 0.5);
 
   --text-1: #e9eefc;
   --text-2: #a6b2d6;
@@ -101,4 +106,45 @@
   --edge: #3d4c78;
   --selection: rgba(91, 140, 255, 0.14);
   --titlebar: rgba(20, 28, 50, 0.78);
+}
+
+/* ------------- 深邃黑主题（墨蓝岩黑底 + 暖橙强调：参考 Liblib 深色，不压眼） ------------- */
+:root[data-theme="black"] {
+  color-scheme: dark;
+  --bg-app: #10121a;
+  --bg-canvas: #141623;
+  --dot: #20242f;
+
+  --panel: rgba(29, 32, 48, 0.92);
+  --panel-solid: #1d2030;
+  --panel-border: rgba(148, 163, 210, 0.1);
+  --panel-shadow: 0 16px 48px rgba(3, 5, 12, 0.55);
+
+  --node-bg: #202331;
+  --node-border: rgba(148, 163, 210, 0.1);
+  /* 三层柔光：贴近硬影 + 中层 + 远层，把卡从墨蓝底托起来 */
+  --node-shadow: 0 1px 3px rgba(3, 5, 12, 0.38), 0 8px 22px rgba(3, 5, 12, 0.46), 0 22px 54px rgba(3, 5, 12, 0.5);
+  --node-shadow-hover: 0 2px 6px rgba(3, 5, 12, 0.46), 0 14px 36px rgba(3, 5, 12, 0.55), 0 32px 72px rgba(3, 5, 12, 0.6);
+  --node-ring: rgba(255, 122, 69, 0.5);
+
+  /* 文字刻意降白：主文字压到淡灰档，与次级文字同一调性，长时间看不晃眼 */
+  --text-1: #c2c7d3;
+  --text-2: #8b91a1;
+  --text-3: #5c6172;
+
+  --hover: rgba(255, 122, 69, 0.08);
+  --active: rgba(255, 122, 69, 0.14);
+  --input-bg: rgba(8, 10, 18, 0.35);
+  --input-border: rgba(148, 163, 210, 0.14);
+
+  --edge: #2b2f3d;
+  --selection: rgba(255, 122, 69, 0.18);
+  --titlebar: rgba(16, 18, 26, 0.85);
+
+  /* 暖橙强调：覆盖 :root 里的品牌令牌（按钮/高亮/选中/连接点光晕都变橙） */
+  --accent: #ff7a45;
+  --accent-2: #ff9a3c;
+  --accent-3: #ffc857;
+  --grad-brand: linear-gradient(135deg, #ff7a45 0%, #ff9a3c 60%, #ffc857 100%);
+  --grad-brand-soft: linear-gradient(135deg, rgba(255, 122, 69, 0.18), rgba(255, 200, 87, 0.16));
 }

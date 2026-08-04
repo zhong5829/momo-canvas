@@ -5,7 +5,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { useUi } from "../core/stores/uiStore";
 
-type Poster = { poster: string | null; dur: number };
+type Poster = { poster: string | null; dur: number; dims?: { w: number; h: number } };
 
 const CACHE_MAX = 200;
 const cache = new Map<string, Poster>();
@@ -37,15 +37,16 @@ export function makeVideoPoster(src: string): Promise<Poster> {
     v.onseeked = () => {
       clearTimeout(timer);
       const dur = Number.isFinite(v.duration) ? v.duration : 0;
+      const dims = v.videoWidth && v.videoHeight ? { w: v.videoWidth, h: v.videoHeight } : undefined;
       try {
         const scale = Math.min(1, 480 / Math.max(v.videoWidth || 1, v.videoHeight || 1));
         const c = document.createElement("canvas");
         c.width = Math.max(1, Math.round((v.videoWidth || 640) * scale));
         c.height = Math.max(1, Math.round((v.videoHeight || 360) * scale));
         c.getContext("2d")!.drawImage(v, 0, 0, c.width, c.height);
-        res({ poster: c.toDataURL("image/webp", 0.8), dur });
+        res({ poster: c.toDataURL("image/webp", 0.8), dur, dims });
       } catch {
-        res({ poster: null, dur });
+        res({ poster: null, dur, dims });
       }
       v.src = "";
     };
@@ -68,6 +69,31 @@ export function fmtDur(sec: number): string {
   if (!sec || !Number.isFinite(sec)) return "";
   const s = Math.round(sec);
   return s >= 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : `${s}s`;
+}
+
+/** 视频像素尺寸（封面抓取时已顺带记录）；未就绪为 null */
+export function videoDimsSync(src: string): { w: number; h: number } | null {
+  return cache.get(src)?.dims ?? null;
+}
+
+/** hook 版：组件里拿某视频的像素尺寸（封面就绪后可用） */
+export function useVideoDims(src?: string): { w: number; h: number } | null {
+  const [d, setD] = useState(() => (src ? videoDimsSync(src) : null));
+  useEffect(() => {
+    if (!src) {
+      setD(null);
+      return;
+    }
+    let on = true;
+    setD(videoDimsSync(src));
+    void makeVideoPoster(src).then((p) => {
+      if (on && p.dims) setD(p.dims);
+    });
+    return () => {
+      on = false;
+    };
+  }, [src]);
+  return d;
 }
 
 /** 节点内视频：封面帧渲染，点击进灯箱播放（不传 onClick 时的默认行为） */

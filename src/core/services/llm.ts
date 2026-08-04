@@ -7,6 +7,7 @@
 import type { ChatMsg, ModelCard } from "../types";
 import { xfetch, trimBase, readErrorBody } from "./http";
 import { shrinkForVision } from "../utils";
+import { builtinSearchTools } from "../modelMeta";
 
 export type StreamCallbacks = {
   onText?: (full: string, delta: string) => void;
@@ -14,7 +15,11 @@ export type StreamCallbacks = {
   signal?: AbortSignal;
 };
 
-type StreamOpts = StreamCallbacks & { system?: string };
+type StreamOpts = StreamCallbacks & {
+  system?: string;
+  /** 使用模型自带的联网搜索能力（Kimi/MiniMax/GLM 等，按家族注入 tools 请求体） */
+  builtinSearch?: boolean;
+};
 type StreamResult = { text: string; reasoning: string };
 
 /* ---------------- SSE 流读取 ---------------- */
@@ -63,13 +68,14 @@ async function streamOpenAI(card: ModelCard, msgs: ChatMsg[], opts: StreamOpts):
       apiMsgs.push({ role: m.role, content: m.text });
     }
   }
+  const tools = opts.builtinSearch ? builtinSearchTools(card.model) : undefined;
   const resp = await xfetch(`${trimBase(card.baseUrl)}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(card.apiKey ? { Authorization: `Bearer ${card.apiKey}` } : {}),
     },
-    body: JSON.stringify({ model: card.model, messages: apiMsgs, stream: true }),
+    body: JSON.stringify({ model: card.model, messages: apiMsgs, stream: true, ...(tools ? { tools, tool_choice: "auto" } : {}) }),
     signal: opts.signal,
   });
   if (!resp.ok) throw new Error(`对话请求失败 ${resp.status}: ${await readErrorBody(resp)}`);

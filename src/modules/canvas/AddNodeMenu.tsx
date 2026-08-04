@@ -18,29 +18,17 @@ export function AddNodeMenu() {
 
   if (!menu) return null;
 
+  // 端口统一后：列所有有输入能力的节点（不再按 sourcePort 过滤，任意输出都能接任意输入）
   const items = NODE_CATALOG.filter((i) => {
-    if (!menu.sourcePort) return true;
     const ins = NODE_INPUTS[i.kind];
-    return menu.sourcePort === "image"
-      ? !!ins.image
-      : menu.sourcePort === "video"
-        ? !!ins.video
-        : menu.sourcePort === "audio"
-          ? !!ins.audio
-          : !!ins.text;
+    return !!ins && Object.keys(ins).length > 0;
   });
   const left = Math.min(menu.screenX, window.innerWidth - 265);
   const top = Math.max(50, Math.min(menu.screenY, window.innerHeight - (items.length * 50 + 80)));
 
   const pick = (kind: (typeof items)[number]["kind"]) => {
     const id = addNode(kind, { x: menu.flowX, y: menu.flowY });
-    if (menu.sourceNode && menu.sourcePort) {
-      connectNodes(
-        menu.sourceNode,
-        id,
-        menu.sourcePort === "image" ? "in-image" : menu.sourcePort === "video" ? "in-video" : menu.sourcePort === "audio" ? "in-audio" : "in-text",
-      );
-    }
+    if (menu.sourceNode) connectNodes(menu.sourceNode, id, "in");
     setAddMenu(null);
   };
 

@@ -12,7 +12,6 @@ export type NodeKind =
   | "imageGen"
   | "videoGen"
   | "comfy"
-  | "caption"
   | "llmText"
   | "combine"
   | "stylePreset"
@@ -21,16 +20,9 @@ export type NodeKind =
   | "relight"
   | "multiAngle"
   | "charCard"
-  | "resize"
-  | "inpaint"
-  | "outpaint"
-  | "matting"
-  | "enhance"
-  | "crop"
-  | "frame"
-  | "videoTrim"
-  | "videoConcat"
-  | "storyboard";
+  | "storyboard"
+  | "enhanceLocal"
+  | "vectorize";
 
 export type RunStatus = "idle" | "running" | "done" | "error";
 
@@ -42,6 +34,41 @@ export type ChatMsg = {
   images?: string[];
   reasoning?: string;
   sources?: SearchHit[];
+};
+
+/* ---------------- Agent 模式（侧边创作助手：聊天 / 搜索 → 抉择 → 生图/生视频） ---------------- */
+export type AgentStepKind = "search" | "ask" | "image" | "video";
+
+/** 一次工具调用的过程轨迹（展示在助手消息里） */
+export type AgentStep = {
+  id: string;
+  kind: AgentStepKind;
+  /** 展示文案，如「搜索：赛博朋克 参考」 */
+  text: string;
+  status: "running" | "done" | "error";
+};
+
+export type AgentResult = { kind: "image" | "video"; src: string; prompt?: string };
+
+/** Agent 向用户发起的抉择（点选项或自由输入回答） */
+export type AgentQuestion = { text: string; options: string[]; answer?: string };
+
+export type AgentMsg = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  /** 用户附带的参考图（dataURL） */
+  images?: string[];
+  /** 助手消息的思考过程（聊天模式，可折叠展示） */
+  reasoning?: string;
+  /** 过程轨迹：搜索 / 提问 / 生成 */
+  steps?: AgentStep[];
+  question?: AgentQuestion;
+  /** 生成结果（内联展示，同时已收录资产库） */
+  results?: AgentResult[];
+  /** 这条助手消息由哪种模式产生：决定用哪种气泡渲染，切换面板模式后历史不会变形/消失 */
+  kind?: "chat" | "agent";
+  time: number;
 };
 
 export type ImageData = {
@@ -82,6 +109,8 @@ export type AudioGenData = {
   resultUrl?: string;
   progress?: string;
   modelId?: string;
+  /** 由备用模型生成时记录其名（徽标展示） */
+  fallbackModel?: string;
 };
 
 /** 视频配音：上游视频 + 音频 → 本地重编码，把音频混入/替换原声 */
@@ -134,6 +163,126 @@ export type ImageGenData = {
   height?: number;
   /** 提示词语言：zh 原文直发（默认）/ en 生成前先译成英文 */
   lang?: "zh" | "en";
+  /** 并行请求数 1-3：同参数同时发多条，结果合并到 results（中转站普遍支持并发） */
+  parallel?: number;
+  /** 随机种子：锁定后同提示词+同参数可复现；不填 = 每次随机（仅支持的家族生效，如 seedream/flux/qwen/万相） */
+  seed?: number;
+  /** 负向提示词：描述不想出现的内容（如"多余手指、文字、低质量"），支持的家族生效 */
+  negative?: string;
+  /** 由备用模型生成时记录其名（徽标展示）；undefined = 主模型生成 */
+  fallbackModel?: string;
+  /** 历次出图记录（最近 10 次） */
+  history?: GenHistoryEntry[];
+};
+
+/** 超清放大（本地 DirectML 超分）节点数据 — 非破坏：输出是新资产，原图不动 */
+export type EnhanceLocalData = {
+  status: RunStatus;
+  error?: string;
+  /** 质量预设：极速(SPAN 单模型) / 海报·文化墙(Nomos+Lite 融合) / 专业印刷(保真融合+大重叠+无损容器) / 人像(RealPLKSR+人脸分支) */
+  preset: "fast" | "balanced" | "professional" | "portrait";
+  /** 目标长边：4k=3840 / 8k=7680 / 16k=15360；或自定义像素；或印刷物理尺寸(mm+DPI) */
+  target: "4k" | "8k" | "16k" | { longEdge: number } | { mode: "print"; wMm: number; hMm: number; dpi: number };
+  /** 本地模型注册表 id（留空 = 默认主模型） */
+  modelId?: string;
+  /** 输入 tile 边长（0 = 自动，按预设） */
+  tileSize: number;
+  /** 细节强度 0-100：0=自动（按内容模式查表），>0 手动覆盖双模型融合权重 detailWeight */
+  detailStrength: number;
+  /** 内容模式：决定细节模型融合权重查表行（面板「高级」里可调） */
+  contentMode: "auto" | "photo" | "illustration" | "poster" | "portrait";
+  /** 去压缩（1x-DeJPG 预处理）：auto=jpegScore>0.3 时自动跑；off=关闭；on=强制 */
+  dejpeg?: "auto" | "on" | "off";
+  /** 人脸处理：identity=原貌保护（默认，不生成五官）；faceup=FaceUpDAT ROI；gfpgan/codeformer=生成式修复 */
+  faceRestore?: "identity" | "faceup" | "gfpgan" | "codeformer";
+  /** 输出容器位深：8=普通；16=便于后续编辑的 16 位容器（模型源采样仍为 8 位，仅 PNG/TIFF 生效） */
+  bitDepth?: 8 | 16;
+  outputFormat: "png" | "jpeg" | "tiff";
+  // 运行态（result:true 写回，不增 rev）
+  progress?: string;
+  progressPct?: number;
+  /** 输出图（assetUrl，跨重启有效） */
+  result?: string;
+  resultW?: number;
+  resultH?: number;
+  elapsedMs?: number;
+  tiles?: number;
+  /** 实际推理 Tile（自动档可能因模型/显存回退而小于建议值） */
+  tileSizeUsed?: number;
+  /** 运行前保守显存估算，仅用于排期与风险提示 */
+  estimatedVramMb?: number;
+  /** 保真守卫评分：高清结果缩回源尺寸的一致性，0..100；不代表主观锐度 */
+  fidelityScore?: number;
+  /** 保真守卫后的源尺寸平均绝对误差，0..1 */
+  sourceConsistencyMae?: number;
+  /** 发生低频残差回投的源像素块比例，0..1 */
+  correctedBlockRatio?: number;
+  /** 候选细节因色偏/反相边缘/异常高频被明显削弱的比例，0..1 */
+  rejectedCandidateRatio?: number;
+  /** 生产质量门禁：通过可自动入库；警告/失败只保留节点结果，需人工确认后保存 */
+  qualityGate?: "passed" | "warning" | "failed";
+  /** 是否达到自动进入生产资产库的标准（当前要求保真分 >= 80 且缩回误差未增加） */
+  productionReady?: boolean;
+  /** 面向用户的质量门禁解释 */
+  qualityMessage?: string;
+  /** 是否由运行看门狗自动停止，而非用户主动取消 */
+  timedOut?: boolean;
+  report?: string;
+  /** analysisMap JSON 资产路径（内容分析契约，供矢量化节点复用） */
+  analysisMapPath?: string;
+  /** vectorGuide PNG 资产路径（保结构引导图契约） */
+  vectorGuidePath?: string;
+};
+
+/** 本地超清放大引擎设置（Settings 新增项；normalize 浅合并给老数据补默认） */
+export type EnhanceCfg = {
+  defaultTarget: "4k" | "8k" | "16k";
+  tileSize: number;
+  tileOverlap: number;
+};
+
+/** 智能矢量（本地 VTracer 位图→SVG）节点数据 — 非破坏：输出是新 SVG 资产 */
+export type VectorizeData = {
+  status: RunStatus;
+  error?: string;
+  /** VTracer 预设：自动 / 海报色块 / 插画漫画(锐角) / 黑白 / 照片 / 线稿 */
+  preset: "auto" | "poster" | "comic" | "bw" | "photo" | "line-art";
+  colorMode: "auto" | "color" | "binary";
+  hierarchical: "stacked" | "cutout";
+  /** 颜色精度 0=默认(随预设) / 1..10 */
+  colorPrecision: number;
+  /** 小碎片过滤 0=默认 */
+  filterSpeckle: number;
+  /** 路径坐标小数位 */
+  pathPrecision: number;
+  /** 几何图元识别：把圆/矩形/椭圆/圆角矩形拟合为图元，叠在 VTracer 结果上（打卡框/文化墙更干净） */
+  geometry: boolean;
+  /** 质量档：fast=单候选 / balanced=3 候选评分(默认) / high-fidelity=5 候选 / few-nodes=3 候选偏简化 */
+  quality?: "fast" | "balanced" | "high-fidelity" | "few-nodes";
+  // 运行态（result:true 写回，不增 rev）
+  progress?: string;
+  /** SVG 资产 assetUrl（预览/下游/拖出） */
+  result?: string;
+  /** SVG 文本（导出 AI/CDR/PDF 用，避免回读） */
+  svg?: string;
+  resultW?: number;
+  resultH?: number;
+  pathCount?: number;
+  /** 重渲染质量门禁：true=可直接进入生产后期；false=建议人工复核/改用高保真档 */
+  productionReady?: boolean;
+  qualityScore?: number;
+  report?: string;
+};
+
+/** 生成节点的「历次结果」条目：每次成功出图/出片时快照一份，可回溯「第 N 次那版最好」 */
+export type GenHistoryEntry = {
+  ts: number;
+  prompt: string;
+  modelId?: string;
+  /** 当时参数快照（aspect/resolution/quality/seed/size/count/duration 等，按节点类型存） */
+  params: Record<string, unknown>;
+  /** 当时结果（图片 dataURL 列表 / 视频 URL 列表）；大图由 blobStore 自动外置，不内联 boards.json */
+  results: string[];
 };
 
 export type VideoGenData = {
@@ -141,6 +290,10 @@ export type VideoGenData = {
   error?: string;
   prompt: string;
   resultUrl?: string;
+  /** 并行生成的全部结果（resultUrl = resultUrls[picked]） */
+  resultUrls?: string[];
+  /** 当前选中的结果下标 */
+  picked?: number;
   progress?: string;
   modelId?: string;
   /** 提示词语言：zh 原文直发（默认）/ en 生成前先译成英文 */
@@ -157,6 +310,12 @@ export type VideoGenData = {
   useTail?: boolean;
   /** 参考模式：frame = 首帧/尾帧（默认）；reference = 全部上游图作为角色/主体参考（家族支持时） */
   refMode?: "frame" | "reference";
+  /** 并行请求数 1-3：同参数同时发多条，结果进 resultUrls 可切换 */
+  parallel?: number;
+  /** 由备用模型生成时记录其名（徽标展示） */
+  fallbackModel?: string;
+  /** 历次出片记录（最近 10 次） */
+  history?: GenHistoryEntry[];
 };
 
 /** 分镜：故事/剧本 → 完善 → 按风格与定调拆分镜（带时间轴），每镜独立输出口接生成节点 */
@@ -188,40 +347,6 @@ export type StoryboardData = {
   chatModelId?: string;
 };
 
-/** 视频取帧：从上游视频抽一帧输出为图片（本地抽帧，零成本） */
-export type FrameData = {
-  status: RunStatus;
-  error?: string;
-  /** 取帧位置：首帧 / 末帧 / 自定义秒数 */
-  point: "first" | "last" | "custom";
-  timeSec?: number;
-  result?: string;
-  /** 上游视频时长（秒，抽帧时顺带记录，供 UI 展示） */
-  srcDur?: number;
-};
-
-/** 视频取段：本地重编码截取上游视频的一段（实验性：实时录制，时长≈片段时长） */
-export type VideoTrimData = {
-  status: RunStatus;
-  error?: string;
-  start: number;
-  end?: number;
-  resultUrl?: string;
-  progress?: string;
-  srcDur?: number;
-};
-
-/** 视频拼接：把多路上游视频合成一条（实验性：实时录制重编码）
- *  自带时间线粗剪条：片段缩略图按播放顺序排布，可调序、顺序预览后再拼接 */
-export type VideoConcatData = {
-  status: RunStatus;
-  error?: string;
-  resultUrl?: string;
-  progress?: string;
-  /** 手动排好的播放顺序（上游节点 id 列表）；未排过的片段按连线位置附加在后 */
-  order?: string[];
-};
-
 export type ComfyData = {
   status: RunStatus;
   error?: string;
@@ -233,22 +358,24 @@ export type ComfyData = {
   textOut?: string;
   /** 工作流的视频输出（VHS 合成等，blob URL） */
   videoResults?: string[];
+  /** 历次工作流运行记录（最近 10 次） */
+  history?: GenHistoryEntry[];
   progress?: string;
   /** 实时进度百分比 0-100（WebSocket 可用时才有） */
   progressPct?: number;
 };
 
-/** 反推描述：图片 → 视觉模型 → 文本 */
-export type CaptionData = {
-  status: RunStatus;
-  error?: string;
-  mode: "prompt" | "detail" | "tags";
-  result: string;
-  modelId?: string;
-};
-
-/** 文本处理：上游文本 → LLM 指令加工 → 文本 */
-export type LlmTextOp = "optimize" | "zh2en" | "expand" | "shorten" | "custom";
+/** 文本处理（融合原「反推描述」）：上游文本/图片 → LLM 加工 → 文本 */
+/** cap* 三个操作消费上游图片，其余操作消费上游文本 */
+export type LlmTextOp =
+  | "optimize"
+  | "zh2en"
+  | "expand"
+  | "shorten"
+  | "custom"
+  | "capPrompt"
+  | "capDetail"
+  | "capTags";
 export type LlmTextData = {
   status: RunStatus;
   error?: string;
@@ -357,8 +484,8 @@ export type CharProfile = {
 
 /** 设定卡整版的排版风格；auto = 模型按角色画风/气质自动匹配版面 */
 export type CharCardStyle = "auto" | "clean" | "magazine" | "letter" | "dossier";
-/** 角色卡可产出的素材种类 */
-export type CharDeliverable = "turnaround" | "closeup" | "expressions" | "poses" | "portrait" | "sheet";
+/** 角色卡可产出的素材种类（每张内容不堆砌：格子少、区域大，同主题可用「补一张」自动换组追加） */
+export type CharDeliverable = "turnaround" | "closeup" | "expressions" | "poses" | "outfits" | "portrait" | "sheet";
 
 export type CharCardData = {
   status: RunStatus;
@@ -385,128 +512,34 @@ export type CharCardData = {
   imageModelId?: string;
 };
 
-/* ---------------- 尺寸调整 ---------------- */
-/** 缩放方式：mp = 目标总像素（百万）· side = 单边定长 · scale = 倍率 */
-export type ResizeMode = "mp" | "side" | "scale";
-/** side 模式的参照边 */
-export type ResizeSideRef = "long" | "short" | "width" | "height";
-/** 输出内容：image = 处理后的图片；其余为尺寸文本（可接生成节点替换其尺寸设置） */
-export type ResizeOut = "image" | "recAspect" | "recRes" | "actAspect" | "actRes";
-
-/** 尺寸调整：真实重采样上游图片的像素（非虚值），或向下游输出比例/分辨率文本 */
-export type ResizeData = {
-  status: RunStatus;
-  error?: string;
-  mode: ResizeMode;
-  /** mp 模式：目标总像素（单位百万，如 1 = 约 100 万像素） */
-  mp: number;
-  /** side 模式：参照边 + 目标边长（另一边按比例自动算） */
-  sideRef: ResizeSideRef;
-  sideLen: number;
-  /** scale 模式：缩放百分比（100 = 原尺寸；>100 放大） */
-  scalePct: number;
-  out: ResizeOut;
-  /** 处理后的图片（image 输出模式） */
-  result?: string;
-  outW?: number;
-  outH?: number;
-  /** 上游原图尺寸（接入时自动测量，供展示与文本输出推导） */
-  srcW?: number;
-  srcH?: number;
-};
-
-/* ---------------- 图片编辑类节点（局部重绘 / 扩图 / 抠图 / 增强 / 聚焦） ---------------- */
+/* ---------------- 图片直接编辑（局部重绘 / 扩图 / 增强 / 尺寸 / 裁剪 → 作用于节点自身，见 core/nodeEdit.ts） ---------------- */
 
 /** 重绘/扩图的模型通道：
  *  auto = GPT 家族走真蒙版、其余走指令式；mask = 强制真蒙版（images/edits 的 mask 参数，需中转站如实转发）；
  *  instruct = 强制指令式（发原图 + 红色标注图，走普通图生图通道，兼容性最好） */
 export type EditChannel = "auto" | "mask" | "instruct";
 
-/** 局部重绘：上游图片 + 蒙版（画笔/框选涂抹）→ 只重绘标注区域 */
-export type InpaintData = {
-  status: RunStatus;
-  error?: string;
-  prompt: string;
-  /** 蒙版 PNG dataURL（与原图同尺寸：标注处白色不透明，其余全透明） */
-  mask?: string;
-  /** 模型通道（默认 auto；中转站蒙版转发不可靠时切 instruct） */
-  channel?: EditChannel;
-  /** 生成张数（多候选选卡） */
-  count: number;
-  results: string[];
-  picked: number;
-  modelId?: string;
-  lang?: "zh" | "en";
-};
-
 /** 扩图方向幅度：每边扩展比例（0 = 不扩） */
 export type OutpaintPads = { left: number; right: number; up: number; down: number };
 
-/** 扩图：上游图片 → 向四周延伸画面
- *  GPT Image 走真实 mask 外扩；其余家族按目标比例 + 指令降级 */
-export type OutpaintData = {
-  status: RunStatus;
-  error?: string;
-  /** 每边扩展比例（0-1 连续值，可视化编辑器拖拽/比例档设置） */
-  pads: OutpaintPads;
-  /** 补充提示词（希望扩展区域出现什么，可留空自然延伸） */
-  prompt: string;
-  /** 模型通道（同局部重绘） */
-  channel?: EditChannel;
-  count: number;
-  results: string[];
-  picked: number;
-  modelId?: string;
+/** 尺寸调整（直接编辑）参数：mp = 目标总像素（百万）· side = 单边定长 · scale = 倍率 */
+export type ResizeParams = {
+  mode: "mp" | "side" | "scale";
+  /** mp 模式：目标总像素（单位百万，如 1 = 约 100 万像素） */
+  mp: number;
+  /** side 模式：参照边 + 目标边长（另一边按比例自动算） */
+  sideRef: "long" | "short" | "width" | "height";
+  sideLen: number;
+  /** scale 模式：缩放百分比（100 = 原尺寸；>100 放大） */
+  scalePct: number;
 };
 
-/** 图片编辑节点的执行引擎：model = 绘画模型；comfy = 本地 ComfyUI 模板（rembg 抠图 / 专业放大等，效果更专业） */
-export type EditEngine = "model" | "comfy";
-
-/** 抠图/去背：上游图片 → 主体抠出
- *  推荐 ComfyUI 引擎（rembg/BiRefNet 等真抠图）；绘画模型引擎只能重绘换底（GPT Image 可出透明 PNG） */
-export type MattingData = {
-  status: RunStatus;
-  error?: string;
-  progress?: string;
-  engine?: EditEngine;
-  /** ComfyUI 引擎：所选模板 id */
-  comfyTemplateId?: string;
-  /** 目标背景；transparent 仅 GPT Image / ComfyUI 支持，其余家族自动降级为白底 */
-  bg: MattingBg;
-  /** 主体描述（留空 = 自动识别最显著主体） */
-  subject: string;
-  results: string[];
-  picked: number;
-  modelId?: string;
-};
-export type MattingBg = "transparent" | "white" | "green" | "black";
-
-/** 高清增强：上游图片 → 提升分辨率与细节
- *  推荐 ComfyUI 引擎（UltimateSDUpscale / 放大模型等专业放大）；绘画模型引擎为重绘式增强 */
-export type EnhanceData = {
-  status: RunStatus;
-  error?: string;
-  progress?: string;
-  engine?: EditEngine;
-  comfyTemplateId?: string;
+/** 高清增强（直接编辑）参数 */
+export type EnhanceParams = {
   /** 放大倍率（2 / 4） */
   factor: number;
   /** 增强侧重：detail = 细节纹理；face = 人物面部；none = 纯放大不加戏 */
   focus: "detail" | "face" | "none";
-  results: string[];
-  picked: number;
-  modelId?: string;
-};
-
-/** 聚焦裁剪：框选上游图片的局部作为输出（纯本地裁剪，不调模型）——精准引用参考图局部 */
-export type CropData = {
-  status: RunStatus;
-  error?: string;
-  /** 框选区域（相对原图的归一化坐标 0-1） */
-  rect?: { x: number; y: number; w: number; h: number };
-  result?: string;
-  srcW?: number;
-  srcH?: number;
 };
 
 export type AppNode = Node<Record<string, unknown>, NodeKind>;
@@ -515,13 +548,15 @@ export type AppNode = Node<Record<string, unknown>, NodeKind>;
 export type PortType = "text" | "image" | "video" | "audio";
 
 /* ---------------- 模型配置（服务商卡片） ---------------- */
-export type ModelRole = "chat" | "image" | "video" | "audio";
+/** asr = 语音识别（语音输入/通话模式用）；纯新增角色，旧配置里没有该键，加载时按未配置处理 */
+export type ModelRole = "chat" | "image" | "video" | "audio" | "asr";
 
 export type ChatProtocol = "openai" | "anthropic" | "gemini";
 export type ImageProtocol = "openai" | "gemini";
 export type VideoProtocol = "zhipu" | "siliconflow" | "openai";
 export type AudioProtocol = "openai";
-export type AnyProtocol = ChatProtocol | ImageProtocol | VideoProtocol | AudioProtocol;
+export type AsrProtocol = "openai";
+export type AnyProtocol = ChatProtocol | ImageProtocol | VideoProtocol | AudioProtocol | AsrProtocol;
 /** 协议标识：内置协议，或自定义协议 "custom:<id>"（协议执行器） */
 export type ProtocolId = AnyProtocol | (string & {});
 
@@ -578,6 +613,7 @@ export const ROLE_LABEL: Record<ModelRole, string> = {
   image: "绘画模型",
   video: "视频模型",
   audio: "音频模型",
+  asr: "语音识别",
 };
 
 export const PROTOCOLS: Record<ModelRole, { value: string; label: string }[]> = {
@@ -596,15 +632,16 @@ export const PROTOCOLS: Record<ModelRole, { value: string; label: string }[]> = 
     { value: "openai", label: "OpenAI 兼容 (任务轮询)" },
   ],
   audio: [{ value: "openai", label: "OpenAI 兼容 (audio/speech 朗读)" }],
+  asr: [{ value: "openai", label: "OpenAI 兼容 (audio/transcriptions 转写)" }],
 };
 
 /* ---------------- 其他设置 ---------------- */
-export type SearchProvider = "tavily" | "bocha" | "searxng";
+export type SearchProvider = "tavily" | "bocha" | "searxng" | "zhipu" | "langsearch" | "serper" | "jina";
 export type SearchCfg = { provider: SearchProvider; apiKey: string; baseUrl: string; maxResults: number };
 export type ImgFormat = "png" | "jpeg" | "webp";
 export type SaveCfg = { dir: string; format: ImgFormat; pattern: string; autoSave: boolean };
 export type ComfyCfg = { host: string };
-export type ThemeName = "light" | "dark";
+export type ThemeName = "light" | "dark" | "black";
 
 /* ---------------- 音效提醒 ---------------- */
 export type SoundCfg = {
@@ -639,6 +676,16 @@ export type HotkeyAction =
   | "gallery"
   | "search"
   | "spotlight"
+  | "align"
+  // 标题栏功能：与右上角那排按钮一一对应
+  | "agent"
+  | "charLib"
+  | "settings"
+  | "errCenter"
+  | "runLog"
+  | "theme"
+  | "newBoard"
+  | "voiceCall"
   // 下方工具坞：添加各类节点到视图中心（与 nodeCatalog 的条目一一对应）
   | "addImage"
   | "addVideo"
@@ -649,25 +696,17 @@ export type HotkeyAction =
   | "addStylePreset"
   | "addNote"
   | "addChat"
-  | "addCaption"
   | "addLlmText"
   | "addCombine"
   | "addImageGen"
   | "addVideoGen"
   | "addComfy"
-  | "addResize"
   | "addRelight"
   | "addMultiAngle"
   | "addCharCard"
-  | "addInpaint"
-  | "addOutpaint"
-  | "addMatting"
-  | "addEnhance"
-  | "addCrop"
   | "addStoryboard"
-  | "addFrame"
-  | "addVideoTrim"
-  | "addVideoConcat";
+  | "addEnhanceLocal"
+  | "addVectorize";
 
 export const HOTKEY_LABEL: Record<HotkeyAction, string> = {
   moveTool: "移动工具（激活/取消）",
@@ -681,7 +720,16 @@ export const HOTKEY_LABEL: Record<HotkeyAction, string> = {
   gallery: "打开/关闭生成记录",
   search: "画布内搜索节点",
   spotlight: "快速添加（搜索节点/模板）",
+  align: "对齐所选节点（多选按主轴对齐，单选吸到网格）",
   zen: "沉浸模式",
+  agent: "打开/关闭创作助手",
+  charLib: "打开/关闭角色库",
+  settings: "打开设置",
+  errCenter: "打开/关闭报错中心",
+  runLog: "打开/关闭运行日志",
+  theme: "切换主题（云白 → 深空蓝 → 深邃黑）",
+  newBoard: "新建画布",
+  voiceCall: "语音通话（开始/挂断）",
   undo: "撤销",
   redo: "重做",
   duplicate: "创建副本",
@@ -695,26 +743,18 @@ export const HOTKEY_LABEL: Record<HotkeyAction, string> = {
   addPrompt: "添加节点：提示词",
   addStylePreset: "添加节点：风格预设",
   addNote: "添加节点：备注",
-  addChat: "添加节点：对话",
-  addCaption: "添加节点：反推描述",
-  addLlmText: "添加节点：文本处理",
+  addChat: "添加节点：对话（已并入右侧「创作助手」，此绑定不再生效）",
+  addLlmText: "添加节点：文本处理（已并入提示词弹窗「AI 工具」，此绑定不再生效）",
   addCombine: "添加节点：拼接文本",
   addImageGen: "添加节点：生成图像",
   addVideoGen: "添加节点：生成视频",
   addComfy: "添加节点：ComfyUI",
-  addResize: "添加节点：尺寸调整",
   addRelight: "添加节点：打光",
   addMultiAngle: "添加节点：多角度",
   addCharCard: "添加节点：角色卡",
-  addInpaint: "添加节点：局部重绘",
-  addOutpaint: "添加节点：扩图",
-  addMatting: "添加节点：抠图",
-  addEnhance: "添加节点：高清增强",
-  addCrop: "添加节点：聚焦裁剪",
   addStoryboard: "添加节点：分镜",
-  addFrame: "添加节点：视频取帧",
-  addVideoTrim: "添加节点：视频取段",
-  addVideoConcat: "添加节点：视频拼接",
+  addEnhanceLocal: "添加节点：超清放大",
+  addVectorize: "添加节点：智能矢量",
 };
 
 /** 组合键格式：修饰键小写用 + 连接，如 "ctrl+z" / "ctrl+shift+s"；单键直接写键名 */
@@ -736,6 +776,16 @@ export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   gallery: "h",
   search: "ctrl+f",
   spotlight: "ctrl+k",
+  align: "a",
+  // 标题栏功能（默认全走 Ctrl+Shift，避免和画布单键/浏览器快捷键打架）
+  agent: "ctrl+shift+a",
+  charLib: "ctrl+shift+c",
+  settings: "ctrl+,",
+  errCenter: "ctrl+shift+e",
+  runLog: "ctrl+shift+l",
+  theme: "ctrl+shift+t",
+  newBoard: "ctrl+shift+n",
+  voiceCall: "ctrl+shift+v",
   // 工具坞按排列顺序对应 1~9、0，编辑/角色类用 Alt+数字
   addImage: "1",
   addVideo: "",
@@ -746,25 +796,17 @@ export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   addStylePreset: "3",
   addNote: "4",
   addChat: "5",
-  addCaption: "6",
   addLlmText: "7",
   addCombine: "",
   addImageGen: "8",
   addVideoGen: "9",
   addComfy: "0",
-  addResize: "alt+1",
   addRelight: "alt+2",
   addMultiAngle: "alt+3",
   addCharCard: "alt+4",
-  addInpaint: "alt+5",
-  addOutpaint: "alt+6",
-  addMatting: "alt+7",
-  addEnhance: "alt+8",
-  addCrop: "alt+9",
   addStoryboard: "",
-  addFrame: "",
-  addVideoTrim: "",
-  addVideoConcat: "",
+  addEnhanceLocal: "",
+  addVectorize: "",
 };
 
 /* ---------------- 快捷方式（资产库侧边栏） ---------------- */
@@ -809,6 +851,40 @@ export type CustomProtocol = {
   verifiedAt?: number;
 };
 
+/* ---------------- 重试 / 用量 / 预算（稳定性与成本控制） ---------------- */
+/** 重试与备用模型配置：幂等请求自动重试 + 生成类显式重试 + 耗尽换备用模型 */
+export type RetryCfg = {
+  /** 幂等请求（轮询/列表/搜索/下载）自动重试次数，0=关 */
+  idempotentMax: number;
+  /** 生成类 POST 瞬时错误重试次数，0=关（默认关：生成重试有重复扣费风险，需用户显式开） */
+  submitMax: number;
+  /** 退避基数 / 上限（毫秒），指数退避 + ±20% 抖动 */
+  backoffBaseMs: number;
+  backoffMaxMs: number;
+  /** 备用模型复合键 pid::model；主模型重试耗尽后换卡再试一次。空 = 不兜底 */
+  fallbackImage: string;
+  fallbackVideo: string;
+  fallbackAudio: string;
+};
+
+/** 单项单价（CNY），任一维度留空 = 该维度不计费 */
+export type UnitPrice = {
+  perCall?: number;
+  perImage?: number;
+  perVideoSec?: number;
+  perAudioSec?: number;
+  /** 每千输入 / 输出 Token */
+  perIn1K?: number;
+  perOut1K?: number;
+};
+
+/** 预算护栏：日预算 / 单次上限 / 确认阈值，0 = 不限制 */
+export type Budget = {
+  dailyCap: number;
+  perRunCap: number;
+  confirmOverCost: number;
+};
+
 export type Settings = {
   models: ModelsCfg;
   search: SearchCfg;
@@ -826,6 +902,14 @@ export type Settings = {
   shortcuts: ShortcutItem[];
   /** 自定义协议（协议助手生成或手写） */
   customProtocols: CustomProtocol[];
+  /** 重试与备用模型（稳定性：中转站 429/5xx/网络抖动不再让工作流白跑） */
+  retry: RetryCfg;
+  /** 预算护栏（超阈值确认 / 超日预算阻断） */
+  budget: Budget;
+  /** 单价覆盖（key=模型名前缀，最长前缀优先匹配；空 = 用内置估算） */
+  pricing: { overrides: Record<string, UnitPrice> };
+  /** 本地超清放大引擎（DirectML 本地推理，非破坏） */
+  enhance: EnhanceCfg;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -840,6 +924,11 @@ export const DEFAULT_SETTINGS: Settings = {
   hotkeys: DEFAULT_HOTKEYS,
   shortcuts: [],
   customProtocols: [],
+  // submitMax 默认 0：生成类重试有重复扣费风险，需用户显式开；幂等 GET 默认重试 2 次无此问题
+  retry: { idempotentMax: 2, submitMax: 0, backoffBaseMs: 500, backoffMaxMs: 8000, fallbackImage: "", fallbackVideo: "", fallbackAudio: "" },
+  budget: { dailyCap: 0, perRunCap: 0, confirmOverCost: 0 },
+  pricing: { overrides: {} },
+  enhance: { defaultTarget: "4k", tileSize: 0, tileOverlap: 32 },
 };
 
 /** v1（单套配置）旧结构，用于迁移 */
@@ -908,6 +997,31 @@ export type BoardTemplate = {
   createdAt: number;
 };
 
+/* ---------------- .momoflow 分享包（v2：可内嵌素材） ---------------- */
+/** 导入时检测对方缺少的服务商配置 */
+export type MomoflowRequires = {
+  /** 需要的模型名列表（提示对方在「模型配置」补齐） */
+  models: string[];
+  /** 随包附带的协议（密钥留空，对方按需填） */
+  protocols?: CustomProtocol[];
+};
+/** .momoflow 文件载荷：v1 纯模板；v2 可内嵌素材（大图收进 assets，节点 data 用 momoblob:<hash> 引用） */
+export type MomoflowPayload = {
+  app: "momo-canvas";
+  type: "boardflow";
+  version: 2;
+  template: BoardTemplate;
+  /** hash → dataURL（含素材导出时存在；导入时回填到节点 data） */
+  assets?: Record<string, string>;
+  /** 对方导入时缺这些配置会被提示 */
+  requires?: MomoflowRequires;
+};
+/** 导入结果：用于在 UI 提示缺失的服务商/协议配置 */
+export type ImportResult = {
+  name: string;
+  missing: { models: string[]; protocols: CustomProtocol[] };
+};
+
 /* ---------------- 画板 ---------------- */
 export type BoardMeta = {
   id: string;
@@ -929,7 +1043,8 @@ export type GalleryItem = {
 };
 
 /* ---------------- 资产库 ---------------- */
-export type AssetKind = "image" | "video" | "audio" | "pdf" | "other";
+/** vector = 矢量文件（SVG）：智能矢量节点产物 / 导入的 .svg，单独分类 */
+export type AssetKind = "image" | "video" | "audio" | "pdf" | "vector" | "other";
 
 /** 生成参数快照：画布生成物收录时随资产落盘，「Remix」可据此还原一个配置好的生成节点 */
 export type AssetGenMeta = {
@@ -947,6 +1062,10 @@ export type AssetGenMeta = {
   height?: number;
   lang?: "zh" | "en";
   creativity?: number;
+  /** 随机种子（Remix/复现用） */
+  seed?: number;
+  /** 负向提示词 */
+  negative?: string;
 };
 
 export type AssetItem = {
@@ -972,6 +1091,8 @@ export type AssetItem = {
   source: "canvas" | "import";
   /** 生成参数快照（画布生成物才有）：资产卡「Remix」按此还原生成节点 */
   gen?: AssetGenMeta;
+  /** 该资产来自哪个画布生成节点（资产卡「定位到画布节点」用；老资产无此字段） */
+  nodeId?: string;
   createdAt: number;
 };
 

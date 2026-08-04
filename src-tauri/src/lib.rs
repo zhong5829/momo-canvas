@@ -1,3 +1,110 @@
+mod enhance2;
+mod export;
+mod face;
+mod geom;
+mod layer_export;
+mod model_cache;
+mod sr;
+mod vec;
+mod vec_score;
+
+use tauri::ipc::Channel;
+
+/// 本地超分（阶段一）：吃输入图字节 + 模型路径 + 配置，跑 DirectML 推理，原子写输出。
+/// 进度经 on_event Channel 回前端；任务可被 enhance_cancel 取消（tile 粒度）。
+#[tauri::command]
+async fn enhance_upscale(
+    task_id: String,
+    input_bytes: Vec<u8>,
+    out_path: String,
+    model_path: String,
+    config: sr::EnhanceConfig,
+    on_event: Channel<sr::SrEvent>,
+) -> Result<sr::EnhanceResult, String> {
+    // 推理是 CPU+GPU 混合的同步阻塞活，放进 spawn_blocking 不阻塞 Tauri 主线程/异步运行时
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        sr::run(
+            &task_id,
+            &input_bytes,
+            &out_path,
+            &model_path,
+            &config,
+            &on_event,
+        )
+    })
+    .await
+    .map_err(|e| format!("推理任务异常: {}", e))?;
+    res
+}
+
+/// 取消某个进行中的超分任务（tile 之间生效）
+#[tauri::command]
+fn enhance_cancel(task_id: String) {
+    sr::request_cancel(&task_id);
+}
+
+/// 图像转矢量（VTracer，本地 CPU）。位图 → 安全 SVG，写 out_path，回 SVG 文本 + 统计。
+/// 批次5：多候选 + 质量档，进度经 on_event Channel 回前端（分析/候选 k/N/评分/后处理/完成）。
+#[tauri::command]
+async fn vectorize_image(
+    task_id: String,
+    input_bytes: Vec<u8>,
+    reference_bytes: Option<Vec<u8>>,
+    out_path: String,
+    config: vec::VectorizeConfig,
+    on_event: Channel<vec::VecEvent>,
+) -> Result<vec::VectorizeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        vec::run(
+            &task_id,
+            &input_bytes,
+            reference_bytes.as_deref(),
+            &out_path,
+            &config,
+            &on_event,
+        )
+    })
+    .await
+    .map_err(|e| format!("矢量化任务异常: {}", e))?
+}
+
+/// 取消矢量化任务。VTracer 单个候选内部不可中断，在当前候选结束后、评分或下一候选前生效。
+#[tauri::command]
+fn vectorize_cancel(task_id: String) {
+    vec::request_cancel(&task_id);
+}
+
+/// 探测本机是否安装 Illustrator / CorelDRAW（前端据此显隐 AI/CDR 导出按钮）
+#[tauri::command]
+fn vector_export_apps() -> export::AppsStatus {
+    export::detect_apps()
+}
+
+/// SVG → 原生 .ai / .cdr（COM 自动化，spawn_blocking 不阻塞 UI；超时杀进程树）
+#[tauri::command]
+async fn vector_export(
+    svg: String,
+    format: String,
+    out_path: String,
+    w_mm: f64,
+    h_mm: f64,
+) -> Result<export::ExportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || export::run(&svg, &format, &out_path, w_mm, h_mm))
+        .await
+        .map_err(|e| format!("导出任务异常: {}", e))?
+}
+
+#[tauri::command]
+async fn layer_export_tiff(
+    layers: Vec<layer_export::LayerFileInput>,
+    out_path: String,
+    dpi: u32,
+) -> Result<layer_export::LayerExportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || layer_export::export_tiff(&layers, &out_path, dpi))
+        .await
+        .map_err(|e| format!("分层 TIFF 任务异常：{}", e))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -13,6 +120,15 @@ pub fn run() {
         // 自动更新（安装版）+ 进程重启
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .invoke_handler(tauri::generate_handler![
+            enhance_upscale,
+            enhance_cancel,
+            vectorize_image,
+            vectorize_cancel,
+            vector_export_apps,
+            vector_export,
+            layer_export_tiff
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

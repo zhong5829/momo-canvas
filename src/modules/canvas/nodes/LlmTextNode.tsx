@@ -1,14 +1,17 @@
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { NodeShell, PortOut, PortTextIn } from "../NodeShell";
-import { IcEdit, IcGlobe, IcLoading, IcMin, IcPlus, IcSparkles, IcWand } from "../../../ui/icons";
+import { NodeShell, PortIn, PortOut } from "../NodeShell";
+import { IcEdit, IcFilter, IcGlobe, IcLoading, IcMin, IcPlus, IcScan, IcSparkles, IcText, IcWand } from "../../../ui/icons";
 import { ModelPicker } from "../../../ui/ModelPicker";
 import { OptGrid } from "../../../ui/kit";
 import { useBoard } from "../../../core/stores/boardStore";
-import { runFlow } from "../../../core/runner";
+import { isCaptionOp, runFlow } from "../../../core/runner";
 import type { LlmTextData } from "../../../core/types";
 
 const OPS = [
+  { value: "capPrompt", label: "反推提示词", icon: <IcText size={16} /> },
+  { value: "capDetail", label: "详细描述", icon: <IcScan size={16} /> },
+  { value: "capTags", label: "英文标签", icon: <IcFilter size={16} /> },
   { value: "optimize", label: "扩写优化", icon: <IcSparkles size={16} /> },
   { value: "zh2en", label: "译成英文", icon: <IcGlobe size={16} /> },
   { value: "expand", label: "扩写丰富", icon: <IcPlus size={16} /> },
@@ -20,6 +23,7 @@ export const LlmTextNode = memo(function LlmTextNode({ id, data, selected }: Nod
   const d = data as LlmTextData;
   const upd = useBoard((s) => s.updateData);
   const running = d.status === "running";
+  const caption = isCaptionOp(d.op);
 
   return (
     <NodeShell
@@ -32,7 +36,7 @@ export const LlmTextNode = memo(function LlmTextNode({ id, data, selected }: Nod
       width={300}
     >
       <div className="mnode-body">
-        <OptGrid options={OPS} value={d.op} onChange={(v) => upd(id, { op: v })} cols={3} />
+        <OptGrid options={OPS} value={d.op} onChange={(v) => upd(id, { op: v as LlmTextData["op"] })} cols={3} />
         {d.op === "custom" ? (
           <textarea
             className="textarea nodrag nowheel"
@@ -44,8 +48,8 @@ export const LlmTextNode = memo(function LlmTextNode({ id, data, selected }: Nod
         ) : null}
         <ModelPicker role="chat" value={d.modelId} onChange={(v) => upd(id, { modelId: v })} />
         <button className="btn primary nodrag" disabled={running} onClick={() => void runFlow(id)}>
-          {running ? <IcLoading size={17} /> : <IcWand size={17} />}
-          {running ? "处理中…" : "处理（读取上游文本）"}
+          {running ? <IcLoading size={17} /> : caption ? <IcScan size={17} /> : <IcWand size={17} />}
+          {running ? (caption ? "识别中…" : "处理中…") : caption ? "反推（读取上游图片）" : "处理（读取上游文本）"}
         </button>
         {d.result || running ? (
           <textarea
@@ -57,7 +61,7 @@ export const LlmTextNode = memo(function LlmTextNode({ id, data, selected }: Nod
           />
         ) : null}
       </div>
-      <PortTextIn />
+      <PortIn />
       <PortOut kind="text" />
     </NodeShell>
   );

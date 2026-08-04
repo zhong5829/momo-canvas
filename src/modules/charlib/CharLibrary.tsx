@@ -32,17 +32,24 @@ function PresetAvatar({
   size = 64,
   preview,
   busy,
+  tall,
 }: {
   preset: CharPreset;
   size?: number;
   preview?: { path: string; thumb?: string };
   busy?: boolean;
+  /** 竖版立绘：按 3:4 拉高并整图完整显示（详情页用；方形裁切会把头和脚切掉） */
+  tall?: boolean;
 }) {
   const [c1, c2] = [preset.profile.palette[0] ?? "#8aa8d8", preset.profile.palette[1] ?? "#d8c8e8"];
   return (
     <div
-      className={`cp-avatar ${busy ? "busy" : ""}`}
-      style={{ width: size, height: size, background: `linear-gradient(135deg, ${c1}, ${c2})` }}
+      className={`cp-avatar ${busy ? "busy" : ""} ${tall ? "tall" : ""}`}
+      style={{
+        width: size,
+        height: tall ? Math.round(size * 1.34) : size,
+        background: `linear-gradient(135deg, ${c1}, ${c2})`,
+      }}
     >
       {preview ? (
         <img src={assetUrl(preview.thumb || preview.path)} alt={preset.name} />
@@ -143,7 +150,7 @@ export function CharLibrary() {
         {/* 所选预设详情 */}
         <div className="cl-detail">
           <div className="cl-avatar-col">
-            <PresetAvatar preset={sel} size={128} preview={previews[sel.id]} busy={genBusy === sel.id} />
+            <PresetAvatar preset={sel} size={148} tall preview={previews[sel.id]} busy={genBusy === sel.id} />
             <button
               className="btn sm"
               disabled={!!genBusy}

@@ -13,6 +13,7 @@ import {
   type ProviderCard,
   type RoleSlot,
   type Settings,
+  type UnitPrice,
 } from "../types";
 import { loadJSON, saveJSON } from "../persist";
 import { uid } from "../utils";
@@ -81,6 +82,12 @@ function normalize(v: Partial<Settings>): Settings {
       ...p,
       role: p.role === "video" ? ("video" as const) : p.role === "audio" ? ("audio" as const) : ("image" as const),
     })),
+    // 稳定性/成本：浅合并默认值，老数据无这些键 → 拿全默认（submitMax=0 不重复扣费）
+    retry: { ...DEFAULT_SETTINGS.retry, ...(v.retry ?? {}) },
+    budget: { ...DEFAULT_SETTINGS.budget, ...(v.budget ?? {}) },
+    pricing: { overrides: { ...((v.pricing as { overrides?: Record<string, UnitPrice> } | undefined)?.overrides ?? {}) } },
+    // 本地超清放大引擎：浅合并默认值，老数据无此键 → 拿默认（4K / 自动 tile / 重叠 32）
+    enhance: { ...DEFAULT_SETTINGS.enhance, ...(v.enhance ?? {}) },
   };
 }
 
@@ -93,7 +100,7 @@ function applyGpu(on: boolean) {
   document.documentElement.classList.toggle("gpu-boost", on);
 }
 
-const ROLES: ModelRole[] = ["chat", "image", "video", "audio"];
+const ROLES: ModelRole[] = ["chat", "image", "video", "audio", "asr"];
 
 /** 修补 defaults：规整为「pid::model」，指向不存在的服务商/模型时退回第一个可用的 */
 function fixDefaults(cfg: ModelsCfg): ModelsCfg {
@@ -156,6 +163,14 @@ function migrateV1(old: LegacySettingsV1): Partial<Settings> {
 }
 
 let initOnce: Promise<void> | null = null;
+
+// 把配置里的全部密钥注册给运行日志做脱敏（动态 import 避免模块环）
+void import("./logStore").then(({ registerSecretSource }) => {
+  registerSecretSource(() => {
+    const s = useSettings.getState().settings;
+    return [...s.models.providers.map((p) => p.apiKey), s.search.apiKey].filter(Boolean);
+  });
+});
 
 export const useSettings = create<SettingsState>((set, get) => {
   const commit = (next: Settings) => {

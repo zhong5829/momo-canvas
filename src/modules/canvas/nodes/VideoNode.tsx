@@ -5,17 +5,17 @@
  */
 import { memo, useRef } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { NodeShell, PortOut } from "../NodeShell";
-import { IcDownload, IcUpload, IcVideo } from "../../../ui/icons";
+import { mediaNodeWidth, NodeShell, PortOut } from "../NodeShell";
+import { IcDownload, IcScan, IcUpload, IcVideo } from "../../../ui/icons";
 import { useBoard } from "../../../core/stores/boardStore";
 import { useSettings } from "../../../core/stores/settingsStore";
-import { toast } from "../../../core/stores/uiStore";
+import { toast, useUi } from "../../../core/stores/uiStore";
 import { useAssets } from "../../../core/stores/assetStore";
 import { assetUrl } from "../../../core/services/assetFiles";
 import { saveVideoAs } from "../../../core/services/imageSaver";
 import { videoDuration } from "../../../core/videoEdit";
 import { errMsg } from "../../../core/utils";
-import { VideoThumb } from "../../../ui/VideoThumb";
+import { useVideoDims, VideoThumb } from "../../../ui/VideoThumb";
 import type { VideoData } from "../../../core/types";
 
 /** 导入视频文件：进资产库拿到持久路径 → 返回可播放 URL 与时长 */
@@ -29,7 +29,10 @@ export async function importVideoFile(f: File): Promise<{ src: string; dur: numb
 export const VideoNode = memo(function VideoNode({ id, data, selected }: NodeProps) {
   const d = data as VideoData;
   const upd = useBoard((s) => s.updateData);
+  const setLightbox = useUi((s) => s.setLightbox);
   const fileRef = useRef<HTMLInputElement>(null);
+  // 宽度随视频比例自适应（竖屏窄、横屏宽）
+  const dims = useVideoDims(d.src);
 
   const onFile = async (f?: File | null) => {
     if (!f) return;
@@ -60,25 +63,29 @@ export const VideoNode = memo(function VideoNode({ id, data, selected }: NodePro
       status={d.status}
       error={d.error}
       selected={selected}
-      width={260}
+      width={mediaNodeWidth(dims, 340)}
+      media
       headExtra={
         d.src ? (
-          <span className="acts nodrag" style={{ opacity: 1 }}>
-            <button className="icon-btn" title="替换视频" onClick={() => fileRef.current?.click()}>
-              <IcUpload size={17} />
+          <>
+            <button className="nt-btn" title="放大播放" onClick={() => setLightbox(d.src!, null, "video")}>
+              <IcScan size={14} /> 放大
             </button>
-            <button className="icon-btn" title="保存到本地" onClick={save}>
-              <IcDownload size={17} />
+            <button className="nt-btn" title="替换视频" onClick={() => fileRef.current?.click()}>
+              <IcUpload size={14} /> 替换
             </button>
-          </span>
+            <button className="nt-btn" title="保存到本地" onClick={save}>
+              <IcDownload size={14} /> 保存
+            </button>
+          </>
         ) : undefined
       }
     >
       <div className="mnode-body">
         {d.src ? (
-          <VideoThumb className="img-main nodrag" src={d.src} />
+          <VideoThumb className="img-main" src={d.src} />
         ) : (
-          <div className="img-empty nodrag" onClick={() => fileRef.current?.click()}>
+          <div className="img-empty" onClick={() => fileRef.current?.click()}>
             <IcVideo size={26} />
             <span>
               点击导入视频

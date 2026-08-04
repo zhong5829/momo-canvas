@@ -75,7 +75,7 @@ export const AudioNode = memo(function AudioNode({ id, data, selected }: NodePro
         {d.src ? (
           <audio className="audio-main nodrag" src={d.src} controls preload="none" />
         ) : (
-          <div className="img-empty nodrag" onClick={() => fileRef.current?.click()}>
+          <div className="img-empty" onClick={() => fileRef.current?.click()}>
             <IcMusic size={26} />
             <span>
               点击导入音频

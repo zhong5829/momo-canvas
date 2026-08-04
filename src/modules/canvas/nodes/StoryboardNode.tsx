@@ -5,7 +5,7 @@
  */
 import { memo, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { NodeShell, PortImageIn, PortOut, PortTextIn } from "../NodeShell";
+import { NodeShell, PortIn, PortOut } from "../NodeShell";
 import { IcClapper, IcImage, IcLoading, IcSparkles, IcVideo } from "../../../ui/icons";
 import { ModelPicker } from "../../../ui/ModelPicker";
 import { useBoard } from "../../../core/stores/boardStore";
@@ -153,8 +153,7 @@ export const StoryboardNode = memo(function StoryboardNode({ id, data, selected 
           </>
         ) : null}
       </div>
-      <PortTextIn />
-      <PortImageIn top={58} />
+      <PortIn />
       <PortOut kind="text" />
     </NodeShell>
   );

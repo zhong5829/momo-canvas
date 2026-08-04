@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { NodeShell, PortImageIn, PortOut, PortTextIn } from "../NodeShell";
+import { NodeShell, PortIn, PortOut } from "../NodeShell";
 import { IcBrain, IcChat, IcGlobe, IcLoading, IcSend, IcTrash } from "../../../ui/icons";
 import { ModelPicker } from "../../../ui/ModelPicker";
 import { useBoard } from "../../../core/stores/boardStore";
@@ -81,8 +81,7 @@ export const ChatNode = memo(function ChatNode({ id, data, selected }: NodeProps
           </button>
         </div>
       </div>
-      <PortTextIn />
-      <PortImageIn />
+      <PortIn />
       <PortOut kind="text" />
     </NodeShell>
   );

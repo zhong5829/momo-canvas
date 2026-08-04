@@ -69,6 +69,11 @@
   object-fit: cover;
   display: block;
 }
+/* 竖版立绘：整图完整显示（cover 会把头和脚裁掉） */
+.cp-avatar.tall img {
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.06);
+}
 .cp-avatar.busy img,
 .cp-avatar.busy svg {
   opacity: 0.35;

@@ -4,8 +4,9 @@
  */
 import { create } from "zustand";
 import type { Edge } from "@xyflow/react";
-import type { AppNode, BoardTemplate, NodeKind, TemplateEdge, TemplateNode } from "../types";
-import { defaultData, edgeClassFor, NODE_LABEL, outPortType, useBoard } from "./boardStore";
+import type { AppNode, BoardTemplate, ImportResult, NodeKind, TemplateEdge, TemplateNode } from "../types";
+import { buildPayload, parsePayload, wrapTemplatePayload } from "../momoflow";
+import { defaultData, NODE_LABEL, useBoard } from "./boardStore";
 import { loadJSON, saveJSON } from "../persist";
 import { isTauri, uid } from "../utils";
 import { SEED_TEMPLATES } from "../seedTemplates";
@@ -28,6 +29,11 @@ function cleanData(kind: NodeKind, data: Record<string, unknown>): Record<string
   delete d.srcH;
   delete d.outW;
   delete d.outH;
+  // 节点级历史 / 脏标记签名 / 备用模型徽标：都是运行态，模板与分享包不带（否则膨胀 + 泄漏跨画布历史）
+  delete d.history;
+  delete d.inputSig;
+  delete d.rev;
+  delete d.fallbackModel;
   if (kind === "image") {
     delete d.src; // 图片本体不进模板（避免 boards 级别的大 dataURL 膨胀）
     delete d.name;
@@ -47,12 +53,15 @@ type TemplateState = {
   remove: (id: string) => void;
   /** 实例化到画布：以 at 为左上角展开（重新生成 id、恢复连线），并整体选中 */
   instantiate: (tpl: BoardTemplate, at: { x: number; y: number }) => void;
-  /** 导出为 .momoflow 工作流文件（Tauri 走存盘对话框，浏览器预览走下载）；返回落点或 null=用户取消 */
-  exportOne: (tpl: BoardTemplate) => Promise<string | null>;
-  /** 从文件文本导入工作流；校验节点类型，返回模板名（格式不对抛中文错误） */
-  importText: (text: string) => string;
-  /** Tauri：打开文件对话框选 .momoflow 导入；返回模板名或 null=取消 */
-  importViaDialog: () => Promise<string | null>;
+  /** 导出为 .momoflow 工作流文件（Tauri 走存盘对话框，浏览器预览走下载）；withMedia=true 内嵌素材。
+   *  返回落点或 null=用户取消 */
+  exportOne: (tpl: BoardTemplate, withMedia?: boolean) => Promise<string | null>;
+  /** 导出当前画布快照（不入模板库）：name + nodes/edges → .momoflow 文件 */
+  exportBoard: (name: string, nodes: AppNode[], edges: Edge[], withMedia?: boolean) => Promise<string | null>;
+  /** 从文件文本导入工作流；校验节点类型，回填内嵌素材，返回 {name, missing}（格式不对抛中文错误） */
+  importText: (text: string) => Promise<ImportResult>;
+  /** Tauri：打开文件对话框选 .momoflow 导入；返回导入结果或 null=取消 */
+  importViaDialog: () => Promise<ImportResult | null>;
 };
 
 let initOnce: Promise<void> | null = null;
@@ -136,75 +145,68 @@ export const useTemplates = create<TemplateState>((set, get) => {
       const edges: Edge[] = tpl.edges
         .filter((te) => tidToId.has(te.sourceTid) && tidToId.has(te.targetTid))
         .map((te) => {
-          const srcTn = tpl.nodes.find((x) => x.tid === te.sourceTid)!;
-          const port =
-            srcTn.kind === "group"
-              ? te.sourceHandle === "out-image"
-                ? ("image" as const)
-                : ("text" as const)
-              : outPortType(srcTn.kind, srcTn.data);
           return {
             id: `e_${uid(8)}`,
             source: tidToId.get(te.sourceTid)!,
             target: tidToId.get(te.targetTid)!,
             sourceHandle: te.sourceHandle,
             targetHandle: te.targetHandle,
-            className: edgeClassFor(port),
+            className: "",
             interactionWidth: 28,
           };
         });
       useBoard.getState().insertFragment(nodes, edges);
     },
 
-    exportOne: async (tpl) => {
-      const payload = JSON.stringify(
-        { app: "momo-canvas", type: "boardflow", version: 1, template: { ...tpl, builtin: undefined } },
-        null,
-        2,
-      );
-      const fname = `${tpl.name.replace(/[\\/:*?"<>|]/g, "_")}.momoflow`;
-      if (isTauri) {
-        const { save } = await import("@tauri-apps/plugin-dialog");
-        const path = await save({ defaultPath: fname, filters: [{ name: "MOMO 工作流", extensions: ["momoflow", "json"] }] });
-        if (!path) return null;
-        const { writeFile } = await import("@tauri-apps/plugin-fs");
-        await writeFile(path, new TextEncoder().encode(payload));
-        return path;
-      }
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
-      a.download = fname;
-      a.click();
-      URL.revokeObjectURL(a.href);
-      return fname;
+    exportOne: async (tpl, withMedia = false) => {
+      const payload = await wrapTemplatePayload({ ...tpl, builtin: undefined }, withMedia);
+      return saveFile(JSON.stringify(payload, null, 2), `${tpl.name.replace(/[\\/:*?"<>|]/g, "_")}.momoflow`);
     },
 
-    importText: (text) => {
+    exportBoard: async (name, nodes, edges, withMedia = false) => {
+      const payload = await buildPayload(name, nodes, edges, withMedia);
+      return saveFile(JSON.stringify(payload, null, 2), `${name.replace(/[\\/:*?"<>|]/g, "_")}.momoflow`);
+    },
+
+    importText: async (text) => {
       let j: unknown;
       try {
         j = JSON.parse(text);
       } catch {
         throw new Error("不是有效的工作流文件（JSON 解析失败）");
       }
-      const raw = ((j as { template?: unknown }).template ?? j) as Partial<BoardTemplate>;
-      if (!Array.isArray(raw?.nodes) || !raw.nodes.length) throw new Error("工作流文件里没有节点数据");
+      // v2 载荷 {template, assets, requires} → 回填素材；v1 纯 template 直接用
+      const payload = j as { template?: unknown; assets?: Record<string, string>; requires?: unknown };
+      const rawTpl = (payload.template ?? j) as Partial<BoardTemplate>;
+      let tpl: BoardTemplate;
+      if (payload.assets && payload.template) {
+        tpl = await parsePayload(j as Parameters<typeof parsePayload>[0]);
+      } else {
+        tpl = rawTpl as BoardTemplate;
+      }
+      if (!Array.isArray(tpl?.nodes) || !tpl.nodes.length) throw new Error("工作流文件里没有节点数据");
       // 只保留本版本认识的节点类型（旧版导入新版文件时跳过未知节点而不是报废整个文件）
-      const nodes = (raw.nodes as TemplateNode[]).filter((n) => n?.tid && n.kind in NODE_LABEL);
+      const nodes = tpl.nodes.filter((n) => n?.tid && n.kind in NODE_LABEL);
       if (!nodes.length) throw new Error("工作流文件里的节点类型都无法识别（可能来自更新版本的 MOMO）");
       const tids = new Set(nodes.map((n) => n.tid));
-      const edges = (Array.isArray(raw.edges) ? (raw.edges as TemplateEdge[]) : []).filter(
-        (e) => tids.has(e.sourceTid) && tids.has(e.targetTid),
-      );
-      const tpl: BoardTemplate = {
+      const edges = (tpl.edges ?? []).filter((e) => tids.has(e.sourceTid) && tids.has(e.targetTid));
+      const importTpl: BoardTemplate = {
         id: uid(8),
-        name: String(raw.name ?? "导入的工作流").slice(0, 40),
+        name: String(tpl.name ?? "导入的工作流").slice(0, 40),
         nodes,
         edges,
         createdAt: Date.now(),
       };
-      set((s) => ({ templates: [tpl, ...s.templates] }));
+      set((s) => ({ templates: [importTpl, ...s.templates] }));
       persist();
-      return tpl.name;
+      // requires 检测：本机缺哪些模型/协议，导入 UI 据此提示
+      const req = (payload.requires ?? {}) as { models?: string[]; protocols?: unknown[] };
+      const { useSettings } = await import("./settingsStore");
+      const haveModels = new Set<string>();
+      for (const p of useSettings.getState().settings.models.providers)
+        for (const r of Object.values(p.models)) for (const m of r?.models ?? []) haveModels.add(m);
+      const missingModels = (req.models ?? []).filter((m) => !haveModels.has(m));
+      return { name: importTpl.name, missing: { models: missingModels, protocols: [] } };
     },
 
     importViaDialog: async () => {
@@ -217,3 +219,21 @@ export const useTemplates = create<TemplateState>((set, get) => {
     },
   };
 });
+
+/** 存盘/下载 .momoflow 文件的公共逻辑（Tauri 走对话框，浏览器走下载） */
+async function saveFile(content: string, fname: string): Promise<string | null> {
+  if (isTauri) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({ defaultPath: fname, filters: [{ name: "MOMO 工作流", extensions: ["momoflow", "json"] }] });
+    if (!path) return null;
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+    await writeFile(path, new TextEncoder().encode(content));
+    return path;
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+  a.download = fname;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  return fname;
+}

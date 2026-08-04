@@ -15,6 +15,7 @@ import {
   IcBell,
   IcCheck,
   IcClose,
+  IcBlack,
   IcGallery,
   IcGear,
   IcHistory,
@@ -51,6 +52,106 @@ function useWindowControls() {
     await getCurrentWindow()[fn]();
   };
   return { maximized, call };
+}
+
+/** 画布历史弹窗：一页最多 6 列 × 2 行；超出分页，底部页码点，滚轮 / 拖拽空白处翻页 */
+function BoardHistoryPop({
+  list,
+  onPick,
+  onPurge,
+}: {
+  list: { meta: { id: string; name: string; updatedAt: number }; nodes: unknown[] }[];
+  onPick: (id: string) => void;
+  onPurge: (id: string) => void;
+}) {
+  const COLS_MAX = 6;
+  const ROWS = 2;
+  const cols = Math.min(COLS_MAX, Math.max(1, Math.ceil(list.length / ROWS)));
+  const perPage = cols * ROWS;
+  const pages = Math.max(1, Math.ceil(list.length / perPage));
+  const [page, setPage] = useState(0);
+  const drag = useRef<{ x: number; moved: boolean } | null>(null);
+  const cur = Math.min(page, pages - 1);
+  const items = list.slice(cur * perPage, cur * perPage + perPage);
+  const go = (d: number) => setPage((p) => Math.max(0, Math.min(pages - 1, p + d)));
+
+  return (
+    <div
+      className="board-pop glass bhist"
+      // 弹窗宽度跟着卡片数走：每列 158px + 间距，最多 6 列
+      style={{ width: cols * 158 + (cols - 1) * 8 + 20 }}
+      onWheel={(e) => {
+        if (pages < 2) return;
+        e.preventDefault();
+        go(e.deltaY > 0 || e.deltaX > 0 ? 1 : -1);
+      }}
+      onPointerDown={(e) => {
+        if ((e.target as HTMLElement).closest(".bcard, button")) return;
+        drag.current = { x: e.clientX, moved: false };
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d || d.moved) return;
+        const dx = e.clientX - d.x;
+        if (Math.abs(dx) > 48) {
+          d.moved = true;
+          go(dx < 0 ? 1 : -1);
+        }
+      }}
+      onPointerUp={() => (drag.current = null)}
+      onPointerLeave={() => (drag.current = null)}
+    >
+      <div className="bp-title">画布历史 · 除非手动删除，永久保留{pages > 1 ? "（滚轮 / 拖动空白处翻页）" : ""}</div>
+      {list.length === 0 ? (
+        <div className="brow" style={{ color: "var(--text-3)", cursor: "default" }}>
+          暂无历史画布——关闭标签后会收进这里
+        </div>
+      ) : (
+        <>
+          <div className="bp-grid" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+            {items.map((b) => (
+              <div key={b.meta.id} className="bcard" title="点击恢复该画布" onClick={() => onPick(b.meta.id)}>
+                <span className="bc-ic">
+                  <IcHistory size={16} />
+                </span>
+                <b>{b.meta.name}</b>
+                <span className="bc-meta">
+                  {new Date(b.meta.updatedAt).toLocaleDateString()} · {b.nodes.length} 节点
+                </span>
+                <button
+                  className="icon-btn danger bc-del"
+                  title="彻底删除（不可恢复）"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onPurge(b.meta.id);
+                  }}
+                >
+                  <IcTrash size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+          {pages > 1 ? (
+            <div className="bp-pager">
+              <span className="bp-pnum">
+                {cur + 1} / {pages}
+              </span>
+              <span className="bp-dots">
+                {Array.from({ length: pages }, (_, i) => (
+                  <button
+                    key={i}
+                    className={`bp-dot ${i === cur ? "on" : ""}`}
+                    title={`第 ${i + 1} 页`}
+                    onClick={() => setPage(i)}
+                  />
+                ))}
+              </span>
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
 }
 
 /** 浏览器式画布标签：单击切换 · 双击重命名 · × 关闭进历史 · + 新建 · 历史可恢复 */
@@ -139,46 +240,14 @@ function BoardTabs() {
         <IcHistory size={15} />
       </button>
       {histOpen ? (
-        <div className="board-pop glass">
-          <div className="bp-title">画布历史 · 除非手动删除，永久保留</div>
-          {histList.length === 0 ? (
-            <div className="brow" style={{ color: "var(--text-3)", cursor: "default" }}>
-              暂无历史画布——关闭标签后会收进这里
-            </div>
-          ) : (
-            <div className="bp-grid">
-              {histList.map((b) => (
-                <div
-                  key={b.meta.id}
-                  className="bcard"
-                  title="点击恢复该画布"
-                  onClick={() => {
-                    restoreBoard(b.meta.id);
-                    setHistOpen(false);
-                  }}
-                >
-                  <span className="bc-ic">
-                    <IcHistory size={18} />
-                  </span>
-                  <b>{b.meta.name}</b>
-                  <span className="bc-meta">
-                    {new Date(b.meta.updatedAt).toLocaleDateString()} · {b.nodes.length} 节点
-                  </span>
-                  <button
-                    className="icon-btn danger bc-del"
-                    title="彻底删除（不可恢复）"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      purgeBoard(b.meta.id);
-                    }}
-                  >
-                    <IcTrash size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <BoardHistoryPop
+          list={histList}
+          onPick={(id) => {
+            restoreBoard(id);
+            setHistOpen(false);
+          }}
+          onPurge={purgeBoard}
+        />
       ) : null}
     </div>
   );
@@ -214,8 +283,12 @@ function ErrCenter() {
     const fix = extractProtocolFix(text);
     if (!fix) return;
     const st = useSettings.getState();
-    st.update("customProtocols", [...st.settings.customProtocols.filter((x) => x.id !== fix.id), fix]);
-    toast(`已应用协议修复：「${fix.name}」，重新运行节点即可`, "ok");
+    // 原地替换，保持协议列表顺序（filter+push 会把协议甩到末尾，UI 里会突然跳位）
+    const list = st.settings.customProtocols;
+    const i = list.findIndex((x) => x.id === fix.id);
+    if (i < 0) return;
+    st.update("customProtocols", list.map((x, k) => (k === i ? fix : x)));
+    toast(`已应用协议修复：「${fix.name}」，重新运行节点即可（建议到「设置 → 协议」跑一次校准）`, "ok");
   };
 
   useEffect(() => {
@@ -352,7 +425,9 @@ function RunLogRow({ e }: { e: RunLogEntry }) {
 /** 运行日志中心：所有对外请求的流水（脱敏），排查中转站问题第一入口 */
 function RunLogCenter() {
   const entries = useRunLog((s) => s.entries);
-  const [open, setOpen] = useState(false);
+  // 开关放 store：标题栏按钮与快捷键共用同一状态
+  const open = useUi((s) => s.runLogOpen);
+  const setOpen = useUi((s) => s.setRunLogOpen);
   const [onlyBad, setOnlyBad] = useState(false);
   const [kw, setKw] = useState("");
   const ref = useRef<HTMLDivElement>(null);
@@ -425,7 +500,10 @@ function RunLogCenter() {
 
 export function Titlebar() {
   const theme = useSettings((s) => s.settings.theme);
+  const hotkeys = useSettings((s) => s.settings.hotkeys);
   const update = useSettings((s) => s.update);
+  /** 标题栏按钮的 title 后缀：显示当前绑定的快捷键（设置 → 快捷键 可改） */
+  const hk = (a: keyof typeof hotkeys) => (hotkeys[a] ? `（${hotkeys[a].replace(/\+/g, " + ").toUpperCase()}）` : "");
   const openSettings = useUi((s) => s.openSettings);
   const galleryOpen = useUi((s) => s.galleryOpen);
   const setGalleryOpen = useUi((s) => s.setGalleryOpen);
@@ -434,6 +512,8 @@ export function Titlebar() {
   const setLibOpen = useAssets((s) => s.setOpen);
   const charLibOpen = useUi((s) => s.charLibOpen);
   const setCharLibOpen = useUi((s) => s.setCharLibOpen);
+  const agentOpen = useUi((s) => s.agentOpen);
+  const setAgentOpen = useUi((s) => s.setAgentOpen);
   const { maximized, call } = useWindowControls();
 
   return (
@@ -446,33 +526,55 @@ export function Titlebar() {
       </div>
       <BoardTabs />
       <div className="spacer" data-tauri-drag-region />
+      <button
+        className={`icon-btn ${agentOpen ? "on" : ""}`}
+        title={
+          (agentOpen ? "收起创作助手" : "创作助手：侧边聊天完善想法/提示词（可附图/联网/语音通话），或 Agent 自动搜资料出图出片") +
+          hk("agent")
+        }
+        onClick={() => setAgentOpen(!agentOpen)}
+      >
+        <IcSparkles size={19} />
+      </button>
       <RunLogCenter />
       <ErrCenter />
       <button
         className={`icon-btn ${charLibOpen ? "on" : ""}`}
-        title="角色库：内置人物预设，一键生成整套角色素材"
+        title={`角色库：内置人物预设，一键生成整套角色素材${hk("charLib")}`}
         onClick={() => setCharLibOpen(!charLibOpen)}
       >
         <IcUsers size={19} />
       </button>
-      <button className={`icon-btn ${libOpen ? "on" : ""}`} title="资产库" onClick={() => setLibOpen(!libOpen)}>
+      <button className={`icon-btn ${libOpen ? "on" : ""}`} title={`资产库${hk("assets")}`} onClick={() => setLibOpen(!libOpen)}>
         <IcLibrary size={19} />
       </button>
       <button
         className={`icon-btn ${galleryOpen ? "on" : ""}`}
-        title={`生成记录${galleryCount ? `（${galleryCount}）` : ""}`}
+        title={`生成记录${galleryCount ? `（${galleryCount}）` : ""}${hk("gallery")}`}
         onClick={() => setGalleryOpen(!galleryOpen)}
       >
         <IcGallery size={19} />
       </button>
-      <button
-        className="icon-btn"
-        title={theme === "dark" ? "切换到白色主题" : "切换到深空蓝主题"}
-        onClick={() => update("theme", theme === "dark" ? "light" : "dark")}
-      >
-        {theme === "dark" ? <IcSun size={19} /> : <IcMoon size={19} />}
-      </button>
-      <button className="icon-btn" title="设置" onClick={() => openSettings()}>
+      {(() => {
+        // 三态轮换：云白 → 深空蓝 → 深邃黑 → 云白
+        const Icon = theme === "light" ? IcSun : theme === "dark" ? IcMoon : IcBlack;
+        const title =
+          theme === "light"
+            ? "当前：云白 · 点击切换到深空蓝"
+            : theme === "dark"
+              ? "当前：深空蓝 · 点击切换到深邃黑"
+              : "当前：深邃黑 · 点击切换到云白";
+        return (
+          <button
+            className="icon-btn"
+            title={title + hk("theme")}
+            onClick={() => update("theme", theme === "light" ? "dark" : theme === "dark" ? "black" : "light")}
+          >
+            <Icon size={19} />
+          </button>
+        );
+      })()}
+      <button className="icon-btn" title={`设置${hk("settings")}`} onClick={() => openSettings()}>
         <IcGear size={19} />
       </button>
       {isTauri ? (

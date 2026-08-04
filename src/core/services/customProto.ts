@@ -5,25 +5,57 @@
 import type { CustomProtocol } from "../types";
 import { xfetch } from "./http";
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((res, rej) => {
+    const done = () => signal?.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      clearTimeout(t);
+      done();
+      rej(new Error("已取消"));
+    };
+    const t = setTimeout(() => {
+      done();
+      res();
+    }, ms);
+    signal?.addEventListener("abort", onAbort);
+  });
 
-/** 简易 JSON 路径："data.url" / "data[].url" / "output[]"，[] 表示展开数组 */
+/** 简易 JSON 路径："data.url" / "data[].url" / "output[]" / "data[0].url"（[] 展开数组，[n] 取下标） */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export function jsonPath(obj: any, path: string): any[] {
+  // 路径缺失时直接返回空（协议里 statusPath 漏填会一路把 undefined 传进来，
+  // 老代码在这里 path.split 直接抛原生 TypeError 掐死整个任务）
+  if (!path || typeof path !== "string") return [];
   let cur: any[] = [obj];
   for (const seg of path.split(".").filter(Boolean)) {
-    const spread = seg.endsWith("[]");
-    const key = spread ? seg.slice(0, -2) : seg;
+    const m = seg.match(/^(.*?)\[(\d*)\]$/);
+    const key = m ? m[1] : seg;
+    const spread = !!m && m[2] === "";
+    const idx = m && m[2] !== "" ? Number(m[2]) : -1;
     const next: any[] = [];
     for (const c of cur) {
       const v = key ? c?.[key] : c;
       if (v === undefined || v === null) continue;
       if (spread && Array.isArray(v)) next.push(...v);
-      else next.push(v);
+      else if (idx >= 0 && Array.isArray(v)) {
+        if (v[idx] !== undefined && v[idx] !== null) next.push(v[idx]);
+      } else next.push(v);
     }
     cur = next;
   }
   return cur;
+}
+
+/** 相对地址补成绝对地址（中转站结果直链常给 /files/xx.png 或 //cdn.xx/xx.png） */
+export function absolutize(s: string, baseUrl: string): string {
+  if (/^(https?:|data:|blob:)/i.test(s)) return s;
+  if (s.startsWith("//")) return `https:${s}`;
+  if (!baseUrl) return s;
+  try {
+    return new URL(s, `${baseUrl.replace(/\/+$/, "")}/`).toString();
+  } catch {
+    return s;
+  }
 }
 
 /** 变量是否为空（"" 或 "[]" 都算空 —— {{images}} 无参考图时是空数组字面量） */
@@ -35,6 +67,11 @@ function isBlank(v: string | undefined): boolean {
  *  {{?var}}…{{/var}} 变量非空时保留块内容；{{^var}}…{{/var}} 变量为空时保留（else 分支）
  *  典型用法：URL 按有无参考图切换端点、body 里蒙版/图片字段按需出现 */
 export function render(tpl: string, vars: Record<string, string>): string {
+  // 对话模型常把 body 写成对象而不是字符串模板：这里换成中文提示，别让原生 TypeError 糊到用户脸上
+  if (typeof tpl !== "string")
+    throw new Error(
+      `协议模板字段不是字符串（收到 ${Array.isArray(tpl) ? "数组" : typeof tpl}）。请到「设置 → 协议」把 submit.body 写成 JSON 字符串模板，而不是嵌套对象`,
+    );
   const cond = tpl
     .replace(/\{\{\?(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (_, k, seg) => (isBlank(vars[k]) ? "" : seg))
     .replace(/\{\{\^(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (_, k, seg) => (isBlank(vars[k]) ? seg : ""));
@@ -56,6 +93,14 @@ export async function customFetch(
     ...(signal ? { signal } : {}),
     ...(cfg.body && method !== "GET" ? { body: render(cfg.body, vars) } : {}),
   });
+  // 二进制响应（TTS 最常见的形态就是直接回一段 audio/mpeg 流）：包成 { __binary: dataURL } 交给下游，
+  // 不能再无条件 JSON.parse —— 否则任何这类接口都会以「响应不是 JSON：ID3…」死在第一步
+  const ct = (resp.headers?.get?.("content-type") ?? "").toLowerCase();
+  if (resp.ok && ct && !/json|text|xml|html|javascript/.test(ct)) {
+    const blob = await resp.blob();
+    if (blob.size < 64) throw new Error(`请求成功但返回内容为空（${ct}）`);
+    return { __binary: await blobToDataUrl(blob, ct) };
+  }
   const text = await resp.text();
   if (!resp.ok) throw new Error(`请求失败 ${resp.status}: ${text.slice(0, 300)}`);
   try {
@@ -65,12 +110,28 @@ export async function customFetch(
   }
 }
 
+/** blob → dataURL（二进制响应统一转成 dataURL，与其它结果形态一致） */
+function blobToDataUrl(blob: Blob, mime: string): Promise<string> {
+  const b = blob.type ? blob : new Blob([blob], { type: mime.split(";")[0] || "application/octet-stream" });
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result as string);
+    r.onerror = () => rej(new Error("二进制响应读取失败"));
+    r.readAsDataURL(b);
+  });
+}
+
 /* ---------------- 宽容轮询 ----------------
    协议助手生成的 statusPath / doneValue / resultPath 常与中转站实际响应有出入，
    这里做多重兜底：状态字段按常见路径再找、完成/失败按常见取值识别、结果字段出现即视为完成 */
 
 export const DONE_SET = ["succeeded", "success", "succeed", "completed", "complete", "done", "finished"];
 export const FAIL_SET = ["failed", "fail", "error", "canceled", "cancelled", "timeout"];
+/** 明确表示「还在跑」的状态：此时哪怕响应里出现了 url 字段也不能判完成（多半是任务自链接） */
+export const PENDING_SET = [
+  "pending", "processing", "running", "queued", "queueing", "queuing", "in_queue", "inqueue",
+  "in_progress", "inprogress", "starting", "waiting", "submitted", "created", "not_start", "notstart",
+];
 const STATUS_PATHS = ["status", "data.status", "data[].status", "task_status", "data.task_status", "state", "data.state"];
 
 /** 常见图片/视频结果字段路径（协议路径未命中时兜底） */
@@ -91,6 +152,13 @@ const AUD_PATHS = [
   "data.audio", "audio", "result.audio_url", "data.result.audio_url", "output[].url", "url",
 ];
 
+/** 补轮询配置时继承提交请求的鉴权头（去掉 Content-Type，GET 不需要） */
+export function inheritAuthHeaders(submitHeaders?: Record<string, string>): Record<string, string> {
+  const src = Object.entries(submitHeaders ?? {}).filter(([k]) => !/^content-type$/i.test(k));
+  if (!src.length) return { Authorization: "Bearer {{apiKey}}" };
+  return Object.fromEntries(src);
+}
+
 /** 协议用途 → 结果媒体类型 */
 export function roleKind(role: string | undefined): "image" | "video" | "audio" {
   return role === "video" ? "video" : role === "audio" ? "audio" : "image";
@@ -105,8 +173,21 @@ function readStatus(pj: any, primary: string): string {
   return "";
 }
 
+/** 结果串看起来像"产物"而不是任务自链接（兜底完成判定用，避免把 status_url 当成图） */
+export function looksLikeAsset(s: string): boolean {
+  if (s.startsWith("data:") || s.startsWith("blob:")) return true;
+  if (s.length > 200) return true; // base64
+  if (!/^https?:\/\//i.test(s)) return false;
+  const path = s.split("?")[0].toLowerCase();
+  if (/\.(png|jpe?g|webp|gif|bmp|avif|mp4|webm|mov|m4v|mp3|wav|m4a|aac|flac|ogg)$/.test(path)) return true;
+  // 无扩展名的签名直链很常见，只排除明显的任务查询/回调地址
+  return !/(status|progress|cancel|callback|webhook|\/query|\/task|\/tasks|\/jobs?)\b/.test(path);
+}
+
 /** 按协议 resultPath 取结果字符串；未命中时按常见字段兜底 */
 export function extractResultStrings(final: any, primary: string, kind: "image" | "video" | "audio"): string[] {
+  // 二进制响应（customFetch 已转成 dataURL）：结果就是它本身，不必走路径
+  if (final && typeof final === "object" && typeof final.__binary === "string") return [final.__binary];
   const tryPath = (p: string) =>
     jsonPath(final, p)
       .map((v) => (typeof v === "string" ? v : ""))
@@ -124,6 +205,30 @@ export function extractResultStrings(final: any, primary: string, kind: "image" 
   return [];
 }
 
+/**
+ * 响应结构摘要：保留全部键路径，把超长字符串（base64/dataURL）换成占位说明。
+ * 现场只留 600 字符，直接 JSON.stringify 常常被一段 base64 撑满，
+ * 自愈时 AI 恰好看不到结果字段在哪 —— 只能靠猜改 resultPath，改错还要白花一次钱。
+ */
+function summarizeJson(v: unknown, depth = 0): unknown {
+  if (typeof v === "string") {
+    if (v.length <= 120) return v;
+    const what = v.startsWith("data:") ? "dataURL" : /^https?:/i.test(v) ? "长链接" : "长字符串";
+    return `<${what} ${v.length} 字符> ${v.slice(0, 48)}…`;
+  }
+  if (Array.isArray(v)) {
+    if (depth >= 6) return "<…>";
+    // 数组只留前两项（同构，够看出结构），并注明总长
+    const head = v.slice(0, 2).map((x) => summarizeJson(x, depth + 1));
+    return v.length > 2 ? [...head, `<共 ${v.length} 项>`] : head;
+  }
+  if (v && typeof v === "object") {
+    if (depth >= 6) return "<…>";
+    return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, summarizeJson(x, depth + 1)]));
+  }
+  return v;
+}
+
 /** 执行现场记录：脱敏（密钥→***）+ 截断后收进 trace，供自愈时交给 AI 分析 */
 function traceAdd(trace: string[] | undefined, label: string, text: string, secret?: string): number {
   if (!trace) return -1;
@@ -139,6 +244,7 @@ export async function runCustomFlow(
   vars: Record<string, string>,
   onProgress?: (msg: string) => void,
   trace?: string[],
+  signal?: AbortSignal,
 ): Promise<any> {
   traceAdd(
     trace,
@@ -146,8 +252,8 @@ export async function runCustomFlow(
     `${proto.submit.method ?? "POST"} ${render(proto.submit.url, vars)} body=${render(proto.submit.body ?? "", vars)}`,
     vars.apiKey,
   );
-  let final = await customFetch(proto.submit, vars);
-  traceAdd(trace, "提交响应", JSON.stringify(final), vars.apiKey);
+  let final = await customFetch(proto.submit, vars, signal);
+  traceAdd(trace, "提交响应", JSON.stringify(summarizeJson(final)), vars.apiKey);
   if (proto.taskIdPath) {
     let taskId = String(jsonPath(final, proto.taskIdPath)[0] ?? "");
     if (!taskId) {
@@ -183,7 +289,8 @@ export async function runCustomFlow(
     if (!proto.poll) {
       if (!altPoll) throw new Error(`协议「${proto.name}」是异步接口但缺少 poll 轮询配置`);
       // 协议没配轮询但服务商给了 status_url：直接按它轮询（宽容执行，别让配置缺口挡住任务）
-      proto = { ...proto, poll: { url: altPoll, method: "GET", headers: { Authorization: "Bearer {{apiKey}}" }, intervalMs: 3000, statusPath: "status", doneValue: "completed" } };
+      // 鉴权沿用 submit 已配好的那套：写死 Bearer 会让 X-API-Key / Token 风格的站点在轮询时必 401
+      proto = { ...proto, poll: { url: altPoll, method: "GET", headers: inheritAuthHeaders(proto.submit.headers), intervalMs: 3000, statusPath: "status", doneValue: "completed" } };
       traceAdd(trace, "轮询配置补全", `协议缺少 poll，已按提交响应的 status_url 轮询：${altPoll}`, vars.apiKey);
     }
     const pollCfg = { ...proto.poll! };
@@ -203,15 +310,21 @@ export async function runCustomFlow(
     traceAdd(trace, "轮询请求", `${pollCfg.method ?? "GET"} ${render(pollCfg.url, vars)}`, vars.apiKey);
     let pollSlot = -1;
     const kind = roleKind(proto.role);
-    const deadline = Date.now() + 10 * 60_000;
+    // 超时按用途区分：视频（尤其长片/高分辨率）排队 + 生成经常超过 10 分钟，
+    // 用一刀切的 10 分钟会在任务还在跑的时候误报超时
+    const deadline = Date.now() + (kind === "video" ? 30 : 10) * 60_000;
     let consecFail = 0;
     let blankStatus = 0; // 连续多少轮既读不到状态也没有结果（多半是轮询地址错但返回 200）
+    // 间隔钳制：AI 写出的 intervalMs:100 会每分钟打 600 次查询（直接吃 429），过大则一次都发不出去
+    const interval = Math.min(30_000, Math.max(1000, Math.round(Number(pollCfg.intervalMs) || 3000)));
     for (let i = 0; ; i++) {
-      await sleep(pollCfg.intervalMs ?? 3000);
-      if (Date.now() > deadline) throw new Error(`轮询超时（10 分钟），任务 ID：${taskId}`);
+      await sleep(interval, signal);
+      if (signal?.aborted) throw new Error("已取消");
+      if (Date.now() > deadline)
+        throw new Error(`轮询超时（${kind === "video" ? 30 : 10} 分钟），任务 ID：${taskId}`);
       let pj: any;
       try {
-        pj = await customFetch(pollCfg, vars);
+        pj = await customFetch(pollCfg, vars, signal);
         consecFail = 0;
       } catch (e) {
         // 单次查询失败不掐死任务（网络抖动/临时 5xx）：先试着换 status_url，连续多次才报错
@@ -225,7 +338,7 @@ export async function runCustomFlow(
       }
       // 现场只保留最近一次轮询响应（避免长任务把现场撑爆）
       if (trace) {
-        const raw = JSON.stringify(pj);
+        const raw = JSON.stringify(summarizeJson(pj));
         const entry = `【最近轮询响应】${(vars.apiKey ? raw.split(vars.apiKey).join("***") : raw).slice(0, 600)}`;
         if (pollSlot < 0) pollSlot = trace.push(entry) - 1;
         else trace[pollSlot] = entry;
@@ -234,8 +347,12 @@ export async function runCustomFlow(
       const sl = status.toLowerCase();
       if ((pollCfg.failValue && status === pollCfg.failValue) || FAIL_SET.includes(sl))
         throw new Error(`任务失败（状态 ${status || "未知"}）。响应：${JSON.stringify(pj).slice(0, 250)}`);
-      // 完成判定三重兜底：协议指定值 → 常见完成取值 → 结果字段已经出现
-      if (status === pollCfg.doneValue || DONE_SET.includes(sl) || extractResultStrings(pj, proto.resultPath, kind).length) {
+      // 完成判定三重兜底：协议指定值 → 常见完成取值 → 结果字段已经出现。
+      // 第三重要收紧：状态明确还在跑时，响应里的 url 多半是任务自链接/回调地址，
+      // 认成结果会导致「拿一份没出图的响应去取图」——白等 + 白扣费
+      const resHit = extractResultStrings(pj, proto.resultPath, kind);
+      const resSignal = resHit.length && (!PENDING_SET.includes(sl) || resHit.some(looksLikeAsset));
+      if (status === pollCfg.doneValue || DONE_SET.includes(sl) || resSignal) {
         final = pj;
         break;
       }
@@ -245,7 +362,7 @@ export async function runCustomFlow(
         continue;
       }
       if (status) blankStatus = 0;
-      const sec = Math.round(((i + 1) * (pollCfg.intervalMs ?? 3000)) / 1000);
+      const sec = Math.round(((i + 1) * interval) / 1000);
       onProgress?.(`生成中…（状态 ${status || "等待中"} · 已等待 ${Math.floor(sec / 60)}分${sec % 60}秒）`);
     }
   }

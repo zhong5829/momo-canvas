@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "description": "MOMO 公开发行包默认内置模型；均允许商业使用与再分发，发布时仍须保留署名。",
+  "models": [
+    {
+      "fileName": "4xNomosWebPhoto_esrgan_fp32_opset17.onnx",
+      "size": 67003044,
+      "sha256": "e29f473727ee0e32416d3a2d2642568e0159e2608d67236193772fced8696121",
+      "urls": [
+        "https://hf-mirror.com/nesaorg/4xNomosWebPhoto_esrgan_fp32_opset17/resolve/main/4xNomosWebPhoto_esrgan_fp32_opset17.onnx",
+        "https://huggingface.co/nesaorg/4xNomosWebPhoto_esrgan_fp32_opset17/resolve/main/4xNomosWebPhoto_esrgan_fp32_opset17.onnx"
+      ],
+      "license": "CC-BY-4.0",
+      "author": "Philip Hofmann"
+    },
+    {
+      "fileName": "4xNomosWebPhoto_RealPLKSR_fp32_opset17.onnx",
+      "size": 29805849,
+      "sha256": "146669e66cd3b22a4b97b0cf83f9bb2bcf20cd4ffd51fe76f91b95a4a8002df6",
+      "urls": [
+        "https://hf-mirror.com/nesaorg/4xNomosWebPhoto_RealPLKSR_fp32_opset17/resolve/main/4xNomosWebPhoto_RealPLKSR_fp32_opset17.onnx",
+        "https://huggingface.co/nesaorg/4xNomosWebPhoto_RealPLKSR_fp32_opset17/resolve/main/4xNomosWebPhoto_RealPLKSR_fp32_opset17.onnx"
+      ],
+      "license": "CC-BY-4.0",
+      "author": "Philip Hofmann"
+    },
+    {
+      "fileName": "4xNomosUni_span_multijpg_fp32_opset17.onnx",
+      "size": 1717409,
+      "sha256": "a435b009109e72c50ce95927dab0a6dde63e594cf57ba5a18ba63da67355698a",
+      "urls": [
+        "https://hf-mirror.com/nesaorg/4xNomosUni_span_multijpg_fp32_opset17/resolve/main/4xNomosUni_span_multijpg_fp32_opset17.onnx",
+        "https://huggingface.co/nesaorg/4xNomosUni_span_multijpg_fp32_opset17/resolve/main/4xNomosUni_span_multijpg_fp32_opset17.onnx"
+      ],
+      "license": "CC-BY-4.0",
+      "author": "Philip Hofmann"
+    },
+    {
+      "fileName": "1xDeJPG_realplksr_otf_60_fp32_opset17.onnx",
+      "size": 29613083,
+      "sha256": "6e445abdd309346fa930d26205ff5d61af1ddbe6cb43609301c5d5bb60368dc1",
+      "urls": [
+        "https://hf-mirror.com/nesaorg/1xDeJPG_realplksr_otf_60_fp32_opset17/resolve/main/1xDeJPG_realplksr_otf_60_fp32_opset17.onnx",
+        "https://huggingface.co/nesaorg/1xDeJPG_realplksr_otf_60_fp32_opset17/resolve/main/1xDeJPG_realplksr_otf_60_fp32_opset17.onnx"
+      ],
+      "license": "CC-BY-4.0",
+      "author": "Philip Hofmann"
+    }
+  ]
+}

@@ -115,7 +115,7 @@ export const PROTO_PRESETS: ProtoPreset[] = [
 export function applyProtoPreset(preset: ProtoPreset): string {
   const st = useSettings.getState();
   const s = st.settings;
-  const role = preset.proto.role === "video" ? "video" : "image";
+  const role = preset.proto.role === "video" ? "video" : preset.proto.role === "audio" ? "audio" : "image";
   const protos = [...s.customProtocols];
   const providers = s.models.providers.map((p) => ({ ...p, models: { ...p.models } }));
   const done: string[] = [];

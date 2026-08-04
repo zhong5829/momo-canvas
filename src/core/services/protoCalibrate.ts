@@ -5,17 +5,34 @@
  */
 import type { CustomProtocol } from "../types";
 import { trimBase } from "./http";
-import { DONE_SET, FAIL_SET, customFetch, extractResultStrings, jsonPath, render } from "./customProto";
+import {
+  DONE_SET,
+  FAIL_SET,
+  PENDING_SET,
+  customFetch,
+  extractResultStrings,
+  inheritAuthHeaders,
+  jsonPath,
+  looksLikeAsset,
+  render,
+} from "./customProto";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((res, rej) => {
-    const t = setTimeout(res, ms);
-    signal?.addEventListener("abort", () => {
+    // 监听要解绑：一次视频校准会睡上百次，监听器全挂在同一个 signal 上不释放
+    const done = () => signal?.removeEventListener("abort", onAbort);
+    const onAbort = () => {
       clearTimeout(t);
+      done();
       rej(new Error("已手动停止测试"));
-    });
+    };
+    const t = setTimeout(() => {
+      done();
+      res();
+    }, ms);
+    signal?.addEventListener("abort", onAbort);
   });
 
 type Found = { path: string; value: unknown };
@@ -48,14 +65,24 @@ function bfsFind(obj: any, pred: (key: string, value: any) => boolean, maxDepth 
   return null;
 }
 
-/** 定位任务 ID：先按明确字段名，再退回泛化的 id */
+/**
+ * 定位任务 ID：严格按书写顺序逐个找，最后才退回泛化的 id。
+ * 以前把 6 个键名塞进一次 BFS，实际胜出规则变成「层级最浅」——
+ * {"request_id":"req_…","output":{"task_id":"t_…"}}（阿里百炼/一众中转站的标准形态）
+ * 会选中链路追踪 ID 而不是任务 ID，轮询必 404，病因还完全指不出来。
+ */
 function findTaskId(j: any): Found | null {
-  const strict = ["task_id", "taskid", "job_id", "jobid", "request_id", "requestid"];
   const ok = (v: any) => (typeof v === "string" && v !== "") || typeof v === "number";
-  return (
-    bfsFind(j, (k, v) => strict.includes(k.toLowerCase()) && ok(v)) ??
-    bfsFind(j, (k, v) => k.toLowerCase() === "id" && ok(v))
-  );
+  // request_id 更常是链路追踪 ID，降到与裸 id 同级兜底
+  for (const key of ["task_id", "taskid", "job_id", "jobid"]) {
+    const hit = bfsFind(j, (k, v) => k.toLowerCase() === key && ok(v));
+    if (hit) return hit;
+  }
+  for (const key of ["id", "request_id", "requestid"]) {
+    const hit = bfsFind(j, (k, v) => k.toLowerCase() === key && ok(v));
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /** 定位状态字段 */
@@ -64,19 +91,39 @@ function findStatus(j: any): Found | null {
   return bfsFind(j, (k, v) => keys.includes(k.toLowerCase()) && typeof v === "string" && v !== "");
 }
 
+/** 轮询/回调地址类的键名 —— 它们是"去哪儿查"，绝不是结果 */
+const NON_RESULT_KEYS = [
+  "status_url", "statusurl", "task_url", "taskurl", "query_url", "queryurl",
+  "callback_url", "callbackurl", "webhook", "webhook_url", "cancel", "cancel_url", "response_url",
+  "get", "stream", "logs", "detail_url", "progress_url",
+];
+
 /** 定位提交响应里的轮询地址（status_url 风格） */
 function findStatusUrl(j: any): Found | null {
   const keys = ["status_url", "statusurl", "task_url", "query_url"];
   return bfsFind(j, (k, v) => keys.includes(k.toLowerCase()) && typeof v === "string" && v !== "");
 }
 
-/** 定位结果字段：先找键名像 url/image/video/b64 的资源串，再退回任意资源串 */
-function findResult(j: any): Found | null {
-  const looksRes = (v: any) =>
-    typeof v === "string" && (v.startsWith("http") || v.startsWith("data:image") || v.startsWith("data:video") || v.length > 500);
+/**
+ * 定位结果字段：先找键名像 url/image/video/b64 的资源串，再退回任意资源串。
+ *
+ * 三道闸（缺一不可，否则「已校准 ✓」这枚章就不可信）：
+ *  ① 键名黑名单：status_url / urls.get / callback_url 这些是轮询地址，不是结果；
+ *  ② 排除回显输入：网关常把请求参数原样回显，回显的正是我们自己造的那张测试图；
+ *  ③ http 串要"像产物"：仅仅是个 http 串不足以判定同步接口。
+ */
+function findResult(j: any, echoes?: Set<string>): Found | null {
+  const looksRes = (k: string, v: any) => {
+    if (typeof v !== "string" || !v) return false;
+    if (NON_RESULT_KEYS.includes(k.toLowerCase())) return false;
+    if (echoes?.has(v)) return false; // 就是我们刚发出去的那张测试图/蒙版
+    if (v.startsWith("data:image") || v.startsWith("data:video") || v.startsWith("data:audio")) return true;
+    if (v.length > 500) return true; // base64
+    return v.startsWith("http") && looksLikeAsset(v);
+  };
   return (
-    bfsFind(j, (k, v) => /url|image|video|b64|mp4/i.test(k) && looksRes(v)) ??
-    bfsFind(j, (_k, v) => looksRes(v))
+    bfsFind(j, (k, v) => /url|image|video|audio|b64|mp4|output|result/i.test(k) && looksRes(k, v)) ??
+    bfsFind(j, (k, v) => looksRes(k, v))
   );
 }
 
@@ -98,6 +145,25 @@ export function makeTestImage(): string {
   return c.toDataURL("image/jpeg", 0.85);
 }
 
+/**
+ * 生成一张 512×512 的测试蒙版（{{mask}} 占位用）：不透明黑底 + 中心透明圆 = 「重绘中心区域」。
+ * 以前直接复用 makeTestImage()，那是满幅不透明 JPEG（JPEG 根本没有 alpha 通道），
+ * 蒙版接口要么直接 400 把校准打死，要么勉强收下但等于没有可重绘区域。
+ */
+export function makeTestMask(): string {
+  const c = document.createElement("canvas");
+  c.width = 512;
+  c.height = 512;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, 512, 512);
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.beginPath();
+  ctx.arc(256, 256, 150, 0, Math.PI * 2);
+  ctx.fill();
+  return c.toDataURL("image/png");
+}
+
 export type CalibrateCtx = { baseUrl: string; apiKey: string; model: string };
 
 /**
@@ -116,37 +182,59 @@ export async function calibrateProtocol(
   const proto: CustomProtocol = JSON.parse(JSON.stringify(input));
   const kind = proto.role === "video" ? "video" : proto.role === "audio" ? "audio" : "image";
   const base = trimBase(ctx.baseUrl);
+  // 占位符检测要把 url 也算上：有的协议纯靠 url 条件块切换文生图/图生图端点
+  const tpl = [proto.submit.url, proto.submit.body ?? "", proto.poll?.url ?? "", proto.poll?.body ?? ""].join(" ");
+  const has = (k: string) => tpl.includes(`{{${k}}}`) || tpl.includes(`{{?${k}}}`) || tpl.includes(`{{^${k}}}`);
+  const testImg = has("image") || has("images") || has("image2") ? makeTestImage() : "";
+  const testMask = has("mask") ? makeTestMask() : "";
+  const rawPrompt =
+    kind === "video"
+      ? "测试：一只橘猫缓缓转头，简洁卡通风格"
+      : kind === "audio"
+        ? "测试：你好，这是一次语音合成测试。"
+        : "测试：一只可爱的橘猫，简洁卡通风格";
   const vars: Record<string, string> = {
     baseUrl: base,
     apiKey: ctx.apiKey,
     model: ctx.model,
-    prompt:
-      kind === "video"
-        ? "测试：一只橘猫缓缓转头，简洁卡通风格"
-        : kind === "audio"
-          ? "测试：你好，这是一次语音合成测试。"
-          : "测试：一只可爱的橘猫，简洁卡通风格",
-    voice: proto.submit.body?.includes("{{voice}}") ? "alloy" : "",
-    size: "1024x1024",
+    // 与运行期同款 JSON 转义（模板里 {{prompt}} 是写在引号内的）
+    prompt: JSON.stringify(rawPrompt).slice(1, -1),
+    voice: has("voice") ? "alloy" : "",
+    size: kind === "video" ? "854x480" : "1024x1024",
     n: "1",
     taskId: "",
-    image: proto.submit.body?.includes("{{image}}") || proto.poll?.body?.includes("{{image}}") ? makeTestImage() : "",
-    image2: proto.submit.body?.includes("{{image2}}") ? makeTestImage() : "",
-    images: proto.submit.body?.includes("{{images}}") ? JSON.stringify([makeTestImage()]) : "[]",
-    mask: proto.submit.body?.includes("{{mask}}") ? makeTestImage() : "",
+    quality: "",
+    image: has("image") ? testImg : "",
+    image2: has("image2") ? testImg : "",
+    images: has("images") ? JSON.stringify([testImg]) : "[]",
+    mask: testMask,
+    video: "",
+    refAudio: "",
     // 视频家族参数：校准时给一组便宜的最小值（时长最短、分辨率最低）
     duration: kind === "video" ? "5" : "",
     resolution: kind === "video" ? "480p" : "",
     aspect: kind === "video" ? "16:9" : "",
     audio: kind === "video" ? "false" : "",
   };
+  // 网关常把请求参数原样回显：这些串出现在响应里不能当成"生成结果"
+  const echoes = new Set([testImg, testMask].filter(Boolean));
 
-  onLog(`① 发送提交请求：${render(proto.submit.url, vars)}`);
-  const submitJ = await customFetch(proto.submit, vars, signal);
+  onLog(`① 发送提交请求：${render(proto.submit.url, vars)}${testImg ? "（带一张 512×512 测试图）" : ""}`);
+  let submitJ: any;
+  try {
+    submitJ = await customFetch(proto.submit, vars, signal);
+  } catch (e) {
+    bail(); // 提交阶段点了「停止测试」→ 给中文说明（含费用提示），不要抛 plugin-http 的英文原生中断错误
+    throw e;
+  }
   onLog(`✓ 提交成功，响应：${JSON.stringify(submitJ).slice(0, 220)}`);
 
   let final: any = submitJ;
-  const syncHit = findResult(submitJ);
+  // 同步判定：提交响应带 status_url 就一定是异步（那是"去哪儿查"，不是结果）。
+  // 以前 findResult 会把 status_url / 回显的测试图当成结果，于是异步协议被判成同步、
+  // poll 被静默删掉，最后还照样盖「已校准」章 —— 上画布才炸，且完全指不出病因。
+  const submitStatusUrl = findStatusUrl(submitJ);
+  const syncHit = submitStatusUrl ? null : findResult(submitJ, echoes);
 
   if (syncHit) {
     // 提交即出结果 → 同步接口
@@ -168,7 +256,7 @@ export async function calibrateProtocol(
     vars.taskId = String(t.value);
 
     // 提交响应若自带轮询地址，作为轮询失败时的替补
-    const su = findStatusUrl(submitJ);
+    const su = submitStatusUrl;
     let suTpl: string | null = null;
     if (su) {
       const abs = String(su.value).startsWith("http") ? String(su.value) : new URL(String(su.value), `${base}/`).toString();
@@ -178,20 +266,29 @@ export async function calibrateProtocol(
     if (!proto.poll) {
       if (!suTpl) throw new Error("接口是异步的，但协议没有 poll 配置、提交响应也没给轮询地址，无法校准");
       onLog(`✓ 协议缺少 poll 配置，按提交响应的 status_url 补全：${suTpl}`);
-      proto.poll = { url: suTpl, method: "GET", headers: { Authorization: "Bearer {{apiKey}}" }, intervalMs: 3000, statusPath: "status", doneValue: "succeeded", failValue: "failed" };
+      // 鉴权继承 submit（写死 Bearer 会让 X-API-Key / Token 风格的站点轮询必 401，且这条路径下换地址的兜底也不成立）
+      const inherited = inheritAuthHeaders(proto.submit.headers);
+      onLog(`　 轮询鉴权沿用提交请求的头：${Object.keys(inherited).join("、")}`);
+      proto.poll = { url: suTpl, method: "GET", headers: inherited, intervalMs: 3000, statusPath: "status", doneValue: "succeeded", failValue: "failed" };
     }
 
     onLog(`② 开始轮询：${render(proto.poll.url, vars)}`);
-    const deadline = Date.now() + 10 * 60_000;
+    // 超时按用途区分（与执行器一致）：视频排队 + 出片经常超过 10 分钟
+    const limitMin = kind === "video" ? 30 : 10;
+    const deadline = Date.now() + limitMin * 60_000;
+    const interval = Math.min(30_000, Math.max(1000, Math.round(Number(proto.poll.intervalMs) || 3000)));
     let switched = false;
+    let consecFail = 0;
     let statusFound: Found | null = null;
     for (let i = 0; ; i++) {
-      await sleep(proto.poll.intervalMs ?? 3000, signal);
+      await sleep(interval, signal);
       bail();
-      if (Date.now() > deadline) throw new Error("轮询超时（10 分钟）：任务可能仍在生成，也可能状态接口不对");
+      if (Date.now() > deadline)
+        throw new Error(`轮询超时（${limitMin} 分钟）：任务可能仍在生成，也可能状态接口不对`);
       let pj: any;
       try {
         pj = await customFetch(proto.poll, vars, signal);
+        consecFail = 0;
       } catch (e) {
         bail();
         if (suTpl && proto.poll.url !== suTpl && !switched) {
@@ -201,13 +298,21 @@ export async function calibrateProtocol(
           switched = true;
           continue;
         }
-        throw e;
+        // 单次抖动不该作废整次付费测试（提交请求的钱已经花了）：与执行器一致，连续 5 次才放弃
+        if (++consecFail >= 5) throw e;
+        onLog(`△ 轮询请求失败（第 ${consecFail} 次，将重试）：${e instanceof Error ? e.message.slice(0, 120) : String(e)}`);
+        continue;
       }
       statusFound = findStatus(pj);
       const st = String(statusFound?.value ?? "");
-      if ((proto.poll.failValue && st === proto.poll.failValue) || FAIL_SET.includes(st.toLowerCase()))
+      const sl = st.toLowerCase();
+      if ((proto.poll.failValue && st === proto.poll.failValue) || FAIL_SET.includes(sl))
         throw new Error(`任务失败（状态 ${st}）。响应：${JSON.stringify(pj).slice(0, 250)}`);
-      const done = findResult(pj) || DONE_SET.includes(st.toLowerCase()) || st === proto.poll.doneValue;
+      const statusDone = DONE_SET.includes(sl) || st === proto.poll.doneValue;
+      const resHit = findResult(pj, echoes);
+      // 完成判定双确认：状态明确还在跑时，响应里的资源串多半是任务自链接/回显输入，
+      // 认成完成会把「进行中」的状态反写成 doneValue，协议从此每次都在第一轮就误判完成
+      const done = statusDone || (!!resHit && (!st || !PENDING_SET.includes(sl)));
       if (done) {
         final = pj;
         // 校准状态字段与完成取值（以实测为准）
@@ -216,9 +321,12 @@ export async function calibrateProtocol(
             onLog(`✓ 校准 statusPath：「${proto.poll.statusPath}」→「${statusFound.path}」`);
             proto.poll.statusPath = statusFound.path;
           }
-          if (st && proto.poll.doneValue !== st) {
+          // 只有"确实靠状态判完成"时才敢改写 doneValue，否则会把 processing 写成完成值
+          if (st && proto.poll.doneValue !== st && statusDone) {
             onLog(`✓ 校准 doneValue：「${proto.poll.doneValue}」→「${st}」（完成时的实测状态）`);
             proto.poll.doneValue = st;
+          } else if (st && proto.poll.doneValue !== st) {
+            onLog(`△ 本轮靠结果字段判定完成（实测状态「${st}」不像完成态），doneValue 保留「${proto.poll.doneValue}」未改写`);
           }
         } else {
           onLog("△ 轮询响应里没有状态字段：完成判定依赖结果字段出现（执行器已支持，无需修改）");
@@ -232,9 +340,9 @@ export async function calibrateProtocol(
   // 校准结果路径：协议路径在最终响应上取不到时，改成实测位置
   const primaryHit = jsonPath(final, proto.resultPath)
     .map((v) => (typeof v === "string" ? v : ""))
-    .filter((s) => s.length > 4);
+    .filter((s) => s.length > 4 && !echoes.has(s));
   if (!primaryHit.length) {
-    const r = findResult(final);
+    const r = findResult(final, echoes);
     if (!r)
       throw new Error(
         `最终响应里找不到结果字段。可对照上方响应 JSON，把 resultPath 手工改成结果所在路径（数组层级加 []，如 data.result.images[].url[]）后再测；或到报错中心用「AI 分析」帮你定位。响应：${JSON.stringify(final).slice(0, 250)}`,
@@ -244,7 +352,16 @@ export async function calibrateProtocol(
   } else {
     onLog(`✓ resultPath 与实测一致（${proto.resultPath}）`);
   }
-  const results = extractResultStrings(final, proto.resultPath, kind);
+  const results = extractResultStrings(final, proto.resultPath, kind).filter((s) => !echoes.has(s));
+  if (!results.length)
+    throw new Error(
+      `按 resultPath「${proto.resultPath}」取到的内容不是有效结果（可能取到的是回显的输入图或任务地址）。请对照上方响应 JSON 手工修正后再测。响应：${JSON.stringify(final).slice(0, 250)}`,
+    );
   onLog(`③ 测试通过：取到 ${results.length} 个结果，首个：${results[0]?.slice(0, 80)}…`);
+  // 条件块协议的两条端点分支只跑了一条，明说清楚，别让「已校准」被误解成"全都测过了"
+  if (/\{\{[?^]\w+\}\}/.test(tpl))
+    onLog(
+      `△ 该协议用条件块切换分支，本次只实测了「${testImg ? "带参考图" : "不带参考图"}」这一条路径（端点 ${render(proto.submit.url, vars)}）。另一条分支建议改一下模板占位符再测一遍。`,
+    );
   return { proto, results };
 }

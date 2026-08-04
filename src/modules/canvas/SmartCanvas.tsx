@@ -1,8 +1,8 @@
 /**
  * 智能画布 — 单一画布范式：
  *  移动工具（V，默认）：左键拖空白平移 · 点击选择 · 长按节点拖动
- *  框选模式：左键框选（Ctrl+框选可选中连线批量删）· 中/右键或空格平移
- *  滚轮缩放 · 双击空白添加节点 · 拖线到空白快速建节点 · 拖入图片/文本 · Ctrl+V 粘贴
+ *  框选模式：左键框选（Ctrl+框选可选中连线批量删）· 中键或空格平移
+ *  滚轮缩放 · 右键空白/节点弹快捷菜单 · 双击空白添加节点 · 拖线到空白快速建节点 · 拖入图片/文本 · Ctrl+V 粘贴
  *  拖节点时鼠标悬到目标节点上自动连线（左半=作上游，右半=作下游，虚线框预告）· G 建组 · I 忽略 · Ctrl+Z/Y 撤销重做
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -14,10 +14,12 @@ import {
   SelectionMode,
   useReactFlow,
   useStore,
+  ViewportPortal,
   type Connection,
   type Edge,
   type FinalConnectionState,
   type NodeTypes,
+  type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "./canvas.css";
@@ -31,14 +33,20 @@ import { useAssets } from "../../core/stores/assetStore";
 import { assetToDataUrl, assetUrl } from "../../core/services/assetFiles";
 import { videoDuration } from "../../core/videoEdit";
 import { AudioConfigPanel, GenConfigPanel, VideoConfigPanel } from "./GenConfigPanel";
-import type { AppNode, BoardTemplate, NodeKind, PortType } from "../../core/types";
+import { ComfyConfigPanel } from "./ComfyConfigPanel";
+import { EnhanceConfigPanel, VectorizeConfigPanel } from "./EditPanels";
+import { isVoiceCallActive, startVoiceCall, stopVoiceCall } from "../../core/voiceChat";
+import type { AppNode, BoardTemplate, NodeKind } from "../../core/types";
 import { errMsg, fileToDataUrl, matchHotkey } from "../../core/utils";
 import { NODE_CATALOG } from "./nodeCatalog";
+import { FlowEdge } from "./FlowEdge";
 import { AddNodeMenu } from "./AddNodeMenu";
 import { CanvasSearch, Spotlight } from "./CanvasPalette";
 import { AiWirePanel } from "./AiWirePanel";
-import { runAllFlows } from "../../core/runner";
-import { IcCursor, IcEyeOff, IcFit, IcGroup, IcLock, IcLogo, IcPlay, IcPlus, IcMin, IcTrash, IcUndo, IcRedo, IcWand } from "../../ui/icons";
+import { runAllFlows, runFlow } from "../../core/runner";
+import { abortAll, abortNode, useRunTasks } from "../../core/runControl";
+import { ContextMenu, type CmItem } from "./ContextMenu";
+import { IcBulb, IcCursor, IcEyeOff, IcFit, IcGroup, IcLock, IcLogo, IcOrbit, IcPlay, IcPlus, IcMin, IcTrash, IcUndo, IcRedo, IcUpscale, IcVector, IcWand } from "../../ui/icons";
 
 import { ImageNode } from "./nodes/ImageNode";
 import { PromptNode } from "./nodes/PromptNode";
@@ -46,7 +54,6 @@ import { ChatNode } from "./nodes/ChatNode";
 import { ImageGenNode } from "./nodes/ImageGenNode";
 import { VideoGenNode } from "./nodes/VideoGenNode";
 import { ComfyNode } from "./nodes/ComfyNode";
-import { CaptionNode } from "./nodes/CaptionNode";
 import { LlmTextNode } from "./nodes/LlmTextNode";
 import { CombineNode } from "./nodes/CombineNode";
 import { StylePresetNode } from "./nodes/StylePresetNode";
@@ -55,20 +62,13 @@ import { GroupNode } from "./nodes/GroupNode";
 import { RelightNode } from "./nodes/RelightNode";
 import { MultiAngleNode } from "./nodes/MultiAngleNode";
 import { CharCardNode } from "./nodes/CharCardNode";
-import { ResizeNode } from "./nodes/ResizeNode";
-import { InpaintNode } from "./nodes/InpaintNode";
-import { OutpaintNode } from "./nodes/OutpaintNode";
-import { MattingNode } from "./nodes/MattingNode";
-import { EnhanceNode } from "./nodes/EnhanceNode";
-import { CropNode } from "./nodes/CropNode";
-import { FrameNode } from "./nodes/FrameNode";
-import { VideoTrimNode } from "./nodes/VideoTrimNode";
-import { VideoConcatNode } from "./nodes/VideoConcatNode";
 import { StoryboardNode } from "./nodes/StoryboardNode";
 import { VideoNode, importVideoFile } from "./nodes/VideoNode";
 import { AudioNode, importAudioFile } from "./nodes/AudioNode";
 import { AudioGenNode } from "./nodes/AudioGenNode";
 import { VideoDubNode } from "./nodes/VideoDubNode";
+import { EnhanceLocalNode } from "./nodes/EnhanceLocalNode";
+import { VectorizeNode } from "./nodes/VectorizeNode";
 
 /** 一键清空画布：首次点击进入确认态（2.5 秒内再点执行），入撤销历史可 Ctrl+Z 恢复 */
 function ClearAllBtn() {
@@ -107,7 +107,6 @@ const nodeTypes: NodeTypes = {
   imageGen: ImageGenNode,
   videoGen: VideoGenNode,
   comfy: ComfyNode,
-  caption: CaptionNode,
   llmText: LlmTextNode,
   combine: CombineNode,
   stylePreset: StylePresetNode,
@@ -116,17 +115,16 @@ const nodeTypes: NodeTypes = {
   relight: RelightNode,
   multiAngle: MultiAngleNode,
   charCard: CharCardNode,
-  resize: ResizeNode,
-  inpaint: InpaintNode,
-  outpaint: OutpaintNode,
-  matting: MattingNode,
-  enhance: EnhanceNode,
-  crop: CropNode,
-  frame: FrameNode,
-  videoTrim: VideoTrimNode,
-  videoConcat: VideoConcatNode,
   storyboard: StoryboardNode,
+  enhanceLocal: EnhanceLocalNode,
+  vectorize: VectorizeNode,
 };
+
+/** 统一走自定义边：端点内伸贴框 + 悬停剪刀 + 选中脉冲 */
+const edgeTypes = { momo: FlowEdge };
+
+/** 应用内部发起了拖拽（dragstart 于本窗口内）：onDrop 时据此跳过"文字落地建节点" */
+let internalTextDrag = false;
 
 /** Ctrl + 框选结束后，把与选框相交的连线也选中（便于批量删除连线） */
 function EdgeBoxSelect() {
@@ -171,7 +169,24 @@ function EdgeBoxSelect() {
   return null;
 }
 
-/** 拖线松手命中节点时的强吸附连接：按线头类型接到目标节点匹配的端口（查重、防环），不必对准端口点 */
+/** 拖动吸附对齐的参考线（flow 坐标系内画，横/竖贯穿视口） */
+function AlignGuides() {
+  const g = useUi((s) => s.alignGuides);
+  if (!g) return null;
+  const SPAN = 100000;
+  return (
+    <ViewportPortal>
+      {g.x !== null ? (
+        <div className="align-guide v" style={{ transform: `translate(${g.x}px, ${-SPAN / 2}px)`, height: SPAN }} />
+      ) : null}
+      {g.y !== null ? (
+        <div className="align-guide h" style={{ transform: `translate(${-SPAN / 2}px, ${g.y}px)`, width: SPAN }} />
+      ) : null}
+    </ViewportPortal>
+  );
+}
+
+/** 拖线松手命中节点时的强吸附连接（端口统一后：单口只要"能出→能入"即可连，查重、防环），不必对准端口点 */
 function snapConnection(
   from: AppNode,
   fromHandle: { id?: string | null; type?: string | null },
@@ -179,50 +194,46 @@ function snapConnection(
   nodes: AppNode[],
   edges: Edge[],
 ): Connection | null {
-  const IN_PORT: Record<string, PortType> = { "in-text": "text", "in-image": "image", "in-video": "video", "in-audio": "audio" };
+  const canOut = (n: AppNode): boolean =>
+    n.type === "group"
+      ? nodes.some((m) => m.parentId === n.id)
+      : !!outPortType(n.type as NodeKind, n.data as Record<string, unknown>);
+  const canIn = (n: AppNode): boolean => {
+    if (n.type === "group" || n.type === "note") return false; // 组/备注不能作下游
+    const ins = NODE_INPUTS[n.type as NodeKind];
+    return !!ins && Object.keys(ins).length > 0;
+  };
   if (fromHandle.type === "source") {
-    if (hit.type === "group" || hit.type === "note") return null; // 组/备注不能作下游
-    const pt =
-      from.type === "group"
-        ? fromHandle.id === "out-image"
-          ? ("image" as const)
-          : fromHandle.id === "out-video"
-            ? ("video" as const)
-            : ("text" as const)
-        : outPortType(from.type as NodeKind, from.data as Record<string, unknown>);
-    if (!pt) return null;
-    const ins = NODE_INPUTS[hit.type as NodeKind] ?? {};
-    const targetHandle =
-      pt === "image" ? (ins.image ? "in-image" : null)
-      : pt === "video" ? (ins.video ? "in-video" : null)
-      : pt === "audio" ? (ins.audio ? "in-audio" : null)
-      : ins.text ? "in-text" : null;
-    if (!targetHandle) return null;
-    if (edges.some((e) => e.source === from.id && e.target === hit.id && e.targetHandle === targetHandle)) return null;
+    // 从 from 输出口拖 → from 作上游、hit 作下游
+    if (!canOut(from) || !canIn(hit)) return null;
+    if (edges.some((e) => e.source === from.id && e.target === hit.id)) return null;
     if (wouldCycle(edges, from.id, hit.id)) return null;
-    return { source: from.id, target: hit.id, sourceHandle: fromHandle.id ?? "out", targetHandle };
+    return { source: from.id, target: hit.id, sourceHandle: fromHandle.id ?? "out", targetHandle: "in" };
   }
-  // 从输入口反向拖线：命中的节点作上游
-  const want = fromHandle.id ? IN_PORT[fromHandle.id] : undefined;
-  if (!want) return null;
-  let sourceHandle = "out";
-  if (hit.type === "group") {
-    if (want === "audio") return null; // 组框没有音频出口
-    const members = nodes.filter((n) => n.parentId === hit.id);
-    if (!members.some((m) => outPortType(m.type as NodeKind, m.data as Record<string, unknown>) === want)) return null;
-    sourceHandle = `out-${want}`;
-  } else if (outPortType(hit.type as NodeKind, hit.data as Record<string, unknown>) !== want) {
-    return null;
-  }
-  if (edges.some((e) => e.source === hit.id && e.target === from.id && e.targetHandle === fromHandle.id)) return null;
+  // 从 from 输入口反向拖 → hit 作上游、from 作下游
+  if (!canOut(hit) || !canIn(from)) return null;
+  if (edges.some((e) => e.source === hit.id && e.target === from.id)) return null;
   if (wouldCycle(edges, hit.id, from.id)) return null;
-  return { source: hit.id, target: from.id, sourceHandle, targetHandle: fromHandle.id ?? null };
+  return { source: hit.id, target: from.id, sourceHandle: "out", targetHandle: "in" };
 }
 
 export function SmartCanvas() {
   const nodes = useBoard((s) => s.nodes);
   const edges = useBoard((s) => s.edges);
-  const onNodesChange = useBoard((s) => s.onNodesChange);
+  const rawOnNodesChange = useBoard((s) => s.onNodesChange);
+  // 点击节点内的交互控件不应选中节点、不应弹出底部生成面板：
+  // canvas-wrap 的 onClickCapture 会打标记，这里把那次点击产生的 select 变更滤掉，保持节点原选中状态
+  const onNodesChange = useCallback(
+    (changes: NodeChange<AppNode>[]) => {
+      if (clickOnControl.current) {
+        clickOnControl.current = false;
+        rawOnNodesChange(changes.filter((c) => c.type !== "select"));
+        return;
+      }
+      rawOnNodesChange(changes);
+    },
+    [rawOnNodesChange],
+  );
   const onEdgesChange = useBoard((s) => s.onEdgesChange);
   const onConnect = useBoard((s) => s.onConnect);
   const addNode = useBoard((s) => s.addNode);
@@ -246,6 +257,7 @@ export function SmartCanvas() {
   const groupDraw = useUi((s) => s.groupDraw);
   const setGroupDraw = useUi((s) => s.setGroupDraw);
   const popLock = useUi((s) => s.popLock);
+  const aiWireOpen = useUi((s) => s.aiWireOpen);
   const togglePopLock = useUi((s) => s.togglePopLock);
   const hotkeys = useSettings((s) => s.settings.hotkeys);
   const dockShift = galleryOpen && !zen ? 304 : 0;
@@ -266,50 +278,42 @@ export function SmartCanvas() {
   }, [activeId, applyViewport, fitView]);
   const [drawRect, setDrawRect] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  // 点击节点内的交互控件（按钮/输入/选择/富文本编辑器）时置 true：阻止这次点击选中节点 / 弹出底部面板
+  const clickOnControl = useRef(false);
 
-  /* ---- Ctrl 框选中：被框住的节点之间的连线高亮（多选才亮，单击不亮） ---- */
+  /* ---- 标记"应用内部发起的拖拽"：提示词里选中一段文字往外拖这类操作，drop 时不再生成新节点；
+         外部应用拖文字/文件进来不受影响（外部拖拽不会在本窗口触发 dragstart） ---- */
+  useEffect(() => {
+    const onStart = () => {
+      internalTextDrag = true;
+    };
+    const onEnd = () => {
+      internalTextDrag = false;
+    };
+    window.addEventListener("dragstart", onStart, true);
+    window.addEventListener("dragend", onEnd, true);
+    return () => {
+      window.removeEventListener("dragstart", onStart, true);
+      window.removeEventListener("dragend", onEnd, true);
+    };
+  }, []);
+
+  /* ---- Ctrl 框选中：被框住的节点之间的连线高亮（多选才亮，单击不亮）；所有连线统一换自定义边类型 ---- */
   const displayEdges = useMemo(() => {
     const sel = new Set(nodes.filter((n) => n.selected).map((n) => n.id));
-    if (sel.size < 2) return edges;
     return edges.map((e) =>
-      sel.has(e.source) && sel.has(e.target)
-        ? { ...e, className: `${e.className ?? ""} hl`.trim() }
-        : e,
+      sel.size >= 2 && sel.has(e.source) && sel.has(e.target)
+        ? { ...e, type: "momo", className: `${e.className ?? ""} hl`.trim() }
+        : { ...e, type: "momo" },
     );
   }, [nodes, edges]);
 
-  /* ---- 连线校验 ---- */
+  /* ---- 连线校验：端口统一后不再按类型拒连，只防"同对重复边"和"成环" ---- */
   const isValidConnection = useCallback((conn: Edge | Connection) => {
     const s = useBoard.getState();
     if (!conn.source || !conn.target || conn.source === conn.target) return false;
-    const src = s.nodes.find((n) => n.id === conn.source);
-    if (!src) return false;
-    const pt =
-      src.type === "group"
-        ? conn.sourceHandle === "out-image"
-          ? "image"
-          : conn.sourceHandle === "out-video"
-            ? "video"
-            : conn.sourceHandle === "out-text"
-              ? "text"
-              : null
-        : outPortType(src.type as NodeKind, src.data as Record<string, unknown>);
-    if (!pt) return false;
-    const want =
-      conn.targetHandle === "in-text"
-        ? "text"
-        : conn.targetHandle === "in-image"
-          ? "image"
-          : conn.targetHandle === "in-video"
-            ? "video"
-            : conn.targetHandle === "in-audio"
-              ? "audio"
-              : null;
-    if (want !== pt) return false;
-    if (s.edges.some((e) => e.source === conn.source && e.target === conn.target && e.targetHandle === conn.targetHandle))
-      return false;
-    // 已是自己的上游就不能再接成自己的下游（禁止互连/成环）
-    if (wouldCycle(s.edges, conn.source, conn.target)) return false;
+    if (s.edges.some((e) => e.source === conn.source && e.target === conn.target)) return false;
+    if (wouldCycle(s.edges, conn.source, conn.target, s.nodes)) return false;
     return true;
   }, []);
 
@@ -336,22 +340,19 @@ export function SmartCanvas() {
       }
 
       if (state.fromHandle.type !== "source") return;
+      // 端口统一后：菜单不再按类型过滤候选，sourcePort 仅作提示（组混合输出 → undefined）
       const pt =
         state.fromNode.type === "group"
-          ? state.fromHandle.id === "out-image"
-            ? ("image" as const)
-            : state.fromHandle.id === "out-video"
-              ? ("video" as const)
-              : ("text" as const)
+          ? null
           : outPortType(state.fromNode.type as NodeKind, state.fromNode.data as Record<string, unknown>);
-      if (!pt) return;
+      if (!pt && state.fromNode.type !== "group") return;
       setAddMenu({
         flowX: flow.x,
         flowY: flow.y,
         screenX: client.x,
         screenY: client.y,
         sourceNode: state.fromNode.id,
-        sourcePort: pt,
+        sourcePort: pt ?? undefined,
       });
     },
     [screenToFlowPosition, getIntersectingNodes, setAddMenu],
@@ -368,6 +369,123 @@ export function SmartCanvas() {
       }
     },
     [screenToFlowPosition, setAddMenu],
+  );
+
+  /* ---- 右键菜单：画布空白 / 节点 各一套 ---- */
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; items: CmItem[] } | null>(null);
+
+  const GROUP_LABEL: Record<string, string> = {
+    输入: "素材 / 文字",
+    智能: "智能加工",
+    生成: "生成",
+    编辑: "编辑处理",
+    视频: "视频",
+    角色: "角色",
+  };
+  /** 空白处右键：就近添加各类节点 + 画布级动作 */
+  const onPaneContextMenu = useCallback(
+    (e: React.MouseEvent | { clientX: number; clientY: number; preventDefault: () => void }) => {
+      e.preventDefault();
+      const flow = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      const addItems: CmItem[] = NODE_CATALOG.filter((c) => c.kind !== "chat" && c.kind !== "llmText").map((c) => ({
+        label: c.label,
+        icon: c.icon,
+        group: GROUP_LABEL[c.group] ?? c.group,
+        onClick: () => {
+          useUi.getState().setGenPanelSuppressed(false);
+          const id = useBoard.getState().addNode(c.kind, { x: flow.x - 40, y: flow.y - 30 });
+          window.setTimeout(() => useBoard.getState().proximityConnect(id, flow), 220);
+        },
+      }));
+      const hasTasks = Object.keys(useRunTasks.getState().tasks).length > 0;
+      const items: CmItem[] = [
+        ...addItems,
+        { sep: true },
+        { group: "画布", label: "适应全部", onClick: () => void fitView({ duration: 250, padding: 0.15, maxZoom: 1 }) },
+        {
+          group: "画布",
+          label: "导出当前画布…",
+          onClick: () => {
+            const b = useBoard.getState();
+            const name = b.boards[b.activeId]?.meta.name ?? "画布";
+            const withMedia = window.confirm(
+              "是否包含画布上的图片/视频素材？\n\n• 确定 = 含素材：对方导入即用（文件较大）\n• 取消 = 仅结构：只导出工作流连线与参数，素材需对方自行替换",
+            );
+            void useTemplates
+              .getState()
+              .exportBoard(name, b.nodes, b.edges, withMedia)
+              .then((p) => p && toast(`已导出当前画布 → ${p}`, "ok"))
+              .catch((e) => toast(`导出失败：${errMsg(e)}`, "err"));
+          },
+        },
+        { group: "画布", label: "全部运行", onClick: () => void runAllFlows() },
+        ...(hasTasks ? [{ group: "画布" as const, label: "全部停止", danger: true as const, onClick: () => toast(`已停止 ${abortAll()} 个任务`, "ok") }] : []),
+        { group: "画布", label: "撤销", disabled: !useBoard.getState().canUndo, onClick: () => useBoard.getState().undo() },
+        { group: "画布", label: "重做", disabled: !useBoard.getState().canRedo, onClick: () => useBoard.getState().redo() },
+        { sep: true },
+        { label: "清空画布…", danger: true, onClick: () => useBoard.getState().clearAll() },
+      ];
+      setCtxMenu({ x: e.clientX, y: e.clientY, items });
+    },
+    [screenToFlowPosition, fitView],
+  );
+
+  /** 节点右键：复制 / 删除 / 运行 / 停止 / 编辑处理 / 存资产库 / 忽略 / 建组 */
+  const onNodeContextMenu = useCallback(
+    (e: React.MouseEvent, node: AppNode) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const b = useBoard.getState();
+      const sel = b.nodes.filter((n) => n.selected);
+      // 右键的节点没在选区里 → 以它单独为操作对象
+      const single = sel.find((n) => n.id === node.id) ? null : node;
+      const targets = single ? [single] : sel.length > 1 ? sel : [node];
+      const ids = targets.map((n) => n.id);
+      const multi = targets.length > 1;
+      const kind = node.type as NodeKind;
+      const d = (node.data ?? {}) as Record<string, unknown>;
+      const runState = String(d.status ?? "");
+      const isRunning = runState === "running" || !!useRunTasks.getState().tasks[node.id];
+      const RUNNABLE = new Set(["imageGen", "videoGen", "comfy", "llmText", "storyboard", "charCard", "relight", "multiAngle", "audioGen", "videoDub", "combine", "enhanceLocal", "vectorize"]);
+      const MEDIA = new Set(["image", "video", "audio"]);
+      const isIgnored = !!d.ignored;
+
+      const items: CmItem[] = [];
+      if (RUNNABLE.has(kind)) {
+        if (isRunning)
+          items.push({ group: "运行", label: "停止生成", danger: true, onClick: () => abortNode(node.id) });
+        else
+          items.push({ group: "运行", label: "运行此节点", onClick: () => void runFlow(node.id) });
+      }
+      if (MEDIA.has(kind) && !multi) {
+        const src = String(d.src ?? "");
+        if (src)
+          items.push({
+            group: "运行",
+            label: "保存到资产库",
+            onClick: () =>
+              void useAssets.getState().collect({ src, kind: kind as "image" | "video" | "audio", name: String(d.name ?? "") }),
+          });
+      }
+      if (!multi && (kind === "image" || kind === "imageGen")) {
+        items.push({ group: "编辑处理", label: "打光", icon: <IcBulb size={15} />, onClick: () => b.spawnEdit(node.id, "relight") });
+        items.push({ group: "编辑处理", label: "多角度", icon: <IcOrbit size={15} />, onClick: () => b.spawnEdit(node.id, "multiAngle") });
+        items.push({ group: "编辑处理", label: "超清放大", icon: <IcUpscale size={15} />, onClick: () => b.spawnEdit(node.id, "enhanceLocal") });
+        items.push({ group: "编辑处理", label: "智能矢量", icon: <IcVector size={15} />, onClick: () => b.spawnEdit(node.id, "vectorize") });
+      }
+      items.push({ sep: true });
+      items.push({ group: "节点", label: multi ? `复制 ${targets.length} 个` : "复制节点", onClick: () => b.cloneNodes(ids) });
+      items.push({ group: "节点", label: multi ? `删除 ${targets.length} 个` : "删除节点", danger: true, onClick: () => ids.forEach((id) => b.removeNode(id)) });
+      items.push({ group: "节点", label: isIgnored ? "取消忽略" : "忽略", onClick: () => b.toggleIgnoreSelected() });
+      if (targets.length >= 2) {
+        const allGrouped = targets.every((n) => n.parentId);
+        items.push({ group: "节点", label: allGrouped ? "取消分组" : "打成一组", onClick: () => b.groupSelected() });
+      }
+      items.push({ sep: true });
+      items.push({ group: "节点", label: "适应到此节点", onClick: () => void fitView({ duration: 250, padding: 0.3, maxZoom: 1.2, nodes: ids.map((id) => ({ id })) }) });
+      setCtxMenu({ x: e.clientX, y: e.clientY, items });
+    },
+    [fitView],
   );
 
   /* ---- 拖放：图片文件 / 文本 / 坞上的节点；落点贴近已有节点时自动连线 ---- */
@@ -471,9 +589,9 @@ export function SmartCanvas() {
         return;
       }
 
-      // 外部拖入文字素材 → 提示词节点
+      // 外部应用拖入文字 → 提示词节点；应用内部发起的文本拖拽（如提示词里选中一段往外拖）不建节点
       const text = e.dataTransfer.getData("text/plain")?.trim();
-      if (text) autoLink(addNode("prompt", pos, { text }));
+      if (text && !internalTextDrag) autoLink(addNode("prompt", pos, { text }));
     },
     [screenToFlowPosition, addNode],
   );
@@ -516,6 +634,74 @@ export function SmartCanvas() {
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
   }, [screenToFlowPosition, addNode]);
+
+  /* ---- 连接点微吸附：鼠标靠近"已弹出"的端口时，端口朝鼠标方向挪一小段（增加拖线命中率）。
+         只改 CSS 变量 --mx/--my（写到 handle 外层 DOM 上），不进 React/Zustand 状态、不触发重渲染；
+         位移由 ::before 的 translate 属性叠加外探量消费，避开 transform（三态动效在用）---- */
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const RANGE = 36; // 触发半径（屏幕 px）
+    const PULL = 8; // 最大偏移量
+    let raf = 0;
+    let mx = 0;
+    let my = 0;
+    const write = (h: HTMLElement, x: number, y: number) => {
+      const xs = `${x}px`;
+      const ys = `${y}px`;
+      // 值没变就不写，避免每帧把 100+ 个 handle 的样式标脏触发无谓重排
+      if (h.style.getPropertyValue("--mx") !== xs) h.style.setProperty("--mx", xs);
+      if (h.style.getPropertyValue("--my") !== ys) h.style.setProperty("--my", ys);
+    };
+    const apply = (h: HTMLElement) => {
+      const node = h.closest(".react-flow__node") as HTMLElement | null;
+      // 只影响已弹出的端口：节点被悬停/选中、端口自身被悬停、或处于拖线吸附态
+      const popped =
+        (!!node && (node.matches(":hover") || node.classList.contains("sel"))) ||
+        h.matches(":hover") ||
+        h.classList.contains("connectingto") ||
+        h.classList.contains("connectingfrom");
+      if (!popped) {
+        write(h, 0, 0);
+        return;
+      }
+      const r = h.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      const dx = mx - cx;
+      const dy = my - cy;
+      const d = Math.hypot(dx, dy);
+      if (!isFinite(d) || d <= 0 || d >= RANGE) {
+        write(h, 0, 0);
+        return;
+      }
+      const mag = ((RANGE - d) / RANGE) * PULL; // 越近拉得越远，最大 PULL
+      write(h, (dx / d) * mag, (dy / d) * mag);
+    };
+    const tick = () => {
+      raf = 0;
+      wrap.querySelectorAll<HTMLElement>(".react-flow__handle.port").forEach(apply);
+    };
+    const onMove = (e: PointerEvent) => {
+      mx = e.clientX;
+      my = e.clientY;
+      if (!raf) raf = requestAnimationFrame(tick);
+    };
+    const resetAll = () => {
+      mx = 0;
+      my = 0;
+      wrap.querySelectorAll<HTMLElement>(".react-flow__handle.port").forEach((h) => write(h, 0, 0));
+    };
+    wrap.addEventListener("pointermove", onMove);
+    wrap.addEventListener("pointerleave", resetAll);
+    window.addEventListener("blur", resetAll, true);
+    return () => {
+      wrap.removeEventListener("pointermove", onMove);
+      wrap.removeEventListener("pointerleave", resetAll);
+      window.removeEventListener("blur", resetAll, true);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
 
   /* ---- 建组/解组：选中有组则解散；多选则打包；否则进入框画模式 ---- */
   const groupAction = useCallback(() => {
@@ -608,6 +794,39 @@ export function SmartCanvas() {
         toggleIgnoreSelected();
       } else if (hit("popLock")) {
         useUi.getState().togglePopLock();
+      } else if (hit("align")) {
+        useBoard.getState().alignSelected();
+      } else if (hit("agent")) {
+        e.preventDefault();
+        const u = useUi.getState();
+        u.setAgentOpen(!u.agentOpen);
+      } else if (hit("charLib")) {
+        e.preventDefault();
+        const u = useUi.getState();
+        u.setCharLibOpen(!u.charLibOpen);
+      } else if (hit("settings")) {
+        e.preventDefault();
+        useUi.getState().openSettings();
+      } else if (hit("errCenter")) {
+        e.preventDefault();
+        const u = useUi.getState();
+        u.setErrlogOpen(!u.errlogOpen);
+      } else if (hit("runLog")) {
+        e.preventDefault();
+        useUi.getState().setRunLogOpen(!useUi.getState().runLogOpen);
+      } else if (hit("theme")) {
+        e.preventDefault();
+        const st = useSettings.getState();
+        const t = st.settings.theme;
+        st.update("theme", t === "light" ? "dark" : t === "dark" ? "black" : "light");
+      } else if (hit("newBoard")) {
+        e.preventDefault();
+        useBoard.getState().newBoard();
+      } else if (hit("voiceCall")) {
+        e.preventDefault();
+        useUi.getState().setAgentOpen(true);
+        if (isVoiceCallActive()) stopVoiceCall();
+        else void startVoiceCall();
       } else {
         // 下方工具坞的「添加节点」快捷键（每个节点类型都可在设置里自定义）
         const item = NODE_CATALOG.find((i) => matchHotkey(e, hk[i.hotkey]));
@@ -645,7 +864,9 @@ export function SmartCanvas() {
     (e: MouseEvent | TouchEvent, node: AppNode) => {
       proximityConnect(node.id, dragMouse(e));
       useUi.getState().setProxHint(null);
-      useUi.getState().setDupGhost(null);
+      // 成员拖完后重排所属组（组框按成员新位置自适应）
+      const parentId = useBoard.getState().nodes.find((n) => n.id === node.id)?.parentId;
+      if (parentId) useBoard.getState().relayoutGroup(parentId);
     },
     [proximityConnect, dragMouse],
   );
@@ -666,27 +887,126 @@ export function SmartCanvas() {
     groupInRect({ x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y });
   };
 
+  /* ---- Alt+拖拽复制：按住 Alt 在节点上起拖 → 复制选集（含组成员、内部连线保留），副本跟手、原节点不动 ---- */
+  const startCloneDrag = useCallback(
+    (grabId: string, start: { x: number; y: number }) => {
+      let ctx: {
+        startPos: Map<string, { x: number; y: number }>;
+        origin: { x: number; y: number };
+        off: { x: number; y: number };
+        cloneGrabId: string;
+      } | null = null;
+      const cleanup = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        document.body.style.cursor = "";
+      };
+      // 超过 4px 才认定是拖拽（纯 Alt+点击不复制）
+      const begin = (ev: PointerEvent): boolean => {
+        const s = useBoard.getState();
+        const grabbed = s.nodes.find((n) => n.id === grabId);
+        if (!grabbed) return false;
+        // 抓取的节点在选集内 → 复制整个选集；否则只复制它一个
+        const base = grabbed.selected ? s.nodes.filter((n) => n.selected).map((n) => n.id) : [grabId];
+        const map = s.cloneNodes(base);
+        if (!map.size) return false;
+        const after = useBoard.getState();
+        const startPos = new Map<string, { x: number; y: number }>();
+        for (const newId of map.values()) {
+          const n = after.nodes.find((x) => x.id === newId);
+          if (n && !n.parentId) startPos.set(newId, { ...n.position });
+        }
+        if (!startPos.size) return false;
+        const cloneGrabId = map.get(grabId) ?? "";
+        const origin = (cloneGrabId && startPos.get(cloneGrabId)) || [...startPos.values()][0];
+        const grabStart = screenToFlowPosition({ x: ev.clientX, y: ev.clientY });
+        ctx = { startPos, origin, off: { x: grabStart.x - origin.x, y: grabStart.y - origin.y }, cloneGrabId };
+        // 拖动期间不弹生成设置面板
+        useUi.getState().setGenPanelSuppressed(true);
+        document.body.style.cursor = "copy";
+        return true;
+      };
+      const moveTo = (ev: PointerEvent, dragging: boolean) => {
+        if (!ctx) return;
+        const cur = screenToFlowPosition({ x: ev.clientX, y: ev.clientY });
+        useBoard.getState().onNodesChange(
+          [...ctx.startPos.entries()].map(([id, p]) => ({
+            type: "position" as const,
+            id,
+            position: { x: cur.x - ctx!.off.x + (p.x - ctx!.origin.x), y: cur.y - ctx!.off.y + (p.y - ctx!.origin.y) },
+            dragging,
+          })),
+        );
+        return cur;
+      };
+      const onMove = (ev: PointerEvent) => {
+        if (!ctx) {
+          if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 4) return;
+          if (!begin(ev)) cleanup();
+          return;
+        }
+        moveTo(ev, true);
+      };
+      const onUp = (ev: PointerEvent) => {
+        const c = ctx;
+        cleanup();
+        if (!c) return;
+        const cur = moveTo(ev, false);
+        // 与正常拖动一致的收尾：贴近自动连线
+        if (cur) useBoard.getState().proximityConnect(c.cloneGrabId, cur);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [screenToFlowPosition],
+  );
+
   let lastGroup = "";
   return (
-    <div className="canvas-wrap" ref={wrapRef} onDrop={(e) => void onDrop(e)} onDragOver={(e) => e.preventDefault()}>
+    <div
+      className="canvas-wrap"
+      ref={wrapRef}
+      onClickCapture={(e) => {
+        const t = e.target as HTMLElement;
+        clickOnControl.current = !!t.closest("button, select, textarea, input, [contenteditable]");
+        // 标记只对「本次点击」有效：React 的 capture→bubble 在同一同步栈内跑完，
+        // 微任务里复位即可；否则点了控件但没产生 select 变更时，标记会残留并吞掉下一次真正的选中
+        queueMicrotask(() => (clickOnControl.current = false));
+      }}
+      onMouseDownCapture={(e) => {
+        // Alt+拖拽复制节点：拦截在 React Flow 拖动/框选之前（可交互控件上不抢）
+        if (e.button !== 0 || !e.altKey) return;
+        const t = e.target as HTMLElement;
+        if (t.closest(".nodrag, button, input, textarea, select, [contenteditable]")) return;
+        let id = (t.closest(".react-flow__node") as HTMLElement | null)?.getAttribute("data-id");
+        if (!id && t.closest(".react-flow__nodesselection")) {
+          // 多选时落点常在多选框遮罩（nodesselection-rect）上而非节点本体：拿第一个选中节点当抓手
+          id = useBoard.getState().nodes.find((n) => n.selected)?.id;
+        }
+        if (!id) return;
+        e.preventDefault();
+        e.stopPropagation();
+        startCloneDrag(id, { x: e.clientX, y: e.clientY });
+      }}
+      onDrop={(e) => void onDrop(e)}
+      onDragOver={(e) => e.preventDefault()}
+    >
       <ReactFlow
         nodes={nodes}
         edges={displayEdges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onConnectEnd={onConnectEnd}
         onPaneClick={onPaneClick}
-        onNodeDragStart={(e, node) => {
+        onPaneContextMenu={onPaneContextMenu}
+        onNodeContextMenu={onNodeContextMenu}
+        onNodeDragStart={(_e, _node) => {
           snapshot();
           // 拖动期间不弹生成设置面板（点击节点后才显示）
           useUi.getState().setGenPanelSuppressed(true);
-          // Alt+拖拽 = 复制：原工作流原地保留，被拖走的是副本（虚线显示）
-          if ((e as unknown as { altKey?: boolean }).altKey) {
-            const ids = useBoard.getState().altDuplicateStart(node.id);
-            if (ids) useUi.getState().setDupGhost(ids);
-          }
         }}
         onNodeClick={(e) => {
           // 点的是节点里的按钮/输入控件（如「生成」）→ 不弹设置面板；点节点本体才弹
@@ -697,11 +1017,11 @@ export function SmartCanvas() {
         onNodeDrag={onNodeDrag}
         onNodeDragStop={onNodeDragStop}
         isValidConnection={isValidConnection}
-        connectionRadius={64}
+        connectionRadius={80}
         proOptions={{ hideAttribution: true }}
         minZoom={0.15}
         maxZoom={2.5}
-        panOnDrag={tool === "move" ? [0, 1, 2] : [1, 2]}
+        panOnDrag={tool === "move" ? [0, 1] : [1]}
         selectionOnDrag={tool !== "move"}
         selectionKeyCode={["Shift", "Control"]}
         selectionMode={SelectionMode.Partial}
@@ -715,13 +1035,16 @@ export function SmartCanvas() {
           useBoard.getState().setViewport({ x: vp.x, y: vp.y, zoom: vp.zoom });
         }}
       >
-        <Background variant={BackgroundVariant.Dots} gap={24} size={1.6} color="var(--dot)" />
+        <Background variant={BackgroundVariant.Dots} gap={30} size={1.2} color="var(--dot)" />
         <EdgeBoxSelect />
-        {!zen && nodes.length > 3 ? (
-          // 右移让开右侧竖向工具条（约 60px 宽），底部抬高让开工具坞（坞高 + 余量），确保任何窗口尺寸都不重叠
-          <MiniMap pannable zoomable position="bottom-right" style={{ marginBottom: 122, marginRight: 64 + dockShift }} />
+        <AlignGuides />
+      {!zen && nodes.length > 3 ? (
+          // 小地图收在右下，给右侧资产库展开留出平移量
+          <MiniMap pannable zoomable position="bottom-right" style={{ marginBottom: 16, marginRight: 16 + dockShift }} />
         ) : null}
       </ReactFlow>
+
+      {ctxMenu ? <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={ctxMenu.items} onClose={() => setCtxMenu(null)} /> : null}
 
       {nodes.length === 0 ? (
         <div className="empty-guide">
@@ -741,6 +1064,19 @@ export function SmartCanvas() {
 
       {!zen ? (
         <div className="tool-bar glass">
+          <button
+            className="tb-btn tb-add"
+            title="添加节点：在画布中心打开快速添加菜单（也可双击空白处）"
+            onClick={() => {
+              const rect = wrapRef.current?.getBoundingClientRect();
+              const cx = (rect?.left ?? 0) + (rect?.width ?? window.innerWidth) / 2;
+              const cy = (rect?.top ?? 0) + (rect?.height ?? window.innerHeight) / 2;
+              const flow = screenToFlowPosition({ x: cx, y: cy });
+              setAddMenu({ flowX: flow.x, flowY: flow.y, screenX: cx, screenY: cy });
+            }}
+          >
+            <IcPlus size={20} />
+          </button>
           <button
             className={`tb-btn ${tool === "move" ? "on" : ""}`}
             title={`移动工具（${hotkeys.moveTool.toUpperCase()}）：左键拖空白平移 · 点击选择 · 再点一次回到框选模式`}
@@ -770,9 +1106,9 @@ export function SmartCanvas() {
             <IcLock size={18} />
           </button>
           <button
-            className="tb-btn"
-            title="AI 布线助手：一句话描述意图，自动规划并连好一套工作流（方案先预览、确认才落画布）"
-            onClick={() => useUi.getState().setAiWireOpen(true)}
+            className={`tb-btn ${aiWireOpen ? "on" : ""}`}
+            title="AI 布线助手：一句话描述意图，自动规划并连好一套工作流（方案先预览、确认才落画布）；再点一次关闭"
+            onClick={() => useUi.getState().setAiWireOpen(!useUi.getState().aiWireOpen)}
           >
             <IcWand size={18} />
           </button>
@@ -808,7 +1144,7 @@ export function SmartCanvas() {
       ) : null}
 
       {!zen ? (
-        <div className="view-ctrl glass" style={{ right: 16 + dockShift }}>
+        <div className="view-ctrl glass">
           <button
             className="run-all-btn"
             title="一键运行：画布内所有工作流都从头按顺序运行"
@@ -871,6 +1207,9 @@ export function SmartCanvas() {
       {!zen ? <GenConfigPanel /> : null}
       {!zen ? <VideoConfigPanel /> : null}
       {!zen ? <AudioConfigPanel /> : null}
+      {!zen ? <ComfyConfigPanel /> : null}
+      {!zen ? <EnhanceConfigPanel /> : null}
+      {!zen ? <VectorizeConfigPanel /> : null}
 
       <AddNodeMenu />
       <CanvasSearch />

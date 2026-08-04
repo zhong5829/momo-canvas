@@ -1,7 +1,7 @@
 /**
  * 节点运行引擎：收集上游 → 调用对应服务 → 结果写回节点 + 收录资产库
  */
-import { NODE_LABEL, useBoard } from "./stores/boardStore";
+import { NODE_LABEL, outPortType, useBoard } from "./stores/boardStore";
 import { useSettings, resolveModelCard, modelKey } from "./stores/settingsStore";
 import { useComfy } from "./stores/comfyStore";
 import { pushError, toast, useUi } from "./stores/uiStore";
@@ -14,57 +14,47 @@ import { generateAudio } from "./services/audioGen";
 import { webSearch, searchContext } from "./services/webSearch";
 import { runComfyTemplate } from "./services/comfy";
 import { autoSaveImage } from "./services/imageSaver";
-import { gptSize, imageFamily, nearestAspect, parseRatio } from "./modelMeta";
+import { familyMaxCount, gptSize, imageFamily, nearestAspect, parseRatio } from "./modelMeta";
 import { videoFamily, videoMeta } from "./videoMeta";
 import { imageDims } from "./imageInfo";
-import { resampleImage, resizeTextOut, targetSize } from "./resizeMath";
 import { buildAnglePrompt, buildRelightPrompt } from "./cameraLight";
-import { charAnalysisSystem, DELIV_LABEL } from "./charPresets";
-import { annotateMaskOnImage, buildOutpaintCanvas, cropByRect, maskCoverage, maskToOpenAiMask } from "./maskCanvas";
-import {
-  creativityPhrase,
-  enhanceInstruct,
-  inpaintInstruct,
-  inpaintMaskPrompt,
-  mattingInstruct,
-  outpaintInstruct,
-  outpaintMaskPrompt,
-} from "./editPrompts";
-import { errMsg, isTauri, parseJsonLoose } from "./utils";
-import { assetUrl } from "./services/assetFiles";
+import { charAnalysisSystem, DELIV_LABEL, DELIV_VARIATIONS } from "./charPresets";
+import { creativityPhrase } from "./editPrompts";
+import { errMsg, isTauri, parseJsonLoose, uid } from "./utils";
+import { acquireSlot, beginTask, endTask, isAbortError, taskSignal } from "./runControl";
+import { runGenWithFallback } from "./retry";
+import { useUsage } from "./stores/usageStore";
+import { estimateCost } from "./pricing";
+import { estimateEnhanceResources } from "./enhanceEstimate";
+import { assetUrl, fetchBytes, assetsDir } from "./services/assetFiles";
 import { notifyDone } from "./sound";
-import { concatVideos, dubVideo, grabFrame, trimVideo } from "./videoEdit";
+import { dubVideo } from "./videoEdit";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   AssetGenMeta,
   AudioGenData,
   VideoDubData,
-  CaptionData,
   CharCardData,
   CharDeliverable,
   CharProfile,
   ChatData,
   ChatMsg,
   ComfyData,
+  EnhanceLocalData,
+  VectorizeData,
   CombineData,
-  CropData,
-  EnhanceData,
+  GenHistoryEntry,
   ImageData,
   ImageGenData,
-  InpaintData,
   LlmTextData,
-  MattingData,
+  ModelCard,
   MultiAngleData,
   NodeKind,
-  OutpaintData,
   PromptData,
   RelightData,
-  ResizeData,
   StylePresetData,
   StoryboardData,
   VideoGenData,
-  FrameData,
-  VideoTrimData,
-  VideoConcatData,
 } from "./types";
 
 const SEPARATORS: Record<CombineData["separator"], string> = {
@@ -100,11 +90,6 @@ function nodeOutput(
       if (last?.text) texts.push(last.text.trim());
       break;
     }
-    case "caption": {
-      const t = ((d as CaptionData).result ?? "").trim();
-      if (t) texts.push(t);
-      break;
-    }
     case "llmText": {
       const t = ((d as LlmTextData).result ?? "").trim();
       if (t) texts.push(t);
@@ -133,25 +118,16 @@ function nodeOutput(
       if (s) images.push(s);
       break;
     }
+    case "enhanceLocal": {
+      const r = (d as EnhanceLocalData).result;
+      if (r) images.push(r);
+      break;
+    }
     case "comfy": {
       const g = d as ComfyData;
       const s = g.results?.[g.picked ?? 0];
       if (s) images.push(s);
       for (const v of g.videoResults ?? []) videos.push(v);
-      break;
-    }
-    case "inpaint":
-    case "outpaint":
-    case "matting":
-    case "enhance": {
-      const g = d as { results?: string[]; picked?: number };
-      const s = g.results?.[g.picked ?? 0];
-      if (s) images.push(s);
-      break;
-    }
-    case "crop": {
-      const g = d as CropData;
-      if (g.result) images.push(g.result);
       break;
     }
     case "relight": {
@@ -177,20 +153,9 @@ function nodeOutput(
       }
       break;
     }
-    case "resize": {
-      const g = d as ResizeData;
-      if ((g.out ?? "image") === "image") {
-        if (g.result) images.push(g.result);
-      } else {
-        // 尺寸文本样式：由已测得的上游尺寸即时推导
-        const t = resizeTextOut(g);
-        if (t) texts.push(t);
-      }
-      break;
-    }
     case "charCard": {
       const g = d as CharCardData;
-      const order: CharDeliverable[] = ["turnaround", "closeup", "expressions", "poses", "portrait", "sheet"];
+      const order: CharDeliverable[] = ["turnaround", "closeup", "expressions", "poses", "outfits", "portrait", "sheet"];
       if (charOutMode(g) === "prompt") {
         // 提示词模式：把勾选素材的提示词逐条输出（下游可接生成图像等节点）
         for (const k of order) {
@@ -198,13 +163,14 @@ function nodeOutput(
           if (t && g.deliverables.includes(k)) texts.push(t);
         }
       } else {
-        // 出图模式：输出一张代表图（优先立绘 > 三视图 > 近景 > 其余）
-        const pref: CharDeliverable[] = ["portrait", "turnaround", "closeup", "expressions", "poses", "sheet"];
-        for (const k of pref) {
+        // 出图模式：勾选素材的首图全部输出（下游拿整套设定参考，角色一致性更稳）
+        const seenImg = new Set<string>();
+        for (const k of order) {
+          if (!g.deliverables.includes(k)) continue;
           const s = g.results?.[k]?.[0];
-          if (s) {
+          if (s && !seenImg.has(s)) {
+            seenImg.add(s);
             images.push(s);
-            break;
           }
         }
       }
@@ -231,16 +197,9 @@ function nodeOutput(
       break;
     }
     case "videoGen":
-    case "videoTrim":
-    case "videoConcat":
     case "videoDub": {
       const u = (d as { resultUrl?: string }).resultUrl;
       if (u) videos.push(u);
-      break;
-    }
-    case "frame": {
-      const g = d as FrameData;
-      if (g.result) images.push(g.result);
       break;
     }
     default:
@@ -282,6 +241,8 @@ export function collectUpstream(
   const images: string[] = [];
   const videos: string[] = [];
   const audios: string[] = [];
+  // 防环用「当前递归路径」而不是全局已访问集：同一个上游节点被两条路径共同引用是正常拓扑
+  //（如一个提示词节点同时喂给拼接和生成），用全局集会让第二条路径拿到空结果
   if (visited.has(nodeId)) return { texts, images, videos, audios };
   visited.add(nodeId);
 
@@ -290,15 +251,16 @@ export function collectUpstream(
     if (!src) continue;
     if ((src.data as Record<string, unknown>).ignored) continue;
     if (src.type === "group") {
-      // 组：成员按位置（上→下、左→右）依次输出；按出口类型分流
+      // 组单 out：成员按位置（上→下、左→右）依次产出，按各自 nodeOutput 类型全分流（不再按出口过滤）
       const members = nodes
         .filter((n) => n.parentId === src.id && !(n.data as Record<string, unknown>).ignored)
         .sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x);
       for (const m of members) {
         const o = nodeOutput(m, visited);
-        if (e.sourceHandle === "out-image") images.push(...o.images);
-        else if (e.sourceHandle === "out-video") videos.push(...o.videos);
-        else texts.push(...o.texts);
+        texts.push(...o.texts);
+        images.push(...o.images);
+        videos.push(...o.videos);
+        audios.push(...o.audios);
       }
       continue;
     }
@@ -310,25 +272,14 @@ export function collectUpstream(
       if (t) texts.push(sh?.line?.trim() ? t + "\n对白台词：「" + sh.line.trim() + "」" : t);
       continue;
     }
-    // 角色卡单素材端口：只输出对应素材（提示词模式给提示词，出图模式给首图）
-    if (src.type === "charCard" && e.sourceHandle?.startsWith("dl-")) {
-      const g = src.data as CharCardData;
-      const k = e.sourceHandle.slice(3) as CharDeliverable;
-      if (charOutMode(g) === "prompt") {
-        const t = (g.prompts?.[k] ?? "").trim();
-        if (t) texts.push(t);
-      } else {
-        const s = g.results?.[k]?.[0];
-        if (s) images.push(s);
-      }
-      continue;
-    }
     const o = nodeOutput(src, visited);
     texts.push(...o.texts);
     images.push(...o.images);
     videos.push(...o.videos);
     audios.push(...o.audios);
   }
+  // 退出本节点：只在「当前路径」上防环，兄弟分支仍能正常展开同一个上游
+  visited.delete(nodeId);
   return { texts, images, videos, audios };
 }
 
@@ -358,20 +309,7 @@ export function collectUpstreamParts(nodeId: string): UpstreamPart[] {
       const members = nodes
         .filter((n) => n.parentId === src.id && !(n.data as Record<string, unknown>).ignored)
         .sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x);
-      for (const m of members)
-        push(`组 · ${nodeTitle(m)}`, nodeOutput(m, new Set([nodeId])), e.sourceHandle === "out-image" ? "image" : "text");
-      continue;
-    }
-    if (src.type === "charCard" && e.sourceHandle?.startsWith("dl-")) {
-      const g = src.data as CharCardData;
-      const k = e.sourceHandle.slice(3) as CharDeliverable;
-      if (charOutMode(g) === "prompt") {
-        const t = (g.prompts?.[k] ?? "").trim();
-        if (t) out.push({ from: `${nodeTitle(src)} · ${DELIV_LABEL[k]}`, kind: "text", value: t });
-      } else {
-        const s = g.results?.[k]?.[0];
-        if (s) out.push({ from: `${nodeTitle(src)} · ${DELIV_LABEL[k]}`, kind: "image", value: s });
-      }
+      for (const m of members) push(`组 · ${nodeTitle(m)}`, nodeOutput(m, new Set([nodeId])));
       continue;
     }
     push(nodeTitle(src), nodeOutput(src, new Set([nodeId])));
@@ -379,7 +317,93 @@ export function collectUpstreamParts(nodeId: string): UpstreamPart[] {
   return out;
 }
 
-const upd = (id: string, patch: Record<string, unknown>) => useBoard.getState().updateData(id, patch);
+// runner 写回的都是运行态（status/results/progress…），走 result:true 不增 rev；
+// UI 改提示词/参数（不经 upd）才会增 rev，下游脏标记据此判断「上游是否已变更」
+const upd = (id: string, patch: Record<string, unknown>) => useBoard.getState().updateData(id, patch, { result: true });
+
+/** 本节点直接上游的「签名」：编码走过的上游 id+rev+端口。gated 成功后盖章进 data.inputSig，
+ *  hasFreshOutput 据此判断上游是否已变更（改了提示词/换了参考图/重排了组成员 → 签名变 → 重算）。
+ *  与 collectUpstream 同序（orderedInEdges + 组成员按位置），保证 @图N 编号一致 */
+function upstreamSig(id: string): string {
+  const { nodes, edges } = useBoard.getState();
+  const parts: string[] = [];
+  for (const e of orderedInEdges(id, nodes, edges)) {
+    const src = nodes.find((n) => n.id === e.source);
+    if (!src || (src.data as Record<string, unknown>).ignored) continue;
+    if (src.type === "group") {
+      const members = nodes
+        .filter((n) => n.parentId === src.id && !(n.data as Record<string, unknown>).ignored)
+        .sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x);
+      for (const m of members) parts.push(`${m.id}:${(m.data as Record<string, unknown>).rev ?? 0}`);
+    } else if (src.type === "storyboard" && e.sourceHandle?.startsWith("shot-")) {
+      parts.push(`${src.id}:${e.sourceHandle}:${(src.data as Record<string, unknown>).rev ?? 0}`);
+    } else {
+      parts.push(`${src.id}:${(src.data as Record<string, unknown>).rev ?? 0}:${e.targetHandle ?? ""}`);
+    }
+  }
+  return parts.join("|");
+}
+
+/** 本节点自身参数的「签名」（仅对参数会影响输出的节点有意义，如超清放大的倍率/目标/tile）。
+ *  upstreamSig 只编码上游 → 改本节点参数不会被感知 → 会给出旧结果（文档 §10.2 缓存键隐患）。
+ *  sigOf = upstreamSig + selfSig，让 hasFreshOutput/isNodeDirty 在参数变更时也判脏 → 重算。
+ *  无自身参数的节点返回空串，行为与原先完全一致。 */
+function selfSig(id: string): string {
+  const node = useBoard.getState().nodes.find((n) => n.id === id);
+  if (!node) return "";
+  if (node.type === "enhanceLocal") {
+    const d = node.data as EnhanceLocalData;
+    const tObj = d.target as { mode?: "print"; wMm?: number; hMm?: number; dpi?: number; longEdge?: number };
+    const t = typeof d.target === "string"
+      ? d.target
+      : tObj.mode === "print"
+        ? `print:${tObj.wMm}×${tObj.hMm}@${tObj.dpi}`
+        : `c${tObj.longEdge ?? 0}`;
+    return `^self:${d.preset ?? ""}:${t}:${d.modelId ?? ""}:${d.tileSize ?? 0}:${d.outputFormat ?? "png"}:${d.contentMode ?? "auto"}:${d.detailStrength ?? 0}:${d.dejpeg ?? "auto"}:${d.faceRestore ?? ""}:${d.bitDepth ?? 8}`;
+  }
+  if (node.type === "vectorize") {
+    const d = node.data as VectorizeData;
+    return `^self:vec:${d.preset}:${d.colorMode}:${d.hierarchical}:${d.colorPrecision}:${d.filterSpeckle}:${d.pathPrecision}:${d.geometry ? 1 : 0}:${d.quality ?? "balanced"}`;
+  }
+  return "";
+}
+function sigOf(id: string): string {
+  return upstreamSig(id) + selfSig(id);
+}
+
+/** 推进节点级生成历史（最近 10 次）：成功出图/出片时快照本轮参数+结果，可回溯「第 N 次那版最好」。
+ *  结果走 result:true 写回，不增 rev（历史是运行态产物，不该触发下游脏标记） */
+function pushHistory(id: string, entry: Omit<GenHistoryEntry, "ts">) {
+  const node = useBoard.getState().nodes.find((n) => n.id === id);
+  if (!node) return;
+  const d = node.data as Record<string, unknown>;
+  const hist: GenHistoryEntry[] = ((d.history as GenHistoryEntry[] | undefined) ?? []).slice();
+  hist.unshift({ ts: Date.now(), ...entry });
+  while (hist.length > 10) hist.pop();
+  useBoard.getState().updateData(id, { history: hist }, { result: true });
+}
+
+/** 该节点的上游是否已变更（记录的 inputSig 与当前 upstreamSig 不符）。老数据无 inputSig 视为未变更。
+ *  NodeShell 据此显示「上游已变更」角标；hasFreshOutput 据此决定是否重算 */
+export function isNodeDirty(id: string): boolean {
+  const node = useBoard.getState().nodes.find((n) => n.id === id);
+  const sig = (node?.data as Record<string, unknown> | undefined)?.inputSig;
+  return typeof sig === "string" && sig !== sigOf(id);
+}
+
+/** 预算护栏：超日预算阻断、超确认阈值弹确认（返回的 block/confirm 由调用方处理） */
+function budgetGate(cost: number): { block?: string; confirm?: string } {
+  const budget = useSettings.getState().settings.budget;
+  if (!budget.dailyCap && !budget.confirmOverCost) return {};
+  const today = useUsage.getState().todayCost();
+  if (budget.dailyCap && today + cost > budget.dailyCap) {
+    return { block: `已达日预算上限（今日已 ¥${today.toFixed(2)} + 本次预估 ¥${cost.toFixed(2)} > 上限 ¥${budget.dailyCap}）。可到「设置 → 用量」调整` };
+  }
+  if (budget.confirmOverCost && cost > budget.confirmOverCost) {
+    return { confirm: `本次预估花费 ¥${cost.toFixed(2)}（今日已 ¥${today.toFixed(2)}），是否继续？` };
+  }
+  return {};
+}
 
 /** 角色卡输出模式（兼容旧字段 genImages） */
 function charOutMode(d: CharCardData): "image" | "prompt" {
@@ -414,33 +438,111 @@ async function maybeAutoSave(images: string[], meta: { prompt?: string; model?: 
 function collectToLibrary(
   kind: "image" | "video",
   srcs: string[],
-  meta: { prompt?: string; model?: string; gen?: AssetGenMeta },
+  meta: { prompt?: string; model?: string; gen?: AssetGenMeta; nodeId?: string },
 ) {
   for (const src of srcs) {
-    void useAssets.getState().collect({ src, kind, prompt: meta.prompt, model: meta.model, gen: meta.gen });
+    void useAssets.getState().collect({ src, kind, prompt: meta.prompt, model: meta.model, gen: meta.gen, nodeId: meta.nodeId });
   }
+}
+
+/** 取一个节点作为参考图来源时的代表图（image 节点取原图，生成节点取当前选中结果） */
+function imageSrcOf(n: LiteN): string | undefined {
+  const nd = n.data as Record<string, unknown>;
+  if (n.type === "image") return nd.src as string | undefined;
+  const results = nd.results as string[] | undefined;
+  return results?.length ? results[(nd.picked as number | undefined) ?? 0] : undefined;
+}
+
+/** 参考图可读名（image 节点用文件名去扩展名，否则 图N）；idx 为该图在序列中的下标 */
+function imageLabelOf(n: LiteN, idx: number): string {
+  const nd = n.data as Record<string, unknown>;
+  if (n.type === "image" && nd.name) {
+    const raw = String(nd.name).replace(/\.\w+$/, "");
+    if (raw) return raw.slice(0, 12);
+  }
+  return `图${idx + 1}`;
+}
+
+/** 这条入边的源节点输出类型（端口统一后，"这条边传的是图/文/视频/音频"由源节点决定，替代旧 targetHandle 判断） */
+function srcOutType(e: { source: string }, nodes: { id: string; type: string; data: unknown }[]) {
+  const src = nodes.find((n) => n.id === e.source);
+  return src ? outPortType(src.type as NodeKind, src.data as Record<string, unknown>) : null;
+}
+
+/**
+ * 某节点的图类型上游参考图，与 collectUpstream 完全同序（含组节点成员展开）。
+ * @引用胶囊显示、@→图N 解析、提示词同路图 chips 三处共用，保证「图1/图2…」编号一致。
+ * 关键：端口统一后不再靠 targetHandle 过滤，改为按 source 输出类型(outPortType)判断是否图源；
+ *       组节点成员图、角色卡整套素材首图按画布位置依次计入编号。
+ */
+export function collectImageRefsFor(nodeId: string): { src: string; label: string }[] {
+  const { nodes, edges } = useBoard.getState();
+  const out: { src: string; label: string }[] = [];
+  const seen = new Set<string>();
+  const pushNode = (n: LiteN): boolean => {
+    const s = imageSrcOf(n);
+    if (!s) return false;
+    out.push({ src: s, label: imageLabelOf(n, out.length) });
+    return true;
+  };
+  // 角色卡：出图模式下整套素材首图依次计入图编号（角色卡·三视图 = 图1 …）
+  // 直连与「组内成员」两条路径共用，否则组里的角色卡会被当成单图节点漏掉，@图N 编号与实际传图错位
+  const pushCharCard = (n: LiteN) => {
+    const g = n.data as CharCardData;
+    if (charOutMode(g) === "prompt") return; // 提示词模式不产图
+    const order: CharDeliverable[] = ["turnaround", "closeup", "expressions", "poses", "outfits", "portrait", "sheet"];
+    for (const k of order) {
+      if (!g.deliverables.includes(k)) continue;
+      const s = g.results?.[k]?.[0];
+      if (s && !seen.has(s)) {
+        seen.add(s);
+        out.push({ src: s, label: `${imageLabelOf(n, out.length)}·${DELIV_LABEL[k]}` });
+      }
+    }
+  };
+  for (const e of orderedInEdges(nodeId, nodes, edges)) {
+    const src = nodes.find((n) => n.id === e.source);
+    if (!src || (src.data as Record<string, unknown>).ignored) continue;
+    // 端口统一后不再靠 targetHandle 过滤；按 source 输出类型判断是否图源
+    // 角色卡：出图模式下整套素材首图依次计入图编号（角色卡·三视图 = 图1 …）
+    if (src.type === "charCard") {
+      pushCharCard(src);
+      continue;
+    }
+    // 分镜 shot- 子端口只输出文本，不是图源
+    if (src.type === "storyboard" && e.sourceHandle?.startsWith("shot-")) continue;
+    if (src.type === "group") {
+      // 组：成员按画布位置依次取图（仅图类型成员），与 collectUpstream 同序
+      const members = nodes
+        .filter((n) => n.parentId === src.id && !(n.data as Record<string, unknown>).ignored)
+        .sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x);
+      for (const m of members) {
+        if (seen.has(m.id)) continue;
+        // 组内角色卡同样按整套素材展开（与 collectUpstream 的组分支同序）
+        if (m.type === "charCard") {
+          pushCharCard(m);
+          seen.add(m.id);
+          continue;
+        }
+        if (outPortType(m.type as NodeKind, m.data as Record<string, unknown>) === "image" && pushNode(m)) seen.add(m.id);
+      }
+      continue;
+    }
+    // 普通节点：输出类型为 image 才计入图编号
+    if (outPortType(src.type as NodeKind, src.data as Record<string, unknown>) !== "image") continue;
+    if (seen.has(src.id)) continue;
+    if (pushNode(src)) seen.add(src.id);
+  }
+  return out;
 }
 
 /** 把提示词里的 @图片名 替换成「图N」，N 与实际传给模型的参考图顺序一致（模型不认识 @名字） */
 function resolveAtRefs(prompt: string, nodeId: string): string {
   if (!prompt.includes("@")) return prompt;
-  const { nodes, edges } = useBoard.getState();
-  const labels: string[] = [];
-  const seen = new Set<string>();
-  for (const e of orderedInEdges(nodeId, nodes, edges)) {
-    if (e.targetHandle !== "in-image" || seen.has(e.source)) continue;
-    const n = nodes.find((x) => x.id === e.source);
-    if (!n) continue;
-    const nd = n.data as Record<string, unknown>;
-    const has = n.type === "image" ? !!nd.src : !!(nd.results as string[] | undefined)?.length;
-    if (!has) continue;
-    seen.add(e.source);
-    const raw = n.type === "image" && nd.name ? String(nd.name).replace(/\.\w+$/, "") : "";
-    labels.push(raw ? raw.slice(0, 12) : `图${labels.length + 1}`);
-  }
+  const refs = collectImageRefsFor(nodeId);
   let out = prompt;
-  labels.forEach((lab, i) => {
-    out = out.split(`@${lab}`).join(`图${i + 1}`);
+  refs.forEach((r, i) => {
+    out = out.split(`@${r.label}`).join(`图${i + 1}`);
   });
   return out;
 }
@@ -482,59 +584,107 @@ export async function runImageGen(id: string) {
     return;
   }
   upd(id, { status: "running", error: undefined });
+  let primaryCard: ModelCard | null = null;
+  const t0 = Date.now();
   try {
     const card = resolveModelCard("image", data.modelId);
-    const family = imageFamily(card);
+    primaryCard = card;
     let finalPrompt = await localizePrompt(resolveAtRefs(prompt, id), data.lang);
     // 创意度（仅图生图）：翻译成模型能懂的力度描述，附在提示词末尾
     const cv = images.length ? creativityPhrase(data.creativity) : null;
     if (cv) finalPrompt = `${finalPrompt}\n${cv}`;
-    // 自定义宽高优先；Nano Banana 走 aspect/resolution，不传 size
-    const customSize = data.width && data.height ? `${data.width}x${data.height}` : undefined;
-    let size = family === "banana" ? undefined : customSize ?? (data.size === "default" ? card.size : data.size);
-    let aspect = family === "banana" ? data.aspect : undefined;
-    const dir = sizeDirectives[sizeDirectives.length - 1];
-    if (dir) {
-      // 1) 上游尺寸指令（尺寸调整节点）优先替换本节点尺寸设置
-      const o = applySizeDirective(dir, family, data.resolution);
-      if (o.aspect) aspect = o.aspect;
-      if (o.size) size = o.size;
-    } else if (images.length) {
-      // 2) auto：未手动指定尺寸时，跟随第一张参考图的比例；没图才落回服务商配置
-      const autoBanana = family === "banana" && (!aspect || aspect === "auto");
-      const autoOther = family !== "banana" && !customSize && data.size === "default";
-      if (autoBanana || autoOther) {
-        const dm = await imageDims(images[0]);
-        if (dm) {
-          if (family === "banana") aspect = nearestAspect(dm.w / dm.h);
-          else {
-            const s = gptSize(`${dm.w}:${dm.h}`, family === "gpt" ? (data.resolution ?? "1K") : "1K");
-            if (s) size = `${s.w}x${s.h}`;
+
+    // 预算护栏：超日预算阻断、超确认阈值弹确认（生成类才预拦；返回 idle 不算错误）
+    const gate = budgetGate(estimateCost(card.model, { images: data.count ?? 1 }));
+    if (gate.block) throw new Error(gate.block);
+    if (gate.confirm && !window.confirm(gate.confirm)) {
+      upd(id, { status: "idle", error: undefined });
+      return;
+    }
+
+    // 一次完整生成尝试：主模型瞬时错误按设置重试 → 耗尽换备用模型。
+    // run 回调用当前 card 重算家族相关字段（备用模型可能不同家族，参数要适配）
+    const { result: batch, card: usedCard, usedFallback } = await runGenWithFallback("image", card, taskSignal(id), async (c) => {
+      const family = imageFamily(c);
+      const customSize = data.width && data.height ? `${data.width}x${data.height}` : undefined;
+      let size = family === "banana" ? undefined : customSize ?? (data.size === "default" ? c.size : data.size);
+      let aspect = family === "banana" ? data.aspect : undefined;
+      const dir = sizeDirectives[sizeDirectives.length - 1];
+      if (dir) {
+        const o = applySizeDirective(dir, family, data.resolution);
+        if (o.aspect) aspect = o.aspect;
+        if (o.size) size = o.size;
+      } else if (images.length) {
+        const autoBanana = family === "banana" && (!aspect || aspect === "auto");
+        const autoOther = family !== "banana" && !customSize && data.size === "default";
+        if (autoBanana || autoOther) {
+          const dm = await imageDims(images[0]);
+          if (dm) {
+            if (family === "banana") aspect = nearestAspect(dm.w / dm.h);
+            else {
+              const s = gptSize(`${dm.w}:${dm.h}`, family === "gpt" ? (data.resolution ?? "1K") : "1K");
+              if (s) size = `${s.w}x${s.h}`;
+            }
           }
         }
       }
+      const parallel = Math.max(1, Math.min(3, Math.round(data.parallel ?? 1)));
+      const req = {
+        prompt: finalPrompt,
+        size,
+        n: Math.max(1, Math.min(data.count ?? 1, familyMaxCount(family))),
+        refImages: images.length ? images : undefined,
+        aspect,
+        resolution: family === "banana" ? data.resolution : undefined,
+        quality: family === "gpt" ? data.quality : undefined,
+        seed: data.seed,
+        negative: data.negative?.trim() || undefined,
+        signal: taskSignal(id),
+      };
+      const settled = await Promise.allSettled(Array.from({ length: parallel }, () => generateImage(c, req)));
+      const results = settled.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+      if (!results.length) {
+        const firstErr = settled.find((r) => r.status === "rejected");
+        throw (firstErr as PromiseRejectedResult | undefined)?.reason ?? new Error("生成失败：未返回任何图片");
+      }
+      return { settled, results };
+    });
+    const { settled, results } = batch;
+    // 部分失败：保留已成功结果，但失败原因要能查（进报错中心，不是一句裸 toast 就没了）
+    const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (rejected.length) {
+      const reasons = [...new Set(rejected.map((r) => errMsg(r.reason)))].join("；");
+      pushError("生成图像（并行）", `${rejected.length}/${settled.length} 条并行请求失败，已保留 ${results.length} 张成功结果。失败原因：${reasons}`);
     }
-    const results = await generateImage(card, {
-      prompt: finalPrompt,
-      size,
-      n: data.count ?? 1,
-      refImages: images.length ? images : undefined,
-      aspect,
-      resolution: family === "banana" ? data.resolution : undefined,
-      quality: family === "gpt" ? data.quality : undefined,
+    if (usedFallback) {
+      upd(id, { fallbackModel: usedCard.name });
+      toast(`主模型失败，已由备用模型「${usedCard.name}」生成`, "info");
+    } else {
+      upd(id, { fallbackModel: undefined });
+    }
+    pushHistory(id, {
+      prompt,
+      modelId: modelKey(usedCard.id, usedCard.model),
+      params: {
+        size: data.size, aspect: data.aspect, resolution: data.resolution, quality: data.quality,
+        width: data.width, height: data.height, count: data.count, parallel: data.parallel,
+        creativity: data.creativity, seed: data.seed, negative: data.negative, lang: data.lang,
+      },
+      results,
     });
     upd(id, { status: "done", results, picked: 0 });
     usePromptHist.getState().record(prompt);
     for (const src of results) {
-      useUi.getState().addGallery({ kind: "image", src, prompt, model: card.model, nodeId: id });
+      useUi.getState().addGallery({ kind: "image", src, prompt, model: usedCard.model, nodeId: id });
     }
     collectToLibrary("image", results, {
       prompt,
-      model: card.name,
+      model: usedCard.name,
+      nodeId: id,
       gen: {
         nodeKind: "imageGen",
         prompt: (data.prompt ?? "").trim() || prompt,
-        modelId: modelKey(card.id, card.model),
+        modelId: modelKey(usedCard.id, usedCard.model),
         size: data.size,
         aspect: data.aspect,
         resolution: data.resolution,
@@ -543,12 +693,371 @@ export async function runImageGen(id: string) {
         height: data.height,
         lang: data.lang,
         creativity: data.creativity,
+        seed: data.seed,
+        negative: data.negative?.trim() || undefined,
       },
     });
-    void maybeAutoSave(results, { prompt, model: card.model });
+    useUsage.getState().record(usedCard, { ok: true, images: results.length, durMs: Date.now() - t0 });
+    void maybeAutoSave(results, { prompt, model: usedCard.model });
   } catch (e) {
+    // 用户主动停止：不算错误，恢复待机（也不进报错中心响铃）
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", error: undefined });
+      toast("已停止生成", "info");
+      return;
+    }
+    if (primaryCard) useUsage.getState().record(primaryCard, { ok: false, durMs: Date.now() - t0 });
     upd(id, { status: "error", error: errMsg(e) });
     pushError("生成图像", errMsg(e));
+  }
+}
+
+/** 超清放大（本地）：取上游图 → 调 Rust enhance_upscale（ort + DirectML + 笨 Tile）→ 输出新资产（非破坏，原图不动）。
+ *  进度经 Channel 回写 data.progress/progressPct；用户停止 → 桥接 enhance_cancel，Rust 在下一 tile 边界返回「已取消」。
+ *  首跑缺模型时由 resolveLocalModel 自动从镜像下载 + SHA-256 校验。 */
+export async function runEnhanceLocal(id: string) {
+  const node = useBoard.getState().nodes.find((n) => n.id === id);
+  if (!node) return;
+  const data = node.data as EnhanceLocalData;
+  if (data.status === "running") return;
+  if (!isTauri) { toast("超清放大仅桌面版支持", "err"); return; }
+  const { images } = collectUpstream(id);
+  const input = images[0];
+  if (!input) { toast("请把一张图片连到「超清放大」节点的左侧入口", "err"); return; }
+  const tObj = data.target as { mode?: "print"; wMm?: number; hMm?: number; dpi?: number; longEdge?: number };
+  const targetLong = typeof data.target === "string"
+    ? ({ "4k": 3840, "8k": 7680, "16k": 15360 } as Record<string, number>)[data.target]
+    : tObj.mode === "print"
+      ? Math.round((Math.max(tObj.wMm ?? 0, tObj.hMm ?? 0) / 25.4) * (tObj.dpi ?? 300))
+      : (tObj.longEdge ?? 0);
+  if (!Number.isFinite(targetLong) || targetLong < 64) {
+    toast("目标尺寸无效，请检查像素尺寸或印刷尺寸与 DPI", "err");
+    return;
+  }
+  upd(id, {
+    status: "running", error: undefined, progress: "准备中…", progressPct: 0, result: undefined, report: undefined,
+    fidelityScore: undefined, sourceConsistencyMae: undefined, correctedBlockRatio: undefined,
+    rejectedCandidateRatio: undefined, qualityGate: undefined, productionReady: undefined,
+    qualityMessage: undefined, timedOut: undefined,
+  });
+  let automaticTimeout = false;
+  try {
+    const enhance = useSettings.getState().settings.enhance;
+    const inputSize = await imageDims(input);
+    if (!inputSize) throw new Error("无法读取输入图片尺寸，请换用有效的 PNG、JPEG、WebP 或 TIFF 图片");
+    const estimate = estimateEnhanceResources(inputSize.w, inputSize.h, data, enhance.tileOverlap);
+    // 16K 横竖图仍可运行；只拦截会让最终像素缓冲和融合工作集失控的异常自定义/印刷尺寸。
+    if (estimate.pixels > 268_000_000 || estimate.ramMb > 24_000 || estimate.width > 32_768 || estimate.height > 32_768) {
+      throw new Error(
+        `目标 ${estimate.width}×${estimate.height} 预计需要约 ${(estimate.ramMb / 1024).toFixed(1)}GB 内存，超出生产安全上限。请降低尺寸/DPI，或分区放大后再拼接。`,
+      );
+    }
+    const { bytes } = await fetchBytes(input);
+    const { resolveLocalModel, modelStatus, modelFilePath } = await import("./localModelRegistry");
+    // 四档路由：默认优先保真。海报/人像先走单主模型，只有用户手动增加细节或印刷精修才启用第二模型。
+    const ROUTE: Record<string, { main: string; detail?: string }> = {
+      fast: { main: "nomosuni-span-multijpg-fp32" },
+      balanced: { main: "nomoswebphoto-esrgan-fp32", detail: "ultrasharpv2-lite-fp32" },
+      portrait: { main: "nomoswebphoto-realplksr-fp32", detail: "ultrasharpv2-lite-fp32" },
+      // 专业档默认仍走单主模型 + 确定性多算法保真链；第二神经模型只在手动开启时运行。
+      professional: { main: "nomoswebphoto-esrgan-fp32", detail: "ultrasharpv2-lite-fp32" },
+    };
+    const route = ROUTE[data.preset] ?? ROUTE.balanced;
+    const main = await resolveLocalModel(route.main);
+    let detailPath: string | undefined;
+    let detailWeight = 0;
+    let detailNote = "";
+    const requestedDetail = data.detailStrength === 45 ? 0 : data.detailStrength;
+    const targetRatio = targetLong / Math.max(inputSize.w, inputSize.h);
+    // UltraSharp V2 公开权重为非商业许可：不能作为生产档的静默默认依赖。
+    // 仅在用户明确把细节强度调到 >0 时启用；默认生产链由主模型 + 硬边结构保护完成。
+    const manualDetail = requestedDetail > 0;
+    const allowDetail = manualDetail && Boolean(route.detail) && targetRatio <= 8;
+    if (route.detail && allowDetail) {
+      const cm = data.contentMode ?? "auto";
+      const ds = requestedDetail;
+      // DAT2 耗时高且可能制造纹理，仅在用户明确选择插画并手动增强时启用。
+      const useManualDat2 = manualDetail && data.preset === "professional" && cm === "illustration";
+      const detail = await resolveLocalModel(useManualDat2 ? "ultrasharpv2-dat2-fp32" : route.detail);
+      detailPath = detail.path;
+      detailNote = ` · 手动细节:${detail.model.displayName}（${detail.model.license}，不可作为商业内置模型）`;
+      // [海报·文化墙, 专业印刷]，按内容类型（文档 §4.6 初始参数；平滑区会被内容掩膜再压到 0）
+      const W: Record<string, [number, number]> = {
+        // DAT2 的高频贡献显著强于 Lite，专业档不能沿用“档位越高权重越大”的直觉。
+        // 这些保守初值再叠加 Rust 侧逐像素质量守卫，优先避免渐变网纹、文字双边和皮肤砂纸化。
+        auto: [0.14, 0.14], photo: [0.1, 0.1], illustration: [0.22, 0.22], poster: [0.18, 0.18], portrait: [0.08, 0.08],
+      };
+      const [b, p] = W[cm] ?? W.auto;
+      // 细节强度 >0 = 手动覆盖融合权重（封顶 0.8 防塑料感）；0 = 自动查表。
+      // 旧数据的占位默认是 45（当时无 UI、从未生效）→ 视同 0=自动，保持老画布行为不变
+      const manualCap = data.preset === "professional" ? 0.45 : 0.65;
+      const autoWeight = data.preset === "professional" ? p : b;
+      // 负数是 Rust 管线内部约定：绝对值为基准，结合本次真实内容分析再调权；显式内容模式/手动强度保持正数。
+      detailWeight = manualDetail ? Math.min(ds / 100, manualCap) : cm === "auto" ? -autoWeight : autoWeight;
+    } else if (route.detail) {
+      detailNote = targetRatio > 8
+        ? " · 目标超过源图 8×，已关闭细节模型以避免文字/皮肤伪纹理"
+        : " · 生产保真：单主模型 + 文字/几何硬边保护（细节模型仅手动开启）";
+    }
+    const outDir = await assetsDir();
+    const { join } = await import("@tauri-apps/api/path");
+    const ext = data.outputFormat === "tiff" ? "tif" : data.outputFormat === "jpeg" ? "jpg" : "png";
+    const outPath = await join(outDir, `${Date.now()}_${uid(6)}.${ext}`);
+    // 去压缩预处理（批次2）：auto=按 jpegScore 自动 / on=强制 / off=关闭；模型缺失仅降级不阻断
+    let dejpgPath: string | undefined;
+    if ((data.dejpeg ?? "auto") !== "off") {
+      dejpgPath = await resolveLocalModel("dejpg-realplksr-1x").then((r) => r.path).catch(() => undefined);
+    }
+    // 人脸分支（人像档，文档 §11）：SCRFD 检测 + FaceUpDAT 中脸增强；GFPGAN/CodeFormer 为可选模型——
+    // 只在已在位时传路径（不触发 ~350MB 的静默下载），未下载时 Rust 侧记日志降级
+    let faceDetectPath: string | undefined;
+    let faceUpscalePath: string | undefined;
+    let faceRestorePath: string | undefined;
+    if (data.preset === "portrait") {
+      faceDetectPath = await resolveLocalModel("scrfd-2.5g").then((r) => r.path).catch(() => undefined);
+      const fr = data.faceRestore ?? "identity";
+      if (fr === "faceup") {
+        faceUpscalePath = await resolveLocalModel("faceupdat-4x-fp32").then((r) => r.path).catch(() => undefined);
+      }
+      if (fr === "gfpgan" || fr === "codeformer") {
+        const optId = fr === "gfpgan" ? "gfpgan-v1.4" : "codeformer";
+        const st = await modelStatus(optId);
+        if (st.downloaded) faceRestorePath = (await modelFilePath(optId)) ?? undefined;
+      }
+    }
+    const cfg = {
+      scale: main.model.scale,
+      tileSize: estimate.tileSize,
+      // 专业印刷档 overlap 48（文档 §21.3），其余档用全局设置（默认 32）
+      tileOverlap: data.preset === "professional" ? 48 : enhance.tileOverlap,
+      targetLongEdge: targetLong,
+      detailModelPath: detailPath,
+      detailWeight,
+      dejpeg: data.dejpeg ?? "auto",
+      dejpegModelPath: dejpgPath,
+      bitDepth: data.bitDepth ?? 8,
+      faceDetectModelPath: faceDetectPath,
+      faceUpscaleModelPath: faceUpscalePath,
+      faceRestore: data.faceRestore ?? "identity",
+      faceRestoreModelPath: faceRestorePath,
+      outputFormat: data.outputFormat,
+      outputDpi: typeof data.target !== "string" && tObj.mode === "print" ? tObj.dpi ?? 300 : 72,
+      emitAssets: true,
+    };
+    type SrEvent = { kind: "stage"; data: { stage: string; pct: number } } | { kind: "progress"; data: { pct: number } } | { kind: "log"; data: { msg: string } };
+    const onEvent = new Channel<SrEvent>();
+    onEvent.onmessage = (e: SrEvent) => {
+      if (e.kind === "stage") upd(id, { progress: e.data.stage, progressPct: Math.round(e.data.pct * 100) });
+      else if (e.kind === "progress") upd(id, { progressPct: Math.round(e.data.pct * 100) });
+    };
+    // 取消桥接：节点 AbortController 触发 → 调 enhance_cancel；Rust 在下一个 tile 边界抛「已取消」
+    const signal = taskSignal(id);
+    let watchdog = 0;
+    const onCancel = () => {
+      window.clearTimeout(watchdog);
+      void invoke("enhance_cancel", { taskId: id });
+    };
+    signal?.addEventListener("abort", onCancel);
+    // 依据本次尺寸、Tile 和历史耗时给出动态看门狗；最少 5 分钟、最多 15 分钟。
+    // 超时只在 Tile 边界生效，避免强杀 DirectML；手动细节模型另有 Rust 侧更短的自动回退预算。
+    const overallTimeoutMs = Math.min(15 * 60_000, Math.max(5 * 60_000, Math.ceil(estimate.secondsHigh * 1.6 * 1000)));
+    watchdog = window.setTimeout(() => {
+      automaticTimeout = true;
+      void invoke("enhance_cancel", { taskId: id });
+    }, overallTimeoutMs);
+    try {
+      const result = await invoke<{
+        outPath: string; width: number; height: number; elapsedMs: number; tiles: number; tileSizeUsed: number; estimatedVramMb: number; backend: string;
+        pipeline: string; quality: { contentType: string; jpegScore: number; edgeDensity: number; hardEdgeRatio: number; flatRatio: number; noise: number; blur: number } | null;
+        fidelity: { sourceMaeBefore: number; sourceMaeAfter: number; correctedBlockRatio: number; candidateRejectedRatio: number; maxCorrection: number; score: number } | null;
+        analysisPath: string | null; vectorGuidePath: string | null; faceReport: string | null;
+      }>("enhance_upscale", { taskId: id, inputBytes: bytes, outPath, modelPath: main.path, config: cfg, onEvent });
+      const url = assetUrl(result.outPath);
+      const q = result.quality;
+      // 目标不大于源图时 Rust 只做无损重采样，不产生 fidelity；这条路径按 100 分通过。
+      const fidelityScore = result.fidelity ? Math.round(result.fidelity.score * 100) : 100;
+      const consistencyWorse = Boolean(result.fidelity && result.fidelity.sourceMaeAfter > result.fidelity.sourceMaeBefore + 0.001);
+      const qualityGate: NonNullable<EnhanceLocalData["qualityGate"]> = consistencyWorse || fidelityScore < 70
+        ? "failed"
+        : fidelityScore < 80 ? "warning" : "passed";
+      const productionReady = qualityGate === "passed";
+      const qualityMessage = qualityGate === "passed"
+        ? `生产门禁通过（保真 ${fidelityScore}）`
+        : qualityGate === "warning"
+          ? `保真 ${fidelityScore}：需要人工检查文字、Logo 和细线，结果未自动入库`
+          : `保真 ${fidelityScore}：未通过生产门禁，建议改用单主模型/降低细节强度后重跑`;
+      const qLine = q ? ` · 类型:${q.contentType} 边缘:${Math.round(q.edgeDensity * 100)}% 硬边:${Math.round(q.hardEdgeRatio * 100)}% 色块:${Math.round(q.flatRatio * 100)}% 压缩:${Math.round(q.jpegScore * 100)}%` : "";
+      const assetLine = result.analysisPath ? " · 已输出矢量引导/分析资产" : "";
+      const faceLine = result.faceReport ? ` · ${result.faceReport}` : "";
+      upd(id, {
+        status: "done", result: url, resultW: result.width, resultH: result.height,
+        elapsedMs: result.elapsedMs, tiles: result.tiles, tileSizeUsed: result.tileSizeUsed, estimatedVramMb: result.estimatedVramMb, progress: undefined, progressPct: 100,
+        fidelityScore,
+        sourceConsistencyMae: result.fidelity?.sourceMaeAfter,
+        correctedBlockRatio: result.fidelity?.correctedBlockRatio,
+        rejectedCandidateRatio: result.fidelity?.candidateRejectedRatio,
+        qualityGate, productionReady, qualityMessage, timedOut: false,
+        analysisMapPath: result.analysisPath ?? undefined,
+        vectorGuidePath: result.vectorGuidePath ?? undefined,
+        report: `${result.pipeline}${detailNote} · ${qualityMessage} · Tile ${result.tileSizeUsed}×${result.tiles} · 显存估算${result.estimatedVramMb}MB · ${(result.elapsedMs / 1000).toFixed(1)}s · ${result.width}×${result.height}${qLine}${assetLine}${faceLine}`,
+      });
+      // 只有通过生产门禁的结果自动入库；警告/失败结果仍保留在节点，可预览或人工确认后保存。
+      if (productionReady) {
+        try {
+          const { assetToDataUrl } = await import("./services/assetFiles");
+          const dataUrl = await assetToDataUrl(result.outPath);
+          collectToLibrary("image", [dataUrl], { prompt: `超清放大 ${result.width}×${result.height}`, model: main.model.displayName, nodeId: id });
+        } catch (e) {
+          console.warn("[超清放大] 资产库收录失败", e);
+        }
+      } else {
+        toast(qualityMessage, qualityGate === "failed" ? "err" : "info");
+        if (qualityGate === "failed") pushError("超清放大 · 质量门禁", qualityMessage);
+      }
+      notifyDone("超清放大");
+    } finally {
+      window.clearTimeout(watchdog);
+      signal?.removeEventListener("abort", onCancel);
+    }
+  } catch (e) {
+    if (automaticTimeout) {
+      const msg = "超清放大超过动态安全时限，已在 Tile 边界自动停止。请改用更小 Tile、较低目标尺寸，或关闭手动细节模型后重试。";
+      upd(id, { status: "error", error: msg, progress: undefined, progressPct: undefined, timedOut: true, productionReady: false, qualityGate: "failed", qualityMessage: msg });
+      pushError("超清放大 · 超时保护", msg);
+      return;
+    }
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", error: undefined, progress: undefined, progressPct: undefined });
+      toast("已停止增强", "info");
+      return;
+    }
+    upd(id, { status: "error", error: errMsg(e), progress: undefined, progressPct: undefined });
+    pushError("超清放大", errMsg(e));
+  }
+}
+
+/** 智能矢量（本地 VTracer）：取上游图 → Rust vectorize_image → SVG 资产（非破坏，原图不动）。
+ *  产物是 SVG 文本（存在 data.svg，导出 AI/CDR/PDF 用）+ SVG 文件（预览/拖出）。
+ *  不自动收录资产库：面板「收入资产库」按钮点击后才以 SVG 格式入「矢量」分类。 */
+export async function runVectorize(id: string) {
+  const node = useBoard.getState().nodes.find((n) => n.id === id);
+  if (!node) return;
+  const data = node.data as VectorizeData;
+  if (data.status === "running") return;
+  if (!isTauri) { toast("智能矢量仅桌面版支持", "err"); return; }
+  const { images } = collectUpstream(id);
+  const input = images[0];
+  if (!input) { toast("请把一张图片连到「智能矢量」节点的左侧入口", "err"); return; }
+  upd(id, { status: "running", error: undefined, progress: "矢量化中…", result: undefined, svg: undefined, report: undefined });
+  try {
+    // 读上游超清节点的 analysisMap（文档 §5.3 跨节点复用）：auto 档按内容类型选预设；
+    // flatRatio/edgeDensity 传给 Rust 自动微调参数；jpegScore 高 → 报告提示先去压缩
+    let upType: string | undefined;
+    let amFlat: number | undefined;
+    let amEdge: number | undefined;
+    let amJpeg: number | undefined;
+    const upEdge = useBoard.getState().edges.find((e) => e.target === id);
+    const upNode = upEdge ? useBoard.getState().nodes.find((n) => n.id === upEdge.source) : undefined;
+    const amPath = upNode?.type === "enhanceLocal" ? ((upNode.data as Record<string, unknown>)?.analysisMapPath as string | undefined) : undefined;
+    const guidePath = upNode?.type === "enhanceLocal" ? ((upNode.data as Record<string, unknown>)?.vectorGuidePath as string | undefined) : undefined;
+    if (amPath) {
+      try {
+        const { readTextFile } = await import("@tauri-apps/plugin-fs");
+        const am = JSON.parse(await readTextFile(amPath)) as { content?: { type?: string; flatRatio?: number; edgeDensity?: number }; degradation?: { jpegScore?: number } };
+        upType = am?.content?.type;
+        amFlat = am?.content?.flatRatio;
+        amEdge = am?.content?.edgeDensity;
+        amJpeg = am?.degradation?.jpegScore;
+      } catch {
+        /* 读不到忽略，回退默认 */
+      }
+    }
+    // 超清节点的最终图带学习型锐化，不适合作为唯一描边依据；优先消费其保结构 guide，
+    // 读不到时无声回退当前连线图片，保证矢量节点仍可独立运行。
+    const sourceBytes = (await fetchBytes(input)).bytes;
+    let bytes = sourceBytes;
+    let usedGuide = false;
+    if (guidePath) {
+      try {
+        const { readFile } = await import("@tauri-apps/plugin-fs");
+        bytes = await readFile(guidePath);
+        usedGuide = true;
+      } catch {
+        /* guide 缺失/被清理：继续使用连线图 */
+      }
+    }
+    let preset = data.preset;
+    let autoNote = "";
+    if (preset === "auto") {
+      preset = upType === "photo" ? "photo" : upType === "illustration" ? "comic" : "poster"; // photo→照片；illustration→漫画锐角；其余→海报
+      autoNote = `（自动:${upType ?? "未知"}→${preset === "photo" ? "照片" : preset === "comic" ? "漫画" : "海报"}）`;
+    }
+    const outDir = await assetsDir();
+    const { join } = await import("@tauri-apps/api/path");
+    const outPath = await join(outDir, `${Date.now()}_${uid(6)}.svg`);
+    // 进度事件（批次5）：分析/候选 k/N/评分/后处理/完成
+    type VecEvent = { kind: "stage"; data: { stage: string; pct: number } } | { kind: "progress"; data: { pct: number } } | { kind: "log"; data: { msg: string } };
+    const onEvent = new Channel<VecEvent>();
+    onEvent.onmessage = (e: VecEvent) => {
+      if (e.kind === "stage") upd(id, { progress: e.data.stage, progressPct: Math.round(e.data.pct * 100) });
+      else if (e.kind === "progress") upd(id, { progressPct: Math.round(e.data.pct * 100) });
+    };
+    const signal = taskSignal(id);
+    const onCancel = () => { void invoke("vectorize_cancel", { taskId: id }); };
+    signal?.addEventListener("abort", onCancel);
+    let result: {
+      svgPath: string; svg: string; width: number; height: number; pathCount: number; shapeCount: number; elapsedMs: number;
+      candidates: number; anchors: number; anchorBudget: number; score: number | null; selected: string; hint: string | null;
+      qualityPassed: boolean | null; rmse: number | null; edgeIou: number | null; alphaIou: number | null;
+    };
+    try {
+      result = await invoke<typeof result>("vectorize_image", {
+        taskId: id,
+        inputBytes: bytes,
+        referenceBytes: usedGuide ? sourceBytes : null,
+        outPath,
+        config: {
+          preset,
+          colorMode: data.colorMode,
+          hierarchical: data.hierarchical,
+          colorPrecision: data.colorPrecision,
+          filterSpeckle: data.filterSpeckle,
+          pathPrecision: data.pathPrecision,
+          geometry: data.geometry,
+          quality: data.quality ?? "balanced",
+          flatRatio: amFlat,
+          edgeDensity: amEdge,
+          jpegScore: amJpeg,
+        },
+        onEvent,
+      });
+    } finally {
+      signal?.removeEventListener("abort", onCancel);
+    }
+    const url = assetUrl(result.svgPath);
+    const budgetPct = result.anchorBudget > 0 ? Math.round((result.anchors / result.anchorBudget) * 100) : 0;
+    const candLine = result.candidates > 1 ? ` · 候选${result.candidates}选「${result.selected}」` : "";
+    const hintLine = result.hint ? ` · ⚠ ${result.hint}` : "";
+    const gateLine = result.qualityPassed == null
+      ? " · 未回评（极速档）"
+      : result.qualityPassed
+        ? ` · 生产门禁通过${result.edgeIou != null ? `（边缘${Math.round(result.edgeIou * 100)}%）` : ""}`
+        : " · ⚠ 生产门禁未通过";
+    upd(id, {
+      status: "done", result: url, svg: result.svg, resultW: result.width, resultH: result.height,
+      pathCount: result.pathCount, productionReady: result.qualityPassed ?? undefined, qualityScore: result.score ?? undefined, progress: undefined, progressPct: 100,
+      report: `${result.pathCount} 条路径 · ${result.anchors} 锚点(预算${budgetPct}%) · ${result.width}×${result.height} · ${(result.elapsedMs / 1000).toFixed(1)}s${result.shapeCount ? ` · ${result.shapeCount} 图元` : ""}${candLine}${autoNote}${usedGuide ? " · 保结构引导+源图回评" : ""}${gateLine}${hintLine}`,
+    });
+    // 不自动收录资产库：由面板「收入资产库」按钮按需入「矢量」分类
+    notifyDone("智能矢量");
+  } catch (e) {
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", progress: undefined });
+      toast("已停止", "info");
+      return;
+    }
+    upd(id, { status: "error", error: errMsg(e), progress: undefined });
+    pushError("智能矢量", errMsg(e));
   }
 }
 
@@ -558,8 +1067,8 @@ export async function runModelCompare(id: string, keys: string[]) {
   const node = s.nodes.find((n) => n.id === id);
   if (!node || (node.type !== "imageGen" && node.type !== "videoGen") || !keys.length) return;
   const isVideo = node.type === "videoGen";
-  const runOne = isVideo ? runVideoGen : runImageGen;
-  const resetFields = isVideo ? { resultUrl: undefined, progress: undefined } : { results: [], picked: 0 };
+  const runOne = RUNNERS[node.type as NodeKind]!; // 经统一闸门：克隆节点也纳入停止通道与并发限流
+  const resetFields = isVideo ? { resultUrl: undefined, resultUrls: undefined, picked: 0, progress: undefined } : { results: [], picked: 0 };
   const base = node.data as ImageGenData;
   const parent = node.parentId ? s.nodes.find((n) => n.id === node.parentId) : undefined;
   const baseX = node.position.x + (parent?.position.x ?? 0);
@@ -574,7 +1083,7 @@ export async function runModelCompare(id: string, keys: string[]) {
       { x: baseX + (w + 70) * (i + 1), y: baseY },
       { ...base, modelId: key, status: "idle", error: undefined, ...resetFields },
     );
-    for (const e of inEdges) bs.connectNodes(e.source, nid, e.targetHandle ?? "in-text", e.sourceHandle ?? "out");
+    for (const e of inEdges) bs.connectNodes(e.source, nid, "in", e.sourceHandle ?? "out");
     ids.push(nid);
   });
   toast(`已按 ${keys.length} 个模型建立对比节点，并行生成中…`, "info");
@@ -593,9 +1102,9 @@ export async function runBatchPrompts(id: string, lines: string[]) {
   const prompts = lines.map((l) => l.trim()).filter(Boolean);
   if (!node || (node.type !== "imageGen" && node.type !== "videoGen") || !prompts.length) return;
   const isVideo = node.type === "videoGen";
-  const runOne = isVideo ? runVideoGen : runImageGen;
+  const runOne = RUNNERS[node.type as NodeKind]!; // 经统一闸门：克隆节点也纳入停止通道与并发限流
   const resetFields = isVideo
-    ? { resultUrl: undefined, progress: undefined }
+    ? { resultUrl: undefined, resultUrls: undefined, picked: 0, progress: undefined }
     : { results: [], picked: 0 };
   const base = node.data as ImageGenData;
   // 共用前缀 = 节点提示词 + 上游文本（尺寸指令除外）
@@ -606,8 +1115,8 @@ export async function runBatchPrompts(id: string, lines: string[]) {
   const baseY = node.position.y + (parent?.position.y ?? 0);
   const w = node.measured?.width ?? 310;
   const h = node.measured?.height ?? 320;
-  // 继承图片连线（参考图共用）；文本已物化进各条提示词，不再连文本边
-  const inEdges = s.edges.filter((e) => e.target === id && e.targetHandle === "in-image");
+  // 端口统一后：图输入边 = 源节点输出 image（参考图共用；文本已物化进各条提示词，不再连文本边）
+  const inEdges = s.edges.filter((e) => e.target === id && srcOutType(e, s.nodes) === "image");
   const ids: string[] = [];
   const COLS = 4;
   prompts.forEach((line, i) => {
@@ -617,7 +1126,7 @@ export async function runBatchPrompts(id: string, lines: string[]) {
       { x: baseX + (w + 70) * ((i % COLS) + 1), y: baseY + Math.floor(i / COLS) * (h + 90) },
       { ...base, prompt: shared ? `${shared}\n${line}` : line, status: "idle", error: undefined, ...resetFields },
     );
-    for (const e of inEdges) bs.connectNodes(e.source, nid, e.targetHandle ?? "in-image", e.sourceHandle ?? "out");
+    for (const e of inEdges) bs.connectNodes(e.source, nid, "in", e.sourceHandle ?? "out");
     ids.push(nid);
   });
   toast(`批量生成：已建立 ${prompts.length} 个节点，并行生成中…${shared ? "（共用提示词已附加到每条）" : ""}`, "info");
@@ -631,9 +1140,9 @@ export async function runBatchImages(id: string) {
   const node = s.nodes.find((n) => n.id === id);
   if (!node || (node.type !== "imageGen" && node.type !== "videoGen")) return;
   const isVideo = node.type === "videoGen";
-  const runOne = isVideo ? runVideoGen : runImageGen;
-  const resetFields = isVideo ? { resultUrl: undefined, progress: undefined } : { results: [], picked: 0 };
-  const imgEdges = s.edges.filter((e) => e.target === id && e.targetHandle === "in-image");
+  const runOne = RUNNERS[node.type as NodeKind]!; // 经统一闸门：克隆节点也纳入停止通道与并发限流
+  const resetFields = isVideo ? { resultUrl: undefined, resultUrls: undefined, picked: 0, progress: undefined } : { results: [], picked: 0 };
+  const imgEdges = s.edges.filter((e) => e.target === id && srcOutType(e, s.nodes) === "image");
   if (imgEdges.length < 2) {
     toast("按参考图批量需要接入至少 2 路上游图片", "err");
     return;
@@ -644,7 +1153,7 @@ export async function runBatchImages(id: string) {
   const baseY = node.position.y + (parent?.position.y ?? 0);
   const w = node.measured?.width ?? 310;
   const h = node.measured?.height ?? 320;
-  const textEdges = s.edges.filter((e) => e.target === id && e.targetHandle !== "in-image");
+  const textEdges = s.edges.filter((e) => e.target === id && srcOutType(e, s.nodes) === "text");
   const ids: string[] = [];
   const COLS = 4;
   imgEdges.forEach((imgEdge, i) => {
@@ -654,8 +1163,8 @@ export async function runBatchImages(id: string) {
       { x: baseX + (w + 70) * ((i % COLS) + 1), y: baseY + Math.floor(i / COLS) * (h + 90) },
       { ...base, status: "idle", error: undefined, ...resetFields },
     );
-    bs.connectNodes(imgEdge.source, nid, imgEdge.targetHandle ?? "in-image", imgEdge.sourceHandle ?? "out");
-    for (const e of textEdges) bs.connectNodes(e.source, nid, e.targetHandle ?? "in-text", e.sourceHandle ?? "out");
+    bs.connectNodes(imgEdge.source, nid, "in", imgEdge.sourceHandle ?? "out");
+    for (const e of textEdges) bs.connectNodes(e.source, nid, "in", e.sourceHandle ?? "out");
     ids.push(nid);
   });
   toast(`按参考图批量：${imgEdges.length} 路图片各建一个生成节点，并行生成中…`, "info");
@@ -675,41 +1184,104 @@ export async function runVideoGen(id: string) {
     toast("请输入视频描述，或连接提示词/图片节点", "err");
     return;
   }
-  upd(id, { status: "running", error: undefined, progress: "提交任务…", resultUrl: undefined });
+  upd(id, { status: "running", error: undefined, progress: "提交任务…", resultUrl: undefined, resultUrls: undefined, picked: 0 });
+  let primaryCard: ModelCard | null = null;
+  const t0 = Date.now();
   try {
     const card = resolveModelCard("video", data.modelId);
-    const meta = videoMeta(videoFamily(card));
+    primaryCard = card;
     const finalPrompt = await localizePrompt(prompt, (data as { lang?: string }).lang);
-    // 参考模式（家族支持）：全部上游图作为角色/主体参考；否则第 1 路=首帧、第 2 路=尾帧
-    const useRef = data.refMode === "reference" && (meta.maxRef ?? 0) > 0 && images.length > 0;
-    const lastFrame = !useRef && meta.tail && (data.useTail ?? true) && images.length >= 2 ? images[1] : undefined;
-    const url = await generateVideo(card, {
-      prompt: finalPrompt,
-      image: useRef ? undefined : images[0],
-      lastFrame,
-      refImages: useRef ? images.slice(0, meta.maxRef) : undefined,
-      video: videos[0],
-      refAudio: audios[0],
-      // 与左下面板显示的默认档保持一致：没手动调过也按家族默认值真实发送（此前是不发，所见 ≠ 所发）
-      duration: data.duration ?? meta.defaultDuration,
-      resolution: data.resolution ?? meta.defaultResolution,
-      aspect: data.aspect ?? meta.aspects[0],
-      audio: meta.audioToggle ? (data.audio ?? true) : undefined,
-      onProgress: (m) => upd(id, { progress: m }),
+    // 预算护栏（视频按秒数 × 张数预估）
+    const gate = budgetGate(estimateCost(card.model, { videoSec: Number(data.duration ?? "5") * (data.parallel ?? 1) }));
+    if (gate.block) throw new Error(gate.block);
+    if (gate.confirm && !window.confirm(gate.confirm)) {
+      upd(id, { status: "idle", error: undefined, progress: undefined });
+      return;
+    }
+    // 主模型瞬时重试 → 备用模型；run 回调用当前 card 重算家族 meta（备用可能不同家族）
+    const { result: urls, card: usedCard, usedFallback } = await runGenWithFallback("video", card, taskSignal(id), async (c) => {
+      const meta = videoMeta(videoFamily(c));
+      const useRef = data.refMode === "reference" && (meta.maxRef ?? 0) > 0 && images.length > 0;
+      const lastFrame = !useRef && meta.tail && (data.useTail ?? true) && images.length >= 2 ? images[1] : undefined;
+      const baseReq = {
+        prompt: finalPrompt,
+        image: useRef ? undefined : images[0],
+        lastFrame,
+        refImages: useRef ? images.slice(0, meta.maxRef) : undefined,
+        video: videos[0],
+        refAudio: audios[0],
+        duration: data.duration ?? meta.defaultDuration,
+        resolution: data.resolution ?? meta.defaultResolution,
+        aspect: data.aspect ?? meta.aspects[0],
+        audio: meta.audioToggle ? (data.audio ?? true) : undefined,
+        signal: taskSignal(id),
+      };
+      const parallel = Math.max(1, Math.min(3, Math.round(data.parallel ?? 1)));
+      const slotMsg = Array.from({ length: parallel }, () => "排队中…");
+      let doneCount = 0;
+      const settled = await Promise.allSettled(
+        Array.from({ length: parallel }, (_, i) =>
+          generateVideo(c, {
+            ...baseReq,
+            onProgress: (m) => {
+              slotMsg[i] = m;
+              upd(id, {
+                progress: parallel > 1 ? `并行 ${parallel} 条 · 完成 ${doneCount}/${parallel} · ${i + 1}# ${slotMsg[i]}` : m,
+              });
+            },
+          }).then((url) => {
+            doneCount += 1;
+            return url;
+          }),
+        ),
+      );
+      const urls = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+      if (!urls.length) {
+        const firstErr = settled.find((r) => r.status === "rejected");
+        throw (firstErr as PromiseRejectedResult | undefined)?.reason ?? new Error("生成失败：未返回任何视频");
+      }
+      return urls;
     });
-    upd(id, { status: "done", resultUrl: url, progress: undefined });
+    if (usedFallback) {
+      upd(id, { fallbackModel: usedCard.name });
+      toast(`主模型失败，已由备用模型「${usedCard.name}」生成`, "info");
+    } else {
+      upd(id, { fallbackModel: undefined });
+    }
+    upd(id, { status: "done", resultUrl: urls[0], resultUrls: urls, picked: 0, progress: undefined });
     usePromptHist.getState().record(prompt);
-    useUi.getState().addGallery({ kind: "video", src: url, prompt, model: card.model, nodeId: id });
-    // 收录资产库后把节点地址换成本地文件：blob URL 重启即失效、中转站直链一般 24 小时过期
-    const saved = await useAssets.getState().collect({
-      src: url,
-      kind: "video",
+    pushHistory(id, {
       prompt,
-      model: card.name,
-      gen: { nodeKind: "videoGen", prompt: (data.prompt ?? "").trim() || prompt, modelId: modelKey(card.id, card.model), lang: data.lang },
+      modelId: modelKey(usedCard.id, usedCard.model),
+      params: {
+        duration: data.duration, resolution: data.resolution, aspect: data.aspect,
+        parallel: data.parallel, refMode: data.refMode, useTail: data.useTail, audio: data.audio, lang: data.lang,
+      },
+      results: urls,
     });
-    if (saved && isTauri) upd(id, { resultUrl: assetUrl(saved.path) });
+    // 收录资产库后把节点地址换成本地文件：blob URL 重启即失效、中转站直链一般 24 小时过期
+    const savedUrls: string[] = [];
+    for (const url of urls) {
+      useUi.getState().addGallery({ kind: "video", src: url, prompt, model: usedCard.model, nodeId: id });
+      const saved = await useAssets.getState().collect({
+        src: url,
+        kind: "video",
+        prompt,
+        model: usedCard.name,
+        nodeId: id,
+        gen: { nodeKind: "videoGen", prompt: (data.prompt ?? "").trim() || prompt, modelId: modelKey(usedCard.id, usedCard.model), lang: data.lang },
+      });
+      savedUrls.push(saved && isTauri ? assetUrl(saved.path) : url);
+    }
+    upd(id, { resultUrls: savedUrls, resultUrl: savedUrls[0] });
+    useUsage.getState().record(usedCard, { ok: true, videoSec: Number(data.duration ?? "5") * urls.length, durMs: Date.now() - t0 });
   } catch (e) {
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", error: undefined, progress: undefined });
+      toast("已停止生成（已提交到服务商的任务无法追回，可能仍会计费）", "info");
+      return;
+    }
+    if (primaryCard) useUsage.getState().record(primaryCard, { ok: false, durMs: Date.now() - t0 });
     upd(id, { status: "error", error: errMsg(e), progress: undefined });
     pushError("生成视频", errMsg(e));
   }
@@ -752,6 +1324,12 @@ export async function runComfy(id: string) {
       progressPct: undefined,
     });
     const promptText = String(values[tpl.params.find((p) => p.kind === "text")?.key ?? ""] ?? texts.join("\n") ?? "");
+    pushHistory(id, {
+      prompt: promptText,
+      modelId: `comfy:${tpl.id}`,
+      params: { templateId: tpl.id, ...(data.params ?? {}) },
+      results: [...results, ...outVideos],
+    });
     if (outVideos.length) {
       // 视频结果落盘换持久地址（/view 转出的 blob URL 活不过重启），并进画廊/资产库
       const savedUrls: string[] = [];
@@ -832,79 +1410,53 @@ export async function sendChat(id: string) {
   }
 }
 
-/* ---------- 提示词 AI 优化 ---------- */
-export async function optimizePrompt(id: string) {
-  const node = useBoard.getState().nodes.find((n) => n.id === id);
-  if (!node) return;
-  const data = node.data as PromptData;
-  const text = (data.text ?? "").trim();
-  if (!text) {
-    toast("先写一点想法，再让 AI 帮你扩写", "err");
-    return;
-  }
-  upd(id, { optimizing: true });
-  try {
-    const card = resolveModelCard("chat");
-    const optimized = await chatOnce(card, OPTIMIZE_SYSTEM, text);
-    upd(id, { text: optimized, optimizing: false });
-  } catch (e) {
-    upd(id, { optimizing: false });
-    toast(errMsg(e), "err");
-  }
-}
-
-/* ---------- 反推描述 ---------- */
-const CAPTION_SYSTEMS: Record<CaptionData["mode"], string> = {
-  prompt:
-    "你是图像反推提示词专家。仔细观察用户发来的图片，输出一段可直接用于 AI 绘画复现该图的中文提示词：主体、构图、风格、光影、色彩、镜头、质感。只输出提示词本身。",
-  detail: "你是图像分析师。详细描述用户发来的图片：主体内容、场景、风格、构图、色彩与值得注意的细节。用中文分段描述。",
-  tags: "观察用户发来的图片，输出 15-25 个英文标签词（danbooru 风格，逗号分隔），从主体到风格到质感排列。只输出标签。",
-};
-
-export async function runCaption(id: string) {
-  const node = useBoard.getState().nodes.find((n) => n.id === id);
-  if (!node) return;
-  const data = node.data as CaptionData;
-  if (data.status === "running") return;
-  const { images } = collectUpstream(id);
-  if (!images.length) {
-    toast("请先连接一个上游图片节点", "err");
-    return;
-  }
-  upd(id, { status: "running", error: undefined });
-  try {
-    const card = resolveModelCard("chat", data.modelId);
-    const { text } = await chatStream(
-      card,
-      [{ role: "user", text: "请分析这张图片。", images: [images[0]] }],
-      {
-        system: CAPTION_SYSTEMS[data.mode] ?? CAPTION_SYSTEMS.prompt,
-        onText: (full) => upd(id, { result: full }),
-      },
-    );
-    upd(id, { status: "done", result: text.trim() });
-  } catch (e) {
-    upd(id, { status: "error", error: errMsg(e) });
-    pushError("反推描述", errMsg(e));
-  }
-}
-
-/* ---------- 文本处理 ---------- */
+/* ---------- 文本处理（融合反推描述）：文本类操作吃上游文本，cap* 反推类操作吃上游图片 ---------- */
 const LLM_TEXT_SYSTEMS: Record<Exclude<LlmTextData["op"], "custom">, string> = {
   optimize: OPTIMIZE_SYSTEM,
   zh2en: "把用户输入的绘画提示词翻译成地道的英文 AI 绘画提示词，保留专业术语，只输出翻译结果。",
   expand: "把用户输入的文字扩写得更丰富具体（补充细节、场景、氛围），保持原意，中文输出，只输出扩写结果。",
   shorten: "把用户输入的文字精简压缩，保留核心信息与关键词，只输出精简结果。",
+  capPrompt:
+    "你是图像反推提示词专家。仔细观察用户发来的图片，输出一段可直接用于 AI 绘画复现该图的中文提示词：主体、构图、风格、光影、色彩、镜头、质感。只输出提示词本身。",
+  capDetail: "你是图像分析师。详细描述用户发来的图片：主体内容、场景、风格、构图、色彩与值得注意的细节。用中文分段描述。",
+  capTags: "观察用户发来的图片，输出 15-25 个英文标签词（danbooru 风格，逗号分隔），从主体到风格到质感排列。只输出标签。",
 };
+
+/** cap* 开头的操作是反推类（消费图片） */
+export const isCaptionOp = (op: string) => op.startsWith("cap");
+
+/** 提示词 AI 工具（生成弹窗 / 提示词节点共用）：对一段文本做单次 LLM 变换，返回结果文本（就地替换用） */
+export async function llmTextTransform(
+  op: LlmTextData["op"],
+  custom: string | undefined,
+  text: string,
+  image?: string,
+): Promise<string> {
+  const card = resolveModelCard("chat");
+  const caption = isCaptionOp(op);
+  const system =
+    op === "custom" ? (custom ?? "").trim() || "按用户期望处理输入文本，只输出处理结果。" : LLM_TEXT_SYSTEMS[op];
+  const { text: out } = await chatStream(
+    card,
+    [{ role: "user", text: caption ? "请分析这张图片。" : text, images: caption && image ? [image] : undefined }],
+    { system },
+  );
+  return out.trim();
+}
 
 export async function runLlmText(id: string) {
   const node = useBoard.getState().nodes.find((n) => n.id === id);
   if (!node) return;
   const data = node.data as LlmTextData;
   if (data.status === "running") return;
-  const { texts } = collectUpstream(id);
+  const { texts, images } = collectUpstream(id);
+  const caption = isCaptionOp(data.op);
+  if (caption && !images.length) {
+    toast("反推需要先连接一个上游图片节点", "err");
+    return;
+  }
   const input = texts.join("\n").trim();
-  if (!input) {
+  if (!caption && !input) {
     toast("请先连接上游文本节点（提示词/对话等）", "err");
     return;
   }
@@ -915,12 +1467,22 @@ export async function runLlmText(id: string) {
       data.op === "custom"
         ? (data.custom ?? "").trim() || "按用户期望处理输入文本，只输出处理结果。"
         : LLM_TEXT_SYSTEMS[data.op];
-    const { text } = await chatStream(card, [{ role: "user", text: input }], {
-      system,
-      onText: (full) => upd(id, { result: full }),
-    });
+    const { text } = await chatStream(
+      card,
+      [{ role: "user", text: caption ? "请分析这张图片。" : input, images: caption ? [images[0]] : undefined }],
+      {
+        system,
+        signal: taskSignal(id),
+        onText: (full) => upd(id, { result: full }),
+      },
+    );
     upd(id, { status: "done", result: text.trim() });
   } catch (e) {
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", error: undefined });
+      toast("已停止", "info");
+      return;
+    }
     upd(id, { status: "error", error: errMsg(e) });
     pushError("文本处理", errMsg(e));
   }
@@ -991,302 +1553,6 @@ export async function runMultiAngle(id: string) {
   }
 }
 
-/* ---------- 尺寸调整 ---------- */
-export async function runResize(id: string) {
-  const node = useBoard.getState().nodes.find((n) => n.id === id);
-  if (!node) return;
-  const data = node.data as ResizeData;
-  if (data.status === "running") return;
-  const { images } = collectUpstream(id);
-  const src = images[0];
-  if (!src) {
-    toast("请先连接一个上游图片节点", "err");
-    return;
-  }
-  upd(id, { status: "running", error: undefined });
-  try {
-    const dims = await imageDims(src);
-    if (!dims) throw new Error("无法读取上游图片尺寸");
-    upd(id, { srcW: dims.w, srcH: dims.h });
-    if ((data.out ?? "image") !== "image") {
-      // 尺寸文本输出：由参数即时推导（nodeOutput），无需真正处理图片
-      upd(id, { status: "done" });
-      return;
-    }
-    const t = targetSize(data, dims.w, dims.h);
-    const result = await resampleImage(src, t.w, t.h);
-    upd(id, { status: "done", result, outW: t.w, outH: t.h });
-  } catch (e) {
-    upd(id, { status: "error", error: errMsg(e) });
-    pushError("尺寸调整", errMsg(e));
-  }
-}
-
-/* ---------- 图片编辑类节点（局部重绘 / 扩图 / 抠图 / 增强 / 聚焦）
-   GPT Image 家族走 images/edits 的真 mask/background 通道；
-   Banana / 通用家族走「参考图 + 中文指令」降级通道（中转站模型能力所限） ---------- */
-
-/** 编辑类节点通用收尾：写回结果 + 生成记录 + 资产库 + 自动保存 */
-function finishEdit(id: string, source: string, results: string[], prompt: string, cardName: string, cardModel: string) {
-  upd(id, { status: "done", results, picked: 0, progress: undefined });
-  for (const src of results) {
-    useUi.getState().addGallery({ kind: "image", src, prompt, model: cardModel, nodeId: id });
-  }
-  collectToLibrary("image", results, { prompt: `${source}：${prompt.split("\n")[0]}`, model: cardName });
-  void maybeAutoSave(results, { prompt, model: cardModel });
-}
-
-export async function runInpaint(id: string) {
-  const node = useBoard.getState().nodes.find((n) => n.id === id);
-  if (!node) return;
-  const data = node.data as InpaintData;
-  if (data.status === "running") return;
-  const { texts, images } = collectUpstream(id);
-  const src = images[0];
-  if (!src) {
-    toast("请先连接一个上游图片节点（局部重绘需要一张原图）", "err");
-    return;
-  }
-  if (!data.mask) {
-    toast("请先点击「编辑蒙版」，涂抹或框选要重绘的区域", "err");
-    return;
-  }
-  upd(id, { status: "running", error: undefined });
-  try {
-    if ((await maskCoverage(data.mask)) < 0.001) throw new Error("蒙版是空的：请先涂抹或框选要重绘的区域");
-    const card = resolveModelCard("image", data.modelId);
-    const family = imageFamily(card);
-    const channel = data.channel ?? "auto";
-    // 真蒙版通道仅 OpenAI 协议的 images/edits 有 mask 参数；且不少中转站转发时会丢 mask —— 出问题就切指令式
-    const useMask = channel === "mask" || (channel === "auto" && family === "gpt");
-    if (channel === "mask" && card.protocol === "gemini")
-      throw new Error("Gemini 协议没有蒙版参数：请把通道切成「指令式」，或换 OpenAI 协议的绘画模型");
-    const userPrompt = (data.prompt ?? "").trim() || texts.filter((t) => !isSizeDirective(t)).join("\n");
-    const finalPrompt = await localizePrompt(userPrompt, data.lang);
-    const n = data.count ?? 1;
-    let results: string[];
-    if (useMask && card.protocol !== "gemini") {
-      const dims = await imageDims(src);
-      if (!dims) throw new Error("无法读取原图尺寸");
-      const mask = await maskToOpenAiMask(data.mask, dims.w, dims.h);
-      results = await generateImage(card, { prompt: inpaintMaskPrompt(finalPrompt), refImages: [src], mask, n, size: "auto" });
-    } else {
-      const annotated = await annotateMaskOnImage(src, data.mask);
-      const dims = await imageDims(src);
-      results = await generateImage(card, {
-        prompt: inpaintInstruct(finalPrompt),
-        refImages: [src, annotated],
-        n,
-        size: "auto",
-        aspect: family === "banana" && dims ? nearestAspect(dims.w / dims.h) : undefined,
-      });
-    }
-    finishEdit(id, "局部重绘", results, userPrompt || "自然修复", card.name, card.model);
-  } catch (e) {
-    upd(id, { status: "error", error: errMsg(e) });
-    pushError("局部重绘", errMsg(e));
-  }
-}
-
-export async function runOutpaint(id: string) {
-  const node = useBoard.getState().nodes.find((n) => n.id === id);
-  if (!node) return;
-  const data = node.data as OutpaintData;
-  if (data.status === "running") return;
-  const { texts, images } = collectUpstream(id);
-  const src = images[0];
-  if (!src) {
-    toast("请先连接一个上游图片节点（扩图需要一张原图）", "err");
-    return;
-  }
-  const pads = data.pads ?? { left: 0, right: 0, up: 0, down: 0 };
-  if (pads.left + pads.right + pads.up + pads.down <= 0) {
-    toast("请先选择扩展方向与幅度（至少一边大于 0）", "err");
-    return;
-  }
-  upd(id, { status: "running", error: undefined });
-  try {
-    const card = resolveModelCard("image", data.modelId);
-    const family = imageFamily(card);
-    const channel = data.channel ?? "auto";
-    const useMask = (channel === "mask" || (channel === "auto" && family === "gpt")) && card.protocol !== "gemini";
-    if (channel === "mask" && card.protocol === "gemini")
-      throw new Error("Gemini 协议没有蒙版参数：请把通道切成「指令式」，或换 OpenAI 协议的绘画模型");
-    const userPrompt = (data.prompt ?? "").trim() || texts.filter((t) => !isSizeDirective(t)).join("\n");
-    const n = data.count ?? 1;
-    let results: string[];
-    if (useMask) {
-      // 真 mask 外扩：原图摆入扩大的透明画布，透明区域由模型补全
-      const built = await buildOutpaintCanvas(src, pads);
-      results = await generateImage(card, { prompt: outpaintMaskPrompt(userPrompt), refImages: [built.image], mask: built.mask, n, size: "auto" });
-    } else {
-      const dims = await imageDims(src);
-      if (!dims) throw new Error("无法读取原图尺寸");
-      const fullW = dims.w * (1 + pads.left + pads.right);
-      const fullH = dims.h * (1 + pads.up + pads.down);
-      const targetRatio = fullW / fullH;
-      // 指令式：Banana 用比例档；GPT 用换算出的目标宽高（16 倍数、长边 ≤3840）；通用交给站点默认
-      const capScale = Math.min(1, 3840 / Math.max(fullW, fullH));
-      const to16 = (v: number) => Math.max(256, Math.round((v * capScale) / 16) * 16);
-      results = await generateImage(card, {
-        prompt: outpaintInstruct(pads, userPrompt),
-        refImages: [src],
-        n,
-        size: family === "gpt" ? `${to16(fullW)}x${to16(fullH)}` : "auto",
-        aspect: family === "banana" ? nearestAspect(targetRatio) : undefined,
-      });
-    }
-    finishEdit(id, "扩图", results, userPrompt || "自然延伸画面", card.name, card.model);
-  } catch (e) {
-    upd(id, { status: "error", error: errMsg(e) });
-    pushError("扩图", errMsg(e));
-  }
-}
-
-/** 编辑节点的 ComfyUI 引擎：上传上游图 → 跑所选模板 → 返回图片（模板没选好时返回 null 并提示） */
-async function runEditViaComfy(
-  id: string,
-  src: string,
-  templateId: string | undefined,
-  fillText?: string,
-): Promise<{ images: string[]; name: string } | null> {
-  const tpl = useComfy.getState().templates.find((t) => t.id === templateId);
-  if (!tpl) {
-    toast("请先在节点里选择一个 ComfyUI 模板（模板管理器可导入抠图/放大工作流）", "err");
-    return null;
-  }
-  const settings = useSettings.getState().settings;
-  // 图片/文本交给服务层自动喂入（图片参数 → LoadImage → 缺失图片输入自动注入），其余参数用模板默认值
-  const { images } = await runComfyTemplate(settings.comfy.host, tpl, {}, {
-    onProgress: (m, pct) => upd(id, { progress: pct !== undefined ? `${m} ${pct}%` : m }),
-    upstreamImages: [src],
-    upstreamTexts: fillText ? [fillText] : undefined,
-  });
-  if (!images.length) throw new Error(`模板「${tpl.name}」运行完成但没有输出图片，请检查输出节点设置`);
-  return { images, name: tpl.name };
-}
-
-export async function runMatting(id: string) {
-  const node = useBoard.getState().nodes.find((n) => n.id === id);
-  if (!node) return;
-  const data = node.data as MattingData;
-  if (data.status === "running") return;
-  const { images } = collectUpstream(id);
-  const src = images[0];
-  if (!src) {
-    toast("请先连接一个上游图片节点（抠图需要一张原图）", "err");
-    return;
-  }
-  upd(id, { status: "running", error: undefined });
-  try {
-    // ComfyUI 引擎：rembg/BiRefNet 等真·抠图（推荐），结果一般为透明底
-    if ((data.engine ?? "model") === "comfy") {
-      const out = await runEditViaComfy(id, src, data.comfyTemplateId, (data.subject ?? "").trim() || undefined);
-      if (!out) {
-        upd(id, { status: "idle", progress: undefined });
-        return;
-      }
-      finishEdit(id, "抠图", out.images, (data.subject ?? "").trim() || "主体抠图", `ComfyUI · ${out.name}`, out.name);
-      return;
-    }
-    const card = resolveModelCard("image", data.modelId);
-    const family = imageFamily(card);
-    const transparentOk = family === "gpt";
-    if (data.bg === "transparent" && !transparentOk) {
-      toast("当前模型不支持透明通道，已自动改为纯白底（要真透明请把引擎切成 ComfyUI 或选 GPT Image 系模型）", "info");
-    }
-    const prompt = mattingInstruct(data.subject ?? "", data.bg, transparentOk);
-    const dims = await imageDims(src);
-    const results = await generateImage(card, {
-      prompt,
-      refImages: [src],
-      n: 1,
-      size: "auto",
-      background: transparentOk && data.bg === "transparent" ? "transparent" : undefined,
-      aspect: family === "banana" && dims ? nearestAspect(dims.w / dims.h) : undefined,
-    });
-    finishEdit(id, "抠图", results, (data.subject ?? "").trim() || "主体抠图", card.name, card.model);
-  } catch (e) {
-    upd(id, { status: "error", error: errMsg(e) });
-    pushError("抠图", errMsg(e));
-  }
-}
-
-export async function runEnhance(id: string) {
-  const node = useBoard.getState().nodes.find((n) => n.id === id);
-  if (!node) return;
-  const data = node.data as EnhanceData;
-  if (data.status === "running") return;
-  const { images } = collectUpstream(id);
-  const src = images[0];
-  if (!src) {
-    toast("请先连接一个上游图片节点（增强需要一张原图）", "err");
-    return;
-  }
-  upd(id, { status: "running", error: undefined });
-  try {
-    // ComfyUI 引擎：UltimateSDUpscale / 放大模型等专业放大（推荐）
-    if ((data.engine ?? "model") === "comfy") {
-      const out = await runEditViaComfy(id, src, data.comfyTemplateId);
-      if (!out) {
-        upd(id, { status: "idle", progress: undefined });
-        return;
-      }
-      finishEdit(id, "高清增强", out.images, "ComfyUI 放大", `ComfyUI · ${out.name}`, out.name);
-      return;
-    }
-    const card = resolveModelCard("image", data.modelId);
-    const family = imageFamily(card);
-    const dims = await imageDims(src);
-    if (!dims) throw new Error("无法读取原图尺寸");
-    const factor = data.factor ?? 2;
-    const prompt = enhanceInstruct(data.focus ?? "detail");
-    // 目标尺寸：原图 × 倍率，长边不超过 3840，取 16 的倍数
-    const capScale = Math.min(factor, 3840 / Math.max(dims.w, dims.h));
-    const to16 = (v: number) => Math.max(256, Math.round(v / 16) * 16);
-    const tw = to16(dims.w * capScale);
-    const th = to16(dims.h * capScale);
-    const results = await generateImage(card, {
-      prompt,
-      refImages: [src],
-      n: 1,
-      size: family === "banana" ? "auto" : `${tw}x${th}`,
-      aspect: family === "banana" ? nearestAspect(dims.w / dims.h) : undefined,
-      resolution: family === "banana" ? (factor >= 4 || Math.max(tw, th) > 2048 ? "4K" : "2K") : undefined,
-      quality: family === "gpt" ? "high" : undefined,
-    });
-    finishEdit(id, "高清增强", results, `${factor}× 增强`, card.name, card.model);
-  } catch (e) {
-    upd(id, { status: "error", error: errMsg(e) });
-    pushError("高清增强", errMsg(e));
-  }
-}
-
-export async function runCrop(id: string) {
-  const node = useBoard.getState().nodes.find((n) => n.id === id);
-  if (!node) return;
-  const data = node.data as CropData;
-  if (data.status === "running") return;
-  const { images } = collectUpstream(id);
-  const src = images[0];
-  if (!src) {
-    toast("请先连接一个上游图片节点", "err");
-    return;
-  }
-  if (!data.rect) {
-    toast("请先点击「框选区域」，圈出要聚焦的局部", "err");
-    return;
-  }
-  upd(id, { status: "running", error: undefined });
-  try {
-    const dims = await imageDims(src);
-    const out = await cropByRect(src, data.rect);
-    upd(id, { status: "done", result: out.dataUrl, srcW: dims?.w, srcH: dims?.h });
-  } catch (e) {
-    upd(id, { status: "error", error: errMsg(e) });
-    pushError("聚焦裁剪", errMsg(e));
-  }
-}
 
 /* ---------- 角色卡 ---------- */
 type CharAnalysis = { profile: CharProfile; prompts: Partial<Record<CharDeliverable, string>> };
@@ -1296,19 +1562,21 @@ function charData(id: string): CharCardData | undefined {
   return useBoard.getState().nodes.find((n) => n.id === id)?.data as CharCardData | undefined;
 }
 
-/** 生成单个素材并写回（收录记录/资产库）；返回第一张结果 */
+/** 生成单个素材并写回（收录记录/资产库）；append = 追加到该素材已有图之后（「补一张」）；返回第一张结果 */
 async function genCharDeliverable(
   id: string,
   k: CharDeliverable,
   prompt: string,
   refs: string[],
+  opts?: { append?: boolean },
 ): Promise<string | undefined> {
   const data = charData(id);
   if (!data) return;
   const card = resolveModelCard("image", data.imageModelId);
   const results = await generateImage(card, { prompt, n: 1, refImages: refs.length ? refs.slice(0, 2) : undefined });
   const cur = charData(id);
-  upd(id, { results: { ...(cur?.results ?? {}), [k]: results } });
+  const merged = opts?.append ? [...(cur?.results?.[k] ?? []), ...results] : results;
+  upd(id, { results: { ...(cur?.results ?? {}), [k]: merged } });
   const name = `${cur?.profile?.name ?? "角色"} · ${DELIV_LABEL[k]}`;
   for (const src of results) {
     useUi.getState().addGallery({ kind: "image", src, prompt, model: card.model, nodeId: id });
@@ -1374,16 +1642,23 @@ export async function runCharCard(id: string) {
   }
 }
 
-/** 单独重生成某一种素材（节点内每行的刷新按钮） */
-export async function regenCharDeliverable(id: string, k: CharDeliverable) {
+/** 单独重生成某一种素材（节点内每行的刷新按钮）；append = 「补一张」：表情/动作/服装自动换下一组内容后追加 */
+export async function regenCharDeliverable(id: string, k: CharDeliverable, opts?: { append?: boolean }) {
   const data = charData(id);
   if (!data || data.status === "running") return;
-  const prompt = (data.prompts[k] ?? "").trim();
-  if (!prompt) {
+  const base = (data.prompts[k] ?? "").trim();
+  if (!base) {
     toast("该素材还没有提示词：先运行一次「分析并生成」", "err");
     return;
   }
-  upd(id, { status: "running", error: undefined, progress: `重新生成${DELIV_LABEL[k]}…` });
+  // 「补一张」：按已有张数循环取下一组内容，逐张补全设定而不是堆砌在一张里
+  let prompt = base;
+  const sets = DELIV_VARIATIONS[k];
+  if (opts?.append && sets?.length) {
+    const idx = Math.max(0, (data.results[k]?.length ?? 1) - 1) % sets.length;
+    prompt = `${base}\n注意：本次画面内容换成另一组：${sets[idx]}；版式、角色一致性与其余要求不变。`;
+  }
+  upd(id, { status: "running", error: undefined, progress: `${opts?.append ? "补一张" : "重新生成"}${DELIV_LABEL[k]}…` });
   try {
     const { images } = collectUpstream(id);
     // 已有的其他素材里挑一张当参考，维持角色一致
@@ -1391,7 +1666,7 @@ export async function regenCharDeliverable(id: string, k: CharDeliverable) {
       (x) => x !== k && data.results[x]?.length,
     );
     const refs = [images[0], anchorK ? data.results[anchorK]![0] : undefined].filter((x): x is string => !!x);
-    await genCharDeliverable(id, k, prompt, refs);
+    await genCharDeliverable(id, k, prompt, refs, { append: opts?.append });
     upd(id, { status: "done", progress: undefined });
     notifyDone(`${DELIV_LABEL[k]}生成`);
   } catch (e) {
@@ -1498,12 +1773,12 @@ export function spawnShotNodes(id: string, kind: "imageGen" | "videoGen") {
   const baseX = node.position.x + (parent?.position.x ?? 0) + (node.measured?.width ?? 340) + 90;
   const baseY = node.position.y + (parent?.position.y ?? 0);
   // 分镜节点上游接入的图片（角色卡/角色图）同步连给每个生成节点 → 全片角色/风格一致
-  const refEdges = s.edges.filter((ed) => ed.target === id && ed.targetHandle === "in-image");
+  const refEdges = s.edges.filter((ed) => ed.target === id && srcOutType(ed, s.nodes) === "image");
   data.shots.forEach((_, i) => {
     const bs = useBoard.getState();
     const nid = bs.addNode(kind, { x: baseX, y: baseY + i * (kind === "videoGen" ? 300 : 330) });
-    bs.connectNodes(id, nid, "in-text", `shot-${i}`);
-    for (const re of refEdges) bs.connectNodes(re.source, nid, "in-image", re.sourceHandle ?? "out");
+    bs.connectNodes(id, nid, "in", `shot-${i}`);
+    for (const re of refEdges) bs.connectNodes(re.source, nid, "in", re.sourceHandle ?? "out");
   });
   toast(
     `已按 ${data.shots.length} 个分镜铺好${kind === "videoGen" ? "生成视频" : "生成图像"}节点${refEdges.length ? "（角色参考图已连给每一镜）" : ""}`,
@@ -1523,19 +1798,48 @@ export async function runAudioGen(id: string) {
     return;
   }
   upd(id, { status: "running", error: undefined, progress: "合成中…", resultUrl: undefined });
+  let primaryCard: ModelCard | null = null;
+  const t0 = Date.now();
   try {
     const card = resolveModelCard("audio", data.modelId);
-    const url = await generateAudio(card, {
-      text,
-      voice: data.voice,
-      onProgress: (m) => upd(id, { progress: m }),
-    });
+    primaryCard = card;
+    // 预算护栏（音频按文本长度粗估秒数）
+    const gate = budgetGate(estimateCost(card.model, { audioSec: Math.max(1, Math.round(text.length / 5)) }));
+    if (gate.block) throw new Error(gate.block);
+    if (gate.confirm && !window.confirm(gate.confirm)) {
+      upd(id, { status: "idle", error: undefined, progress: undefined });
+      return;
+    }
+    // 主模型瞬时重试 → 备用模型（音频 TTS 直链常因签名过期/限流失败）
+    const { result: url, card: usedCard, usedFallback } = await runGenWithFallback("audio", card, taskSignal(id), (c) =>
+      generateAudio(c, {
+        text,
+        voice: data.voice,
+        signal: taskSignal(id),
+        onProgress: (m) => upd(id, { progress: m }),
+      }),
+    );
+    if (usedFallback) {
+      upd(id, { fallbackModel: usedCard.name });
+      toast(`主模型失败，已由备用模型「${usedCard.name}」生成`, "info");
+    } else {
+      upd(id, { fallbackModel: undefined });
+    }
     upd(id, { status: "done", resultUrl: url, progress: undefined });
     // 收进资产库并换持久地址（dataURL 大、远程直链会过期）
-    const saved = await useAssets.getState().collect({ src: url, kind: "audio", prompt: text.slice(0, 80), model: card.name });
+    const saved = await useAssets.getState().collect({
+      src: url, kind: "audio", prompt: text.slice(0, 80), model: usedCard.name, nodeId: id,
+    });
     if (saved && isTauri) upd(id, { resultUrl: assetUrl(saved.path) });
+    useUsage.getState().record(usedCard, { ok: true, audioSec: Math.max(1, Math.round(text.length / 5)), durMs: Date.now() - t0 });
     notifyDone("音频生成");
   } catch (e) {
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", error: undefined, progress: undefined });
+      toast("已停止", "info");
+      return;
+    }
+    if (primaryCard) useUsage.getState().record(primaryCard, { ok: false, durMs: Date.now() - t0 });
     upd(id, { status: "error", error: errMsg(e), progress: undefined });
     pushError("生成音频", errMsg(e));
   }
@@ -1549,11 +1853,11 @@ export async function runVideoDub(id: string) {
   if (data.status === "running") return;
   const { videos, audios } = collectUpstream(id);
   if (!videos.length) {
-    toast("请先连接上游视频（绿色口）", "err");
+    toast("请先连接上游视频", "err");
     return;
   }
   if (!audios.length) {
-    toast("请先连接上游音频（橙色口：音频节点或生成音频）", "err");
+    toast("请先连接上游音频（音频节点或生成音频）", "err");
     return;
   }
   upd(id, { status: "running", error: undefined, progress: "准备重编码…", resultUrl: undefined });
@@ -1569,134 +1873,48 @@ export async function runVideoDub(id: string) {
   }
 }
 
-/* ---------- 本地视频处理：取帧 / 取段 / 拼接（零模型成本） ---------- */
-
-export async function runFrame(id: string) {
-  const node = useBoard.getState().nodes.find((n) => n.id === id);
-  if (!node) return;
-  const data = node.data as FrameData;
-  if (data.status === "running") return;
-  const src = collectUpstream(id).videos[0];
-  if (!src) {
-    toast("请先连接上游视频节点（生成视频 / 取段 / 拼接）", "err");
-    return;
-  }
-  upd(id, { status: "running", error: undefined });
-  try {
-    const { dataUrl, duration } = await grabFrame(src, data.point ?? "last", data.timeSec);
-    upd(id, { status: "done", result: dataUrl, srcDur: duration });
-  } catch (e) {
-    upd(id, { status: "error", error: errMsg(e) });
-    pushError("视频取帧", errMsg(e));
-  }
-}
-
-export async function runVideoTrim(id: string) {
-  const node = useBoard.getState().nodes.find((n) => n.id === id);
-  if (!node) return;
-  const data = node.data as VideoTrimData;
-  if (data.status === "running") return;
-  const src = collectUpstream(id).videos[0];
-  if (!src) {
-    toast("请先连接上游视频节点", "err");
-    return;
-  }
-  upd(id, { status: "running", error: undefined, progress: "准备重编码…", resultUrl: undefined });
-  try {
-    const url = await trimVideo(src, data.start ?? 0, data.end, (m) => upd(id, { progress: m }));
-    upd(id, { status: "done", resultUrl: url, progress: undefined });
-    // 落进资产库换持久地址：本地重编码出的 blob URL 重启即失效
-    const saved = await useAssets.getState().collect({ src: url, kind: "video", name: "视频取段", model: "本地处理" });
-    if (saved && isTauri) upd(id, { resultUrl: assetUrl(saved.path) });
-    notifyDone("视频取段");
-  } catch (e) {
-    upd(id, { status: "error", error: errMsg(e), progress: undefined });
-    pushError("视频取段", errMsg(e));
-  }
-}
-
-/** 拼接节点的片段清单（时间线粗剪条与 runVideoConcat 共用，保证所见顺序 = 拼接顺序）：
- *  先按连线位置（上→下）收集各上游的片段，再套用节点上手动排好的顺序（新接入的附加在后） */
-export function concatClips(id: string): { nodeId: string; url: string }[] {
-  const { nodes, edges } = useBoard.getState();
-  const groups: { nodeId: string; urls: string[] }[] = [];
-  const push = (nodeId: string, urls: string[]) => {
-    if (urls.length) groups.push({ nodeId, urls });
-  };
-  for (const e of orderedInEdges(id, nodes, edges)) {
-    if (e.targetHandle !== "in-video") continue;
-    const src = nodes.find((n) => n.id === e.source);
-    if (!src || (src.data as Record<string, unknown>).ignored) continue;
-    if (src.type === "group") {
-      const members = nodes
-        .filter((n) => n.parentId === src.id && !(n.data as Record<string, unknown>).ignored)
-        .sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x);
-      for (const m of members) push(m.id, nodeOutput(m, new Set([id])).videos);
-      continue;
-    }
-    push(src.id, nodeOutput(src, new Set([id])).videos);
-  }
-  const order = (nodes.find((n) => n.id === id)?.data as VideoConcatData | undefined)?.order ?? [];
-  const rank = new Map(order.map((x, i) => [x, i]));
-  const sorted = [...groups].sort((a, b) => {
-    const ra = rank.get(a.nodeId);
-    const rb = rank.get(b.nodeId);
-    if (ra !== undefined && rb !== undefined) return ra - rb;
-    if (ra !== undefined) return -1;
-    if (rb !== undefined) return 1;
-    return 0; // 都没排过 → 维持位置序
-  });
-  return sorted.flatMap((g) => g.urls.map((url) => ({ nodeId: g.nodeId, url })));
-}
-
-export async function runVideoConcat(id: string) {
-  const node = useBoard.getState().nodes.find((n) => n.id === id);
-  if (!node) return;
-  const data = node.data as VideoConcatData;
-  if (data.status === "running") return;
-  const videos = concatClips(id).map((c) => c.url);
-  if (videos.length < 2) {
-    toast("视频拼接需要接入至少 2 路上游视频（按连线上下位置排序）", "err");
-    return;
-  }
-  upd(id, { status: "running", error: undefined, progress: "准备重编码…", resultUrl: undefined });
-  try {
-    const url = await concatVideos(videos, (m) => upd(id, { progress: m }));
-    upd(id, { status: "done", resultUrl: url, progress: undefined });
-    // 拼接成片是最终交付物，必须落盘：blob URL 重启即失效
-    const saved = await useAssets.getState().collect({ src: url, kind: "video", name: "视频拼接成片", model: "本地处理" });
-    if (saved && isTauri) upd(id, { resultUrl: assetUrl(saved.path) });
-    notifyDone("视频拼接");
-  } catch (e) {
-    upd(id, { status: "error", error: errMsg(e), progress: undefined });
-    pushError("视频拼接", errMsg(e));
-  }
-}
-
 /* ---------- 工作流链式运行 ---------- */
+
+/**
+ * 统一闸门：注册停止通道（节点/标题栏可随时停）+ 占全局并发额度。
+ * runAllFlows 按连通分量并行、批量出图一次克隆十几个节点——不限流会对中转站打出 429 雪崩。
+ */
+const gated = (kind: NodeKind, fn: (id: string) => Promise<void>) => async (id: string) => {
+  // 已在运行中的节点由各 runner 自行短路，不重复注册/占额度
+  const cur = useBoard.getState().nodes.find((n) => n.id === id);
+  if ((cur?.data as Record<string, unknown> | undefined)?.status === "running") return fn(id);
+  const signal = beginTask(id, kind);
+  try {
+    const release = await acquireSlot(signal);
+    try {
+      await fn(id);
+      // 成功收尾：盖「本次实际走过的上游签名」+ bumpRev，让下游脏标记感知到本节点内容已更新
+      // （上游重算 → 上游 bumpRev → 本节点 upstreamSig 变 → 本节点重算 → 本节点 bumpRev → 逐级传递）
+      useBoard.getState().updateData(id, { inputSig: sigOf(id) }, { bumpRev: true });
+    } finally {
+      release();
+    }
+  } catch (e) {
+    if (!isAbortError(e)) throw e; // 排队中被取消 → 静默返回（节点还没开始跑）
+  } finally {
+    endTask(id);
+  }
+};
 
 /** 可主动运行的节点类型 → 运行函数（对话节点需要用户输入，不参与自动链） */
 const RUNNERS: Partial<Record<NodeKind, (id: string) => Promise<void>>> = {
-  imageGen: runImageGen,
-  videoGen: runVideoGen,
-  comfy: runComfy,
-  caption: runCaption,
-  llmText: runLlmText,
-  relight: runRelight,
-  multiAngle: runMultiAngle,
-  charCard: runCharCard,
-  resize: runResize,
-  inpaint: runInpaint,
-  outpaint: runOutpaint,
-  matting: runMatting,
-  enhance: runEnhance,
-  crop: runCrop,
-  frame: runFrame,
-  videoTrim: runVideoTrim,
-  videoConcat: runVideoConcat,
-  storyboard: runStoryboard,
-  audioGen: runAudioGen,
-  videoDub: runVideoDub,
+  imageGen: gated("imageGen", runImageGen),
+  videoGen: gated("videoGen", runVideoGen),
+  comfy: gated("comfy", runComfy),
+  llmText: gated("llmText", runLlmText),
+  relight: gated("relight", runRelight),
+  multiAngle: gated("multiAngle", runMultiAngle),
+  charCard: gated("charCard", runCharCard),
+  storyboard: gated("storyboard", runStoryboard),
+  audioGen: gated("audioGen", runAudioGen),
+  videoDub: gated("videoDub", runVideoDub),
+  enhanceLocal: gated("enhanceLocal", runEnhanceLocal),
+  vectorize: gated("vectorize", runVectorize),
 };
 
 type LiteNode = { id: string; type?: string; parentId?: string; data: unknown };
@@ -1726,19 +1944,18 @@ function visitChain(
 function hasFreshOutput(n: LiteNode): boolean {
   const d = n.data as Record<string, unknown>;
   if (d.status !== "done") return false;
+  // 脏标记：记录的上游签名与当前不一致 → 上游已变更，必须重算。
+  // 老数据无 inputSig（升级前）视为新鲜，避免打开旧画布触发全量重算
+  if (d.inputSig !== undefined && d.inputSig !== sigOf(n.id)) return false;
   switch (n.type as NodeKind) {
-    case "caption":
     case "llmText":
       return !!(d.result as string | undefined)?.trim();
     case "imageGen":
     case "comfy":
-    case "inpaint":
-    case "outpaint":
-    case "matting":
-    case "enhance":
       return !!(d.results as string[] | undefined)?.length;
-    case "crop":
-      return !!d.result;
+    case "enhanceLocal":
+    case "vectorize":
+      return !!(d.result as string | undefined);
     case "relight":
     case "multiAngle":
       // 提示词模式的输出由参数即时推导，视为始终新鲜
@@ -1749,18 +1966,11 @@ function hasFreshOutput(n: LiteNode): boolean {
       return Object.values(cc.results ?? {}).some((v) => v?.length);
     }
     case "videoGen":
-    case "videoTrim":
-    case "videoConcat":
     case "videoDub":
     case "audioGen":
       return !!d.resultUrl;
-    case "frame":
-      return !!d.result;
     case "storyboard":
       return !!(d.shots as unknown[] | undefined)?.length;
-    case "resize":
-      // 文本样式输出由参数即时推导，测过上游尺寸即视为新鲜
-      return (d.out ?? "image") === "image" ? !!d.result : !!d.srcW;
     default:
       return false;
   }
@@ -1777,8 +1987,15 @@ async function runSequence(ids: string[], opts: { clickedId?: string; force?: bo
     if (!opts.force && nid !== opts.clickedId && hasFreshOutput(n)) continue;
     await run(nid);
     const after = useBoard.getState().nodes.find((x) => x.id === nid);
-    if ((after?.data as Record<string, unknown> | undefined)?.status === "error") {
+    const st = (after?.data as Record<string, unknown> | undefined)?.status;
+    if (st === "error") {
       if (nid !== opts.clickedId) toast("上游节点运行失败，工作流后续节点已停止", "err");
+      return;
+    }
+    // 该节点已在别处运行中（runner 内部短路直接返回）：此时它还没有输出，
+    // 继续往下跑只会让下游拿着空上游生成，直接停机等它跑完
+    if (st === "running" && nid !== opts.clickedId) {
+      toast("上游节点仍在运行，已暂停后续节点——等它出结果后再点一次运行", "err");
       return;
     }
   }
@@ -1856,7 +2073,25 @@ export async function runAllFlows() {
     return;
   }
 
-  toast(`开始运行 ${flows.length} 条工作流（共 ${flows.reduce((s, f) => s + f.length, 0)} 个节点，全部从头重算）`, "info");
+  // 一键全跑是最烧钱的操作（force 全量重算）：先把账单摊开确认，别一句 toast 就把请求全发出去
+  const all = flows.flat();
+  const typeOf = (nid: string) => nodes.find((n) => n.id === nid)?.type as NodeKind | undefined;
+  const imgN = all.filter((nid) => ["imageGen", "comfy", "relight", "multiAngle", "charCard"].includes(typeOf(nid) ?? "")).length;
+  const vidN = all.filter((nid) => typeOf(nid) === "videoGen").length;
+  const audN = all.filter((nid) => typeOf(nid) === "audioGen").length;
+  if (imgN + vidN + audN > 0) {
+    const msg = `将从头重算 ${all.length} 个节点（生图类 ${imgN} · 视频 ${vidN} · 音频 ${audN}），生成类请求会计费。确定全部运行？`;
+    let go: boolean;
+    if (isTauri) {
+      const { ask } = await import("@tauri-apps/plugin-dialog");
+      go = await ask(msg, { title: "一键运行全部", kind: "warning" });
+    } else {
+      go = window.confirm(msg);
+    }
+    if (!go) return;
+  }
+
+  toast(`开始运行 ${flows.length} 条工作流（共 ${all.length} 个节点，全部从头重算）`, "info");
   await Promise.all(flows.map((f) => runSequence(f, { force: true })));
   toast("全部工作流运行结束", "ok");
   notifyDone("全部工作流");

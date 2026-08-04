@@ -2,6 +2,7 @@ import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { NodeShell, PortOut, PortTextIn } from "../NodeShell";
 import { IcMerge } from "../../../ui/icons";
+import { PopSelect } from "../../../ui/PopSelect";
 import { useBoard } from "../../../core/stores/boardStore";
 import type { CombineData } from "../../../core/types";
 
@@ -23,16 +24,16 @@ export const CombineNode = memo(function CombineNode({ id, data, selected }: Nod
       <div className="mnode-body">
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-2)", flex: "none" }}>连接符</span>
-          <select
-            className="select nodrag"
-            style={{ minHeight: 33 }}
+          <PopSelect
+            className="nodrag"
             value={d.separator}
-            onChange={(e) => upd(id, { separator: e.target.value })}
-          >
-            <option value="comma">逗号 ,</option>
-            <option value="newline">换行</option>
-            <option value="space">空格</option>
-          </select>
+            options={[
+              { value: "comma", label: "逗号 ," },
+              { value: "newline", label: "换行" },
+              { value: "space", label: "空格" },
+            ]}
+            onChange={(v) => upd(id, { separator: v })}
+          />
         </div>
         <textarea
           className="textarea nodrag nowheel"

@@ -4,7 +4,7 @@
  */
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { NodeShell, PortAudioIn, PortOut, PortVideoIn } from "../NodeShell";
+import { NodeShell, PortIn, PortOut } from "../NodeShell";
 import { IcDownload, IcDub, IcLoading } from "../../../ui/icons";
 import { useBoard } from "../../../core/stores/boardStore";
 import { useSettings } from "../../../core/stores/settingsStore";
@@ -50,7 +50,7 @@ export const VideoDubNode = memo(function VideoDubNode({ id, data, selected }: N
       }
     >
       <div className="mnode-body">
-        <div className="lang-seg nodrag" title="替换 = 只保留新音频；混合 = 原声与新音频叠加">
+        <div className="lang-seg" title="替换 = 只保留新音频；混合 = 原声与新音频叠加">
           <button className={(d.mode ?? "replace") === "replace" ? "on" : ""} onClick={() => upd(id, { mode: "replace" })}>
             替换原声
           </button>
@@ -72,10 +72,9 @@ export const VideoDubNode = memo(function VideoDubNode({ id, data, selected }: N
             {d.progress}
           </div>
         ) : null}
-        {d.resultUrl && !running ? <VideoThumb className="img-main nodrag" src={d.resultUrl} /> : null}
+        {d.resultUrl && !running ? <VideoThumb className="img-main" src={d.resultUrl} /> : null}
       </div>
-      <PortVideoIn top={26} />
-      <PortAudioIn top={58} />
+      <PortIn />
       <PortOut kind="video" />
     </NodeShell>
   );

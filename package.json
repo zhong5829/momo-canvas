@@ -1,13 +1,17 @@
 {
   "name": "momo-canvas",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "quality:images": "python scripts/image-quality-gate.py quality-baseline/manifest.json --out quality-baseline/report.html",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "models:prepare": "node scripts/prepare-release-models.mjs",
+    "models:verify": "node scripts/prepare-release-models.mjs --verify-only",
+    "app:dist": "pnpm models:prepare && tauri build && node scripts/collect-app.mjs"
   },
   "dependencies": {
     "@crabnebula/tauri-plugin-drag": "^2.1.0",
@@ -21,6 +25,7 @@
     "@tauri-apps/plugin-store": "^2.4.3",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@xyflow/react": "^12.11.2",
+    "ag-psd": "31.0.2",
     "nanoid": "^6.0.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

@@ -264,8 +264,12 @@ export function Spotlight({ onPick, onPickTemplate }: { onPick: (kind: NodeKind)
             className="pal-item"
             title="导入别人分享的 .momoflow 工作流文件（导入后出现在模板列表，插入即用）"
             onClick={() => {
-              const done = (name: string | null) => {
-                if (name) toast(`已导入工作流「${name}」：在此列表中选择即可插入画布`, "ok");
+              const done = (r: { name: string; missing: { models: string[] } } | null) => {
+                if (!r) return;
+                const miss = r.missing.models.length
+                  ? `；缺少模型：${r.missing.models.join("、")}（需到「设置 → 模型配置」补齐才能运行）`
+                  : "";
+                toast(`已导入工作流「${r.name}」：在此列表中选择即可插入画布${miss}`, miss ? "err" : "ok");
               };
               if (isTauri) {
                 void useTemplates
@@ -283,7 +287,8 @@ export function Spotlight({ onPick, onPickTemplate }: { onPick: (kind: NodeKind)
                 if (!f) return;
                 void f
                   .text()
-                  .then((t) => done(useTemplates.getState().importText(t)))
+                  .then((t) => useTemplates.getState().importText(t))
+                  .then(done)
                   .catch((err) => toast(`导入失败：${errMsg(err)}`, "err"));
               };
               input.click();

@@ -9,10 +9,11 @@ import type { CharCardStyle, CharDeliverable, CharProfile } from "./types";
 
 /* ---------------- 素材种类 ---------------- */
 export const CHAR_DELIVERABLES: { value: CharDeliverable; label: string; desc: string }[] = [
-  { value: "turnaround", label: "三视图", desc: "正/侧/背全身三视图 + 头部多角度" },
+  { value: "turnaround", label: "三视图", desc: "正/侧/背全身三视图一排，区域大、看得清" },
   { value: "closeup", label: "脸部近景", desc: "上半身正面近景肖像" },
-  { value: "expressions", label: "表情九宫格", desc: "3×3 九种表情参考" },
-  { value: "poses", label: "动作姿态", desc: "6 种全身动作姿态" },
+  { value: "expressions", label: "表情集", desc: "2×2 四种表情（补一张自动换下一组）" },
+  { value: "poses", label: "动作姿态", desc: "2×2 四种全身动作（补一张自动换下一组）" },
+  { value: "outfits", label: "服装造型", desc: "三套不同服装造型（补一张自动换下一组）" },
   { value: "portrait", label: "角色立绘", desc: "单张全身立绘" },
   { value: "sheet", label: "角色设定卡", desc: "整版设定卡排版（档案/色卡/服装拆解）" },
 ];
@@ -21,17 +22,26 @@ export const DELIV_LABEL: Record<CharDeliverable, string> = Object.fromEntries(
   CHAR_DELIVERABLES.map((d) => [d.value, d.label]),
 ) as Record<CharDeliverable, string>;
 
-/** 各素材的版式要求（分析提示词与预设模板共用） */
+/** 各素材的版式要求（分析提示词与预设模板共用）。原则：每张画面不堆砌，格子少、单区域大，方便精细化捕捉 */
 const DELIV_SPEC: Record<CharDeliverable, string> = {
-  turnaround:
-    "全身正面、侧面、背面三个站立视图排成一行，右侧配头部正面/四分之三侧/正侧/背面等多角度特写，纯白背景，角色设定参考图版式，同一角色外貌完全一致",
+  turnaround: "全身正面、侧面、背面三个站立视图排成一行，每个视图占画面三分之一，纯白背景，角色设定参考图版式，同一角色外貌完全一致",
   closeup: "上半身正面近景肖像，看向镜头自然微笑，面部细节清晰，纯白背景，均匀柔光",
-  expressions:
-    "3×3 网格排列九种表情：平静、微笑、大笑、眨眼、惊讶、生气、难过、哭泣、思考，同一角色头部特写，纯白背景，格与格之间留白分隔",
-  poses: "同一角色六种不同全身动作姿态：自然站立、双手插兜、行走、回头、挥手打招呼、坐姿，排版整齐，纯白背景",
+  expressions: "2×2 网格排列四种表情：平静、微笑、生气、惊讶，同一角色头部特写，每格区域充足、五官细节清晰，纯白背景，格与格之间留白分隔",
+  poses: "2×2 网格排列同一角色四种全身动作姿态：自然站立、行走、回头、坐姿，每格区域充足、全身完整入镜，纯白背景",
+  outfits: "同一角色的三套服装造型全身站立一字排开：日常便服、正式礼服、符合角色气质的主题戏服，每套占画面三分之一，发型与外貌保持一致，纯白背景",
   portrait: "单张全身立绘，自然站姿、放松微笑，纯白背景，影棚均匀柔光",
   sheet:
     "一整张角色设定卡排版设计，版块包含：角色名大标题（中英文）、基本信息栏（年龄/身高/生日/星座/职业）、外貌特征列表、气质关键词、全身三视图、表情格、服装单品拆解、配饰展示、色卡（附 hex 色号）、角色简介与手写签名，文字排版清晰可读",
+};
+
+/**
+ * 「补一张」时自动换的内容组（按已有张数循环取组）：
+ * 表情/动作/服装一张放不下太多，逐张补充比塞进一张更清晰
+ */
+export const DELIV_VARIATIONS: Partial<Record<CharDeliverable, string[]>> = {
+  expressions: ["大笑、哭泣、思考、害羞", "得意、委屈、惊恐、困倦", "调皮眨眼、无语、期待、心碎"],
+  poses: ["双手插兜、挥手打招呼、奔跑、跳跃", "倚靠、蹲下、叉腰、转身回眸", "抱臂、托腮思考、伸懒腰、跳舞"],
+  outfits: ["运动休闲装、居家睡衣、季节外套", "职业工作服、舞台演出服、旅行度假装", "街头潮服、古典盛装、未来概念服"],
 };
 
 /* ---------------- 设定卡排版风格 ---------------- */
@@ -71,7 +81,7 @@ ${specs}
 sheet 设定卡的版面风格：${sheetStyle}。
 
 严格只输出以下 JSON（不要 markdown 代码块、不要任何解释）：
-{"profile":{"name":"中文名","nameEn":"英文名","age":"22","occupation":"职业","intro":"80字以内角色简介","appearance":["外貌特征"],"outfit":["服装单品"],"accessories":["配饰"],"palette":["#RRGGBB"],"keywords":["气质关键词"],"artStyle":"画风概述"},"prompts":{"turnaround":"…","closeup":"…","expressions":"…","poses":"…","portrait":"…","sheet":"…"}}`;
+{"profile":{"name":"中文名","nameEn":"英文名","age":"22","occupation":"职业","intro":"80字以内角色简介","appearance":["外貌特征"],"outfit":["服装单品"],"accessories":["配饰"],"palette":["#RRGGBB"],"keywords":["气质关键词"],"artStyle":"画风概述"},"prompts":{"turnaround":"…","closeup":"…","expressions":"…","poses":"…","outfits":"…","portrait":"…","sheet":"…"}}`;
 }
 
 /* ---------------- 角色库内置预设 ---------------- */
@@ -90,8 +100,9 @@ function presetPrompts(anchor: string, styleTail: string): Record<CharDeliverabl
   return {
     turnaround: `角色三视图设定参考：${mk(DELIV_SPEC.turnaround)}`,
     closeup: mk(DELIV_SPEC.closeup),
-    expressions: `角色表情九宫格参考：${mk(DELIV_SPEC.expressions)}`,
+    expressions: `角色表情集参考：${mk(DELIV_SPEC.expressions)}`,
     poses: `角色动作姿态参考：${mk(DELIV_SPEC.poses)}`,
+    outfits: `角色服装造型设定：${mk(DELIV_SPEC.outfits)}`,
     portrait: `角色全身立绘：${mk(DELIV_SPEC.portrait)}`,
     sheet: `角色设定卡：${mk(DELIV_SPEC.sheet)}`,
   };

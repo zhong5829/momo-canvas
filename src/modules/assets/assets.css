@@ -128,6 +128,8 @@
   padding: 14px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  /* 行高写死：自动行高靠卡片内 aspect-ratio 反推，轨道尺寸算不出来会塌缩，资产越多挤得越狠 */
+  grid-auto-rows: 152px;
   gap: 9px;
   align-content: start;
 }
@@ -231,6 +233,8 @@
   background: var(--input-bg);
   border: 2px solid transparent;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
   transition: transform var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
 }
 .a-card:hover {
@@ -241,7 +245,8 @@
   border-color: var(--accent);
 }
 .a-card .a-thumb {
-  aspect-ratio: 1;
+  flex: 1;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -253,6 +258,20 @@
   height: 100%;
   object-fit: cover;
   display: block;
+}
+/* 矢量（SVG）资产：棋盘格底看透明（卡片 + 预览层共用） */
+img.svg-bg {
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #e7e9ee 25%, transparent 25%),
+    linear-gradient(-45deg, #e7e9ee 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e7e9ee 75%),
+    linear-gradient(-45deg, transparent 75%, #e7e9ee 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+.a-card .a-thumb img.svg-bg {
+  object-fit: contain;
 }
 .a-card .a-name {
   padding: 7px 10px 8px;

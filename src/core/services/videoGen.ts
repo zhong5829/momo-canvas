@@ -4,9 +4,9 @@
  *  - siliconflow 硅基流动：POST /video/submit → POST /video/status
  *  - openai      OpenAI 兼容：POST /videos → GET /videos/{id} → /videos/{id}/content
  */
-import type { ModelCard } from "../types";
+import type { CustomProtocol, ModelCard } from "../types";
 import { xfetch, trimBase, readErrorBody } from "./http";
-import { extractResultStrings, resolveCustomProto, runCustomFlow } from "./customProto";
+import { absolutize, extractResultStrings, resolveCustomProto, runCustomFlow } from "./customProto";
 import { runWithSelfHeal } from "./protoSelfHeal";
 import { soraSize, videoFamily, videoWh } from "../videoMeta";
 
@@ -42,6 +42,17 @@ const sleep = (ms: number, signal?: AbortSignal) =>
     });
   });
 
+/** 最终响应 → 视频地址（纯解析步骤，自愈重解析时复用，避免重复出片扣费） */
+function parseVideo(p: CustomProtocol, final: unknown, base = ""): string | null {
+  const first = extractResultStrings(final, p.resultPath, "video")[0];
+  if (!first) return null;
+  // 相对地址先补成绝对地址，否则取到了也会被当成"不像地址"丢掉
+  const v = absolutize(first, base);
+  if (v.startsWith("http") || v.startsWith("data:") || v.startsWith("blob:")) return v;
+  if (v.length > 200) return `data:video/mp4;base64,${v}`;
+  return null;
+}
+
 /** 自定义协议（设置 → 协议，用途 = 视频生成）：模板执行器跑提交/轮询，结果按视频地址取用 */
 async function genCustomVideo(card: ModelCard, req: VideoGenReq): Promise<string> {
   const proto = await resolveCustomProto(card.protocol, "video");
@@ -49,13 +60,18 @@ async function genCustomVideo(card: ModelCard, req: VideoGenReq): Promise<string
   return runWithSelfHeal(
     proto,
     "生成视频",
-    async (p, trace) => {
+    async (p, ctx) => {
+      const trace = ctx.trace;
+      const wh = req.resolution ? videoWh(req.resolution, req.aspect ?? "16:9") : null;
       const vars: Record<string, string> = {
         baseUrl: trimBase(card.baseUrl),
         apiKey: card.apiKey,
         model: card.model,
-        prompt: req.prompt.replace(/"/g, '\\"').replace(/\n/g, "\\n"),
-        size: "",
+        // 完整 JSON 转义：手动 replace 只转义 " 和 \n，漏掉反斜杠本身与 \r \t，
+        // 提示词里出现一个 \（Windows 路径、LaTeX、颜文字）就会破坏请求体 JSON，直接 400
+        prompt: JSON.stringify(req.prompt).slice(1, -1),
+        // 尺寸串按分辨率+比例折算（以前恒为空，模板写了 {{size}} 也拿不到值）
+        size: wh ? `${wh.w}x${wh.h}` : "",
         n: "1",
         taskId: "",
         // 首帧参考图 dataURL（模板用 {{image}} 占位）；{{image2}} = 尾帧；
@@ -72,18 +88,20 @@ async function genCustomVideo(card: ModelCard, req: VideoGenReq): Promise<string
         audio: req.audio === undefined ? "" : String(req.audio),
       };
       req.onProgress?.("提交任务…");
-      const final = await runCustomFlow(p, vars, req.onProgress, trace);
-      const raw = extractResultStrings(final, p.resultPath, "video");
-      const v = raw[0];
+      const final = await runCustomFlow(p, vars, req.onProgress, trace, req.signal);
+      // 记下最终响应：只是 resultPath 写错时，自愈可从这份响应里救结果，不必重新出片
+      ctx.lastFinal = final;
+      const v = parseVideo(p, final, trimBase(card.baseUrl));
       if (!v)
         throw new Error(
           `协议「${p.name}」未取到视频（路径 ${p.resultPath}）。响应：${JSON.stringify(final).slice(0, 250)}`,
         );
-      if (v.startsWith("http") || v.startsWith("data:") || v.startsWith("blob:")) return v;
-      if (v.length > 200) return `data:video/mp4;base64,${v}`;
-      throw new Error(`协议「${p.name}」返回的结果不像视频地址：${v.slice(0, 120)}`);
+      return v;
     },
     req.onProgress,
+    // 自愈重解析：只用修好的路径重读这次的响应，不重发生成请求（视频重发很贵）
+    (p, final) => parseVideo(p, final, trimBase(card.baseUrl)),
+    trimBase(card.baseUrl),
   );
 }
 
@@ -102,21 +120,22 @@ export async function generateVideo(card: ModelCard, req: VideoGenReq): Promise<
 
   if (card.protocol === "zhipu") {
     const body: Record<string, unknown> = { model: card.model, prompt: req.prompt };
-    if (req.image) body.image_url = req.image;
+    // 首帧兜底：面板只连了参考图没设首帧时，也要把第一张图发出去（否则图生视频退化成文生视频）
+    if (req.image ?? req.refImages?.[0]) body.image_url = req.image ?? req.refImages![0];
     if (req.duration) body.duration = Number(req.duration);
     if (req.resolution) {
       const wh = videoWh(req.resolution, req.aspect ?? "16:9");
       if (wh) body.size = `${wh.w}x${wh.h}`;
     }
     if (req.audio !== undefined) body.with_audio = req.audio;
-    const resp = await xfetch(`${base}/videos/generations`, { method: "POST", headers, body: JSON.stringify(body) });
+    const resp = await xfetch(`${base}/videos/generations`, { method: "POST", headers, body: JSON.stringify(body), signal: req.signal });
     if (!resp.ok) throw new Error(`视频任务提交失败 ${resp.status}: ${await readErrorBody(resp)}`);
     const { id } = await resp.json();
     if (!id) throw new Error("视频任务未返回 id");
     progress("任务已提交，生成中…");
     for (let i = 0; i < 240; i++) {
       await sleep(3000, req.signal);
-      const r = await xfetch(`${base}/async-result/${id}`, { headers });
+      const r = await xfetch(`${base}/async-result/${id}`, { headers, signal: req.signal });
       if (!r.ok) continue;
       const j = await r.json();
       if (j.task_status === "SUCCESS") {
@@ -132,19 +151,19 @@ export async function generateVideo(card: ModelCard, req: VideoGenReq): Promise<
 
   if (card.protocol === "siliconflow") {
     const body: Record<string, unknown> = { model: card.model, prompt: req.prompt };
-    if (req.image) body.image = req.image;
+    if (req.image ?? req.refImages?.[0]) body.image = req.image ?? req.refImages![0];
     if (req.resolution) {
       const wh = videoWh(req.resolution, req.aspect ?? "16:9");
       if (wh) body.image_size = `${wh.w}x${wh.h}`;
     }
-    const resp = await xfetch(`${base}/video/submit`, { method: "POST", headers, body: JSON.stringify(body) });
+    const resp = await xfetch(`${base}/video/submit`, { method: "POST", headers, body: JSON.stringify(body), signal: req.signal });
     if (!resp.ok) throw new Error(`视频任务提交失败 ${resp.status}: ${await readErrorBody(resp)}`);
     const { requestId } = await resp.json();
     if (!requestId) throw new Error("视频任务未返回 requestId");
     progress("任务已提交，生成中…");
     for (let i = 0; i < 240; i++) {
       await sleep(3000, req.signal);
-      const r = await xfetch(`${base}/video/status`, { method: "POST", headers, body: JSON.stringify({ requestId }) });
+      const r = await xfetch(`${base}/video/status`, { method: "POST", headers, body: JSON.stringify({ requestId }), signal: req.signal });
       if (!r.ok) continue;
       const j = await r.json();
       if (j.status === "Succeed") {
@@ -171,18 +190,22 @@ export async function generateVideo(card: ModelCard, req: VideoGenReq): Promise<
       }
     }
     if (req.image ?? req.refImages?.[0]) body.input_reference = req.image ?? req.refImages![0];
-    const resp = await xfetch(`${base}/videos`, { method: "POST", headers, body: JSON.stringify(body) });
+    // 尾帧 / 多参考图 / 音画同出：中转站字段不统一，按常见命名一并带上（不支持的会忽略未知字段）
+    if (req.lastFrame) body.input_reference_last = req.lastFrame;
+    if ((req.refImages?.length ?? 0) > 1) body.reference_images = req.refImages;
+    if (req.audio !== undefined) body.with_audio = req.audio;
+    const resp = await xfetch(`${base}/videos`, { method: "POST", headers, body: JSON.stringify(body), signal: req.signal });
     if (!resp.ok) throw new Error(`视频任务提交失败 ${resp.status}: ${await readErrorBody(resp)}`);
     const { id } = await resp.json();
     if (!id) throw new Error("视频任务未返回 id");
     progress("任务已提交，生成中…");
     for (let i = 0; i < 240; i++) {
       await sleep(3000, req.signal);
-      const r = await xfetch(`${base}/videos/${id}`, { headers });
+      const r = await xfetch(`${base}/videos/${id}`, { headers, signal: req.signal });
       if (!r.ok) continue;
       const j = await r.json();
       if (j.status === "completed") {
-        const cr = await xfetch(`${base}/videos/${id}/content`, { headers });
+        const cr = await xfetch(`${base}/videos/${id}/content`, { headers, signal: req.signal });
         if (!cr.ok) throw new Error(`下载视频失败 ${cr.status}`);
         const blob = await cr.blob();
         return URL.createObjectURL(blob);

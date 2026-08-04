@@ -1,15 +1,15 @@
 import { memo, useMemo, useRef } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { NodeShell, PortOut } from "../NodeShell";
-import { IcLoading, IcSparkles, IcText } from "../../../ui/icons";
+import { IcText } from "../../../ui/icons";
 import { useBoard } from "../../../core/stores/boardStore";
-import { optimizePrompt, orderedInEdges } from "../../../core/runner";
+import { collectImageRefsFor } from "../../../core/runner";
 import { Thumb } from "../../../ui/Thumb";
-import { PromptHistoryBtn } from "../../../ui/PromptHistory";
+import { PromptToolsBtn } from "../../../ui/PromptToolsBtn";
 import { AtTextArea, type AtTextAreaHandle } from "../../../ui/AtTextArea";
 import type { PromptData } from "../../../core/types";
 
-/** 与本提示词共同接入同一个下游生成节点的上游图片（供 @ 引用） */
+/** 与本提示词共同接入同一个下游生成节点的上游图片（供 @ 引用；含组成员图） */
 function useSiblingImages(id: string) {
   const nodes = useBoard((s) => s.nodes);
   const edges = useBoard((s) => s.edges);
@@ -18,20 +18,11 @@ function useSiblingImages(id: string) {
     const out: { src: string; label: string }[] = [];
     const seen = new Set<string>();
     for (const t of targets) {
-      // 与 runner 的收集顺序一致（按上游节点位置上→下），保证 @图N 编号对得上
-      for (const e of orderedInEdges(t, nodes, edges)) {
-        if (e.targetHandle !== "in-image" || seen.has(e.source)) continue;
-        const n = nodes.find((x) => x.id === e.source);
-        if (!n) continue;
-        const nd = n.data as Record<string, unknown>;
-        const src =
-          n.type === "image"
-            ? (nd.src as string | undefined)
-            : ((nd.results as string[] | undefined)?.[(nd.picked as number | undefined) ?? 0] ?? undefined);
-        if (!src) continue;
-        seen.add(e.source);
-        const raw = n.type === "image" && nd.name ? String(nd.name).replace(/\.\w+$/, "") : "";
-        out.push({ src, label: raw ? raw.slice(0, 12) : `图${out.length + 1}` });
+      // 复用 runner 的参考图收集（与 collectUpstream 同序、含组展开），保证 @图N 编号与发给模型时一致
+      for (const r of collectImageRefsFor(t)) {
+        if (seen.has(r.src)) continue;
+        seen.add(r.src);
+        out.push(r);
       }
     }
     return out;
@@ -61,10 +52,11 @@ export const PromptNode = memo(function PromptNode({ id, data, selected }: NodeP
       error={d.error}
       selected={selected}
       width={290}
+      headExtra={<PromptToolsBtn value={d.text} image={images[0]?.src} onApply={(t) => upd(id, { text: t }, { commit: true })} />}
     >
       <div className="mnode-body">
         {images.length ? (
-          <div className="ref-strip nodrag">
+          <div className="ref-strip">
             <span className="rs-lab">同路参考图 · 点击引用到提示词</span>
             <div className="rs-chips">
               {images.map((im, i) => (
@@ -82,21 +74,16 @@ export const PromptNode = memo(function PromptNode({ id, data, selected }: NodeP
             </div>
           </div>
         ) : null}
-        <AtTextArea
-          ref={editorRef}
-          rows={5}
-          placeholder="描述你想要的画面…"
-          value={d.text}
-          onChange={(t) => upd(id, { text: t })}
-          refs={images}
-        />
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-          <span style={{ fontSize: 12.5, color: "var(--text-3)", flex: 1 }}>{d.text.length} 字</span>
-          <PromptHistoryBtn onPick={(t) => upd(id, { text: t })} />
-          <button className="btn sm nodrag" disabled={!!d.optimizing} onClick={() => void optimizePrompt(id)}>
-            {d.optimizing ? <IcLoading size={15} /> : <IcSparkles size={15} />}
-            AI 扩写优化
-          </button>
+        <div className="ta-wrap">
+          <AtTextArea
+            ref={editorRef}
+            rows={5}
+            placeholder="描述你想要的画面…"
+            value={d.text}
+            onChange={(t) => upd(id, { text: t }, { commit: true })}
+            refs={images}
+          />
+          <span className="ta-count">{d.text.length} 字</span>
         </div>
       </div>
       <PortOut kind="text" />

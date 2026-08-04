@@ -1,12 +1,14 @@
 import { memo, useRef } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { NodeShell, PortOut } from "../NodeShell";
-import { IcDownload, IcImage, IcUpload } from "../../../ui/icons";
+import { mediaNodeWidth, NodeShell, PortOut } from "../NodeShell";
+import { EditSurface } from "../EditSurface";
+import { IcDownload, IcImage, IcScan, IcUpload } from "../../../ui/icons";
 import { useBoard } from "../../../core/stores/boardStore";
 import { useSettings } from "../../../core/stores/settingsStore";
 import { toast, useUi } from "../../../core/stores/uiStore";
 import { fileToDataUrl, errMsg } from "../../../core/utils";
 import { saveImageAs } from "../../../core/services/imageSaver";
+import { useImageDims } from "../../../core/imageInfo";
 import { Thumb } from "../../../ui/Thumb";
 import type { ImageData } from "../../../core/types";
 
@@ -15,6 +17,8 @@ export const ImageNode = memo(function ImageNode({ id, data, selected }: NodePro
   const upd = useBoard((s) => s.updateData);
   const setLightbox = useUi((s) => s.setLightbox);
   const fileRef = useRef<HTMLInputElement>(null);
+  // 宽度随图片比例自适应（竖图窄、横图宽）
+  const dims = useImageDims(d.src);
 
   const onFile = async (f?: File | null) => {
     if (!f) return;
@@ -40,25 +44,31 @@ export const ImageNode = memo(function ImageNode({ id, data, selected }: NodePro
       status={d.status}
       error={d.error}
       selected={selected}
-      width={260}
+      width={mediaNodeWidth(dims, 320)}
+      media
       headExtra={
         d.src ? (
-          <span className="acts nodrag" style={{ opacity: 1 }}>
-            <button className="icon-btn" title="替换图片" onClick={() => fileRef.current?.click()}>
-              <IcUpload size={17} />
+          <>
+            <button className="nt-btn" title="放大预览" onClick={() => setLightbox(d.src!)}>
+              <IcScan size={14} /> 放大
             </button>
-            <button className="icon-btn" title="保存到本地" onClick={save}>
-              <IcDownload size={17} />
+            <button className="nt-btn" title="替换图片" onClick={() => fileRef.current?.click()}>
+              <IcUpload size={14} /> 替换
             </button>
-          </span>
+            <button className="nt-btn" title="保存到本地" onClick={save}>
+              <IcDownload size={14} /> 保存
+            </button>
+          </>
         ) : undefined
       }
     >
       <div className="mnode-body">
         {d.src ? (
-          <Thumb className="img-main nodrag" src={d.src} alt={d.name} res onClick={() => setLightbox(d.src!)} />
+          <EditSurface id={id} src={d.src}>
+            <Thumb className="img-main" src={d.src} alt={d.name} res onClick={() => setLightbox(d.src!)} />
+          </EditSurface>
         ) : (
-          <div className="img-empty nodrag" onClick={() => fileRef.current?.click()}>
+          <div className="img-empty" onClick={() => fileRef.current?.click()}>
             <IcImage size={26} />
             <span>
               点击导入图片

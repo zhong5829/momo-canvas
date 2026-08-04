@@ -7,22 +7,26 @@ import type { BoardTemplate, TemplateEdge, TemplateNode } from "./types";
 function n(tid: string, kind: TemplateNode["kind"], x: number, y: number, data: Record<string, unknown> = {}): TemplateNode {
   return { tid, kind, x, y, data };
 }
-function e(sourceTid: string, targetTid: string, targetHandle: "in-text" | "in-image" | "in-video"): TemplateEdge {
-  return { sourceTid, targetTid, sourceHandle: "out", targetHandle };
+function e(sourceTid: string, targetTid: string, _legacy?: "in-text" | "in-image" | "in-video" | "in"): TemplateEdge {
+  // 端口统一后输入侧恒为 "in"（保留第3参仅为兼容旧调用字面量，实际忽略）
+  return { sourceTid, targetTid, sourceHandle: "out", targetHandle: "in" };
 }
 
 export const SEED_TEMPLATES: BoardTemplate[] = [
   {
     id: "seed_txt2img",
-    name: "示例 · 文生图 + 高清放大",
+    name: "示例 · 文生图",
     builtin: true,
     createdAt: 0,
     nodes: [
       n("p", "prompt", 0, 0, { text: "一只银渐层猫咪蹲在窗台上，黄昏逆光，毛发蓬松，浅景深，电影感画面" }),
       n("g", "imageGen", 360, 0),
-      n("u", "enhance", 730, 0, { factor: 2, focus: "detail" }),
+      n("tip", "note", 0, 200, {
+        text: "出图后想再加工？悬停节点 → 顶部工具条「编辑」：\n裁剪 / 局部重绘 / 扩图 / 尺寸调整 / 高清增强，\n全部直接作用在这张图上，不用再连线。",
+        color: "blue",
+      }),
     ],
-    edges: [e("p", "g", "in-text"), e("g", "u", "in-image")],
+    edges: [e("p", "g", "in-text")],
   },
   {
     id: "seed_img2img",
@@ -31,7 +35,7 @@ export const SEED_TEMPLATES: BoardTemplate[] = [
     createdAt: 0,
     nodes: [
       n("i", "image", 0, 40),
-      n("c", "caption", 340, 0, { mode: "prompt" }),
+      n("c", "llmText", 340, 0, { op: "capPrompt" }),
       n("s", "stylePreset", 340, 330),
       n("g", "imageGen", 720, 120),
     ],
@@ -44,13 +48,13 @@ export const SEED_TEMPLATES: BoardTemplate[] = [
     createdAt: 0,
     nodes: [
       n("i", "image", 0, 40),
-      n("cc", "charCard", 380, 0, { deliverables: ["turnaround", "expressions", "portrait", "sheet"] }),
+      n("cc", "charCard", 380, 0, { deliverables: ["turnaround", "expressions", "outfits", "portrait", "sheet"] }),
     ],
     edges: [e("i", "cc", "in-image")],
   },
   {
     id: "seed_film",
-    name: "示例 · 分镜短片流水线（图→视频→续接→成片）",
+    name: "示例 · 分镜短片流水线（图→逐镜视频）",
     builtin: true,
     createdAt: 0,
     nodes: [
@@ -61,10 +65,8 @@ export const SEED_TEMPLATES: BoardTemplate[] = [
       n("g2", "imageGen", 760, 540),
       n("v1", "videoGen", 1140, 60, { prompt: "" }),
       n("v2", "videoGen", 1140, 540, { prompt: "" }),
-      n("f1", "frame", 1520, 300, { point: "last" }),
-      n("cat", "videoConcat", 1520, 60),
       n("tip", "note", 0, 0, {
-        text: "分镜短片流水线：\n① 风格提示词全片共用，分镜各写各的\n② 每镜先出图（可挑）再图生视频\n③ 「视频取帧」抽第 1 镜末帧 → 连给第 2 镜生视频节点当首帧参考 = 镜头衔接\n④ 全部生成后点「视频拼接」合成一条\n（想要更多分镜：框选一列节点 Alt+拖拽复制）",
+        text: "分镜短片流水线：\n① 风格提示词全片共用，分镜各写各的\n② 每镜先出图（可挑）再图生视频\n③ 想要更多分镜：框选一列节点 Ctrl+D 创建副本",
         color: "blue",
       }),
     ],
@@ -75,10 +77,6 @@ export const SEED_TEMPLATES: BoardTemplate[] = [
       e("s2", "g2", "in-text"),
       e("g1", "v1", "in-image"),
       e("g2", "v2", "in-image"),
-      e("v1", "f1", "in-video"),
-      e("f1", "v2", "in-image"),
-      e("v1", "cat", "in-video"),
-      e("v2", "cat", "in-video"),
     ],
   },
   {

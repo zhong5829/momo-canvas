@@ -6,19 +6,16 @@ import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { NodeShell, PortOut, PortTextIn } from "../NodeShell";
 import { IcDownload, IcLoading, IcMic } from "../../../ui/icons";
-import { useBoard } from "../../../core/stores/boardStore";
 import { useSettings } from "../../../core/stores/settingsStore";
 import { toast } from "../../../core/stores/uiStore";
-import { collectUpstream, runFlow } from "../../../core/runner";
+import { runFlow } from "../../../core/runner";
 import { saveAudioAs } from "../../../core/services/imageSaver";
 import { errMsg } from "../../../core/utils";
 import type { AudioGenData } from "../../../core/types";
 
 export const AudioGenNode = memo(function AudioGenNode({ id, data, selected }: NodeProps) {
   const d = data as AudioGenData;
-  const hasUpText = useBoard(() => collectUpstream(id).texts.length > 0);
   const running = d.status === "running";
-  const preview = (d.text ?? "").trim();
 
   const save = async () => {
     if (!d.resultUrl) return;
@@ -39,14 +36,19 @@ export const AudioGenNode = memo(function AudioGenNode({ id, data, selected }: N
       error={d.error}
       selected={selected}
       width={300}
+      hideUpstream
       headExtra={
-        d.resultUrl ? (
-          <span className="acts nodrag" style={{ opacity: 1 }}>
-            <button className="icon-btn" title="保存到本地" onClick={save}>
-              <IcDownload size={17} />
+        <>
+          <button className="nt-btn primary" disabled={running} title="生成（上游未运行的节点会按依赖顺序先自动运行）" onClick={() => void runFlow(id)}>
+            {running ? <IcLoading size={14} /> : <IcMic size={14} />}
+            {running ? "合成中" : "生成"}
+          </button>
+          {d.resultUrl ? (
+            <button className="nt-btn" title="保存到本地" onClick={save}>
+              <IcDownload size={14} /> 保存
             </button>
-          </span>
-        ) : undefined
+          ) : null}
+        </>
       }
     >
       <div className="mnode-body">
@@ -63,15 +65,6 @@ export const AudioGenNode = memo(function AudioGenNode({ id, data, selected }: N
             <span>选中节点，在底部面板输入文本</span>
           </div>
         )}
-        <div className="gen-foot nodrag">
-          <span className="gf-prompt" title={preview || undefined}>
-            {preview || (hasUpText ? "朗读上游文本" : "未填文本")}
-          </span>
-          <button className="btn sm primary" disabled={running} onClick={() => void runFlow(id)}>
-            {running ? <IcLoading size={15} /> : <IcMic size={15} />}
-            {running ? "合成中" : "生成"}
-          </button>
-        </div>
       </div>
       <PortTextIn />
       <PortOut kind="audio" />

@@ -193,8 +193,11 @@ export function videoMeta(f: VideoFamily): VideoFamilyMeta {
   return META[f];
 }
 
-/** 档位 + 比例 → 实际宽高（zhipu size / siliconflow image_size / Sora size 用） */
+/** 档位 + 比例 → 实际宽高（zhipu size / siliconflow image_size / Sora size 用）
+ *  aspect="adaptive"（比例自适应，图生视频用首帧比例）返回 null：调用方不传 size，交给模型自行判定，
+ *  不能当成非法值回落 16:9，否则「自适应」永远发成横屏 */
 export function videoWh(resolution: string, aspect: string): { w: number; h: number } | null {
+  if (aspect === "adaptive" || aspect === "auto") return null;
   const heights: Record<string, number> = {
     "360p": 360, "480p": 480, "540p": 540, "720p": 720, "768p": 768, "1080p": 1080, "4k": 2160,
   };

@@ -34,4 +34,24 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+anyhow = "1"
 
+# —— 本地超分（阶段一）——
+# ort 2.x，DirectML 执行提供者（download-binaries/copy-dylibs 默认开，
+# 自动把 DirectML.dll 放到 target/{debug,release}/，dev 模式无需改 tauri.conf.json）。
+# RTX 5090 是 sm_120，CUDA EP 暂无 kernel，DirectML 走 DX12 是当前唯一稳路。
+ort = { version = "2.0.0-rc.13", features = ["directml"] }
+ndarray = "0.17"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "tiff", "ico"] }
+# 图像转矢量（阶段一）：纯 Rust，CPU。走文件接口 convert_image_to_svg，绕开它内部 image 0.23 与本项目 0.25 的版本差异。
+vtracer = "0.6.5"
+# PathSimplifyMode（少节点档的多边形模式）在 visioncortex 里，vtracer 未 re-export；
+# 版本与 vtracer 0.6.5 的依赖对齐（已在依赖树中，不引入新包）
+visioncortex = "0.8.10"
+# 矢量候选评分（批次5）：SVG → 位图渲染对比原图。纯 Rust（tiny-skia），无系统依赖；
+# 只用 resvg 一个 crate——它内部 re-export usvg 与 tiny_skia，版本天然对齐。
+resvg = "0.45"
+# 分层 TIFF：同尺寸 RGBA 图层写为多页 TIFF，并写入图层名与 DPI 元数据。
+tiff = "0.11.3"
+# 读取 JPEG/PNG/WebP 容器中的原始 ICC 配置，并原样写回生产输出。
+img-parts = "0.4.0"

@@ -41,11 +41,26 @@ export function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([copy.buffer], { type: mime });
 }
 
-/** 任意图片源（url / dataURL）→ dataURL */
-export async function toDataUrl(src: string, fetcher: typeof fetch = (...args) => fetch(...args)): Promise<string> {
+/**
+ * 任意媒体源（url / dataURL）→ dataURL
+ * expect 传了就做一次落地校验：中转站的结果直链普遍带签名时效、或需要 Key 才能下载，
+ * 403/404 返回的 HTML 错误页若不拦，会被读成 data:text/html 当成"图片"一路收进资产库——
+ * 节点显示成功却是永远加载不出的破图，比直接失败更难排查。
+ */
+export async function toDataUrl(
+  src: string,
+  fetcher: typeof fetch = (...args) => fetch(...args),
+  expect?: "image" | "video" | "audio",
+): Promise<string> {
   if (src.startsWith("data:")) return src;
   const resp = await fetcher(src);
   const blob = await resp.blob();
+  if (expect) {
+    if (!resp.ok) throw new Error(`结果下载失败 ${resp.status}：${src.slice(0, 90)}（直链可能已过期或需要鉴权）`);
+    const t = (blob.type || "").toLowerCase();
+    if (t && !t.startsWith(expect) && !t.startsWith("application/octet-stream") && !t.startsWith("binary/"))
+      throw new Error(`结果下载失败：地址返回的是 ${t}，不是${expect === "image" ? "图片" : expect === "video" ? "视频" : "音频"}（${src.slice(0, 90)}）`);
+  }
   return new Promise((res, rej) => {
     const r = new FileReader();
     r.onload = () => res(r.result as string);

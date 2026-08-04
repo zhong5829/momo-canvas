@@ -91,6 +91,51 @@ export const IcCrop = (p: IconProps) => (
   </I>
 );
 
+/* 超清放大：放大镜 + 镜内上箭头（本地超分） */
+export const IcUpscale = (p: IconProps) => (
+  <I {...p}>
+    <circle cx="10.5" cy="10.5" r="6.8" />
+    <path d="m15.4 15.4 5.1 5.1" />
+    <path d="M10.5 13.8V8.6M8.1 10.7l2.4-2.4 2.4 2.4" />
+  </I>
+);
+
+/* 智能矢量：锚点方块 + 贝塞尔曲线 + 手柄（钢笔路径） */
+export const IcVector = (p: IconProps) => (
+  <I {...p}>
+    <path d="M5.5 18.5C8.5 10.5 15.5 9 18.5 5.5" />
+    <path d="M6.6 16.6 9.3 11.2M17.4 7.4l-2.6-1" strokeDasharray="1.6 2" />
+    <circle cx="9.3" cy="11.2" r="1.2" fill="currentColor" strokeWidth="0" />
+    <circle cx="14.8" cy="6.4" r="1.2" fill="currentColor" strokeWidth="0" />
+    <rect x="3.5" y="16.5" width="4.2" height="4.2" rx="1" />
+    <rect x="16.3" y="3.4" width="4.2" height="4.2" rx="1" />
+  </I>
+);
+
+/* 极速：闪电 */
+export const IcZap = (p: IconProps) => (
+  <I {...p}>
+    <path d="M13 2.5 3.5 14h7l-1 7.5L19 10h-7z" />
+  </I>
+);
+
+/* 专业：钻石 */
+export const IcDiamond = (p: IconProps) => (
+  <I {...p}>
+    <path d="M7 4h10L20.5 9 12 20 3.5 9Z" />
+    <path d="M3.5 9h17" />
+    <path d="m7 4 2.5 5L12 20l2.5-11L17 4" />
+  </I>
+);
+
+/* 黑白：半填圆 */
+export const IcContrast = (p: IconProps) => (
+  <I {...p}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" strokeWidth="0" />
+  </I>
+);
+
 export const IcImage = (p: IconProps) => (
   <I {...p}>
     <rect x="3" y="4" width="18" height="16" rx="3" />
@@ -152,6 +197,13 @@ export const IcSun = (p: IconProps) => (
 export const IcMoon = (p: IconProps) => (
   <I {...p}>
     <path d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z" />
+  </I>
+);
+export const IcBlack = (p: IconProps) => (
+  <I {...p}>
+    {/* 深邃黑：实心圆 + 右上角暖橙弧光，呼应黑主题冷暖反差 */}
+    <circle cx="12" cy="12" r="8.5" fill="currentColor" stroke="none" />
+    <path d="M16.5 7.5a3 3 0 0 0 0 6" stroke="#ff9a3c" strokeWidth="1.6" fill="none" strokeLinecap="round" />
   </I>
 );
 
@@ -317,6 +369,14 @@ export const IcSearch = (p: IconProps) => (
   <I {...p}>
     <circle cx="11" cy="11" r="6.5" />
     <path d="m16 16 4.5 4.5" />
+  </I>
+);
+
+/** 停止（运行中任务的停止按钮）：圆圈套一个实心小方块 */
+export const IcStop = (p: IconProps) => (
+  <I {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <rect x="8.5" y="8.5" width="7" height="7" rx="1.2" fill="currentColor" stroke="none" />
   </I>
 );
 

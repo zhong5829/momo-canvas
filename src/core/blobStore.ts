@@ -102,6 +102,33 @@ export async function hydrateBoards<T>(shape: T): Promise<T> {
   })) as T;
 }
 
+/* ---------------- 内存 map 版（.momoflow 分享包用：不落盘，内容收进 payload.assets） ----------------
+   与磁盘版同前缀同 hash：导出时把节点 data 里的大 data: 替换成 momoblob:<hash>、内容进 map；
+   导入时从 map 回填。复刻 externalizeBoards/hydrateBoards 的 walk 逻辑，只是目标是 JSON 内嵌而非磁盘文件。 */
+
+/** 把结构里的大 data: 字符串替换成 momoblob:<hash>，内容收进 assets map；返回脱壳后的结构与 assets */
+export async function externalizeToMap<T>(shape: T, assets: Map<string, string>): Promise<T> {
+  return (await walk(shape, async (s) => {
+    if (s.length < BIG || !s.startsWith("data:")) return s;
+    let hash = hashCache.get(s);
+    if (!hash) {
+      hash = await sha256Hex(s);
+      hashCache.set(s, hash);
+    }
+    assets.set(hash, s);
+    return REF_PREFIX + hash;
+  })) as T;
+}
+
+/** 把结构里的 momoblob:<hash> 用 assets map 回填成原文；map 里没有则保留引用（导入端宽容跳过） */
+export async function hydrateFromMap<T>(shape: T, assets: Record<string, string>): Promise<T> {
+  return (await walk(shape, async (s) => {
+    if (!s.startsWith(REF_PREFIX)) return s;
+    const hash = s.slice(REF_PREFIX.length);
+    return assets[hash] ?? s;
+  })) as T;
+}
+
 /** 启动清理：删掉 blobs 目录里已不被 boards.json 引用的文件（画布删图后回收磁盘） */
 export async function gcBlobs(shape: unknown): Promise<void> {
   if (!isTauri) return;

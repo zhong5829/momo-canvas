@@ -10,7 +10,8 @@ import { xfetch } from "./http";
 
 export const EXT_KIND: Record<string, AssetKind> = {
   png: "image", jpg: "image", jpeg: "image", webp: "image", gif: "image",
-  avif: "image", bmp: "image", svg: "image", ico: "image", tif: "image", tiff: "image",
+  avif: "image", bmp: "image", ico: "image", tif: "image", tiff: "image",
+  svg: "vector",
   mp4: "video", webm: "video", mov: "video", mkv: "video", m4v: "video",
   mp3: "audio", wav: "audio", ogg: "audio", flac: "audio", m4a: "audio", aac: "audio",
   pdf: "pdf",
@@ -82,10 +83,37 @@ export async function fetchBytes(src: string): Promise<{ bytes: Uint8Array; mime
     const mime = src.match(/^data:([^;]+)/)?.[1] ?? "application/octet-stream";
     return { bytes: dataUrlToBytes(src), mime };
   }
+  // convertFileSrc() 在 Windows/WebView2 下会生成
+  // http://asset.localhost/C%3A%5C...。它是 Tauri 的本地资产协议，不是真实 HTTP
+  // 服务；交给 plugin-http 会尝试联网访问 asset.localhost，最终误报“网络/Base URL
+  // 错误”。在字节读取入口统一还原绝对路径，直接走 plugin-fs。
+  const localPath = isTauri ? localAssetPath(src) : null;
+  if (localPath) {
+    const { readFile } = await import("@tauri-apps/plugin-fs");
+    const bytes = await readFile(localPath);
+    const ext = localPath.split(/[\\/]/).pop()?.split(".").pop() ?? "";
+    return { bytes: new Uint8Array(bytes), mime: mimeFromExt(ext) };
+  }
   const resp = src.startsWith("blob:") ? await fetch(src) : await xfetch(src);
   if (!resp.ok) throw new Error(`下载资源失败 ${resp.status}`);
   const mime = resp.headers.get("content-type")?.split(";")[0] ?? "application/octet-stream";
   return { bytes: new Uint8Array(await resp.arrayBuffer()), mime };
+}
+
+/** Tauri asset/file URL 或 Windows 绝对路径 → 可交给 plugin-fs 的本地路径。 */
+export function localAssetPath(src: string): string | null {
+  if (/^[a-zA-Z]:[\\/]/.test(src) || /^\\\\/.test(src)) return src;
+  try {
+    const u = new URL(src);
+    const isAsset = u.protocol === "asset:" || u.hostname === "asset.localhost";
+    if (!isAsset && u.protocol !== "file:") return null;
+    let path = decodeURIComponent(u.pathname);
+    // WebView2 给 Windows 盘符路径多加一个 URL 根斜杠：/C:\Users\...
+    if (/^\/[a-zA-Z]:[\\/]/.test(path)) path = path.slice(1);
+    return path || null;
+  } catch {
+    return null;
+  }
 }
 
 export type StoredFile = {
@@ -163,7 +191,8 @@ export async function storeAssetFile(bytes: Uint8Array, ext: string, kind: Asset
   if (!isTauri) {
     // 浏览器预览：内存态
     let meta: { thumb: string; width: number; height: number } | null = null;
-    if (kind === "image") meta = await makeImageThumb(blobUrl);
+    // SVG（vector）同样走 <img>+canvas 栅格化缩略图（VTracer 产物自带宽高属性）
+    if (kind === "image" || kind === "vector") meta = await makeImageThumb(blobUrl);
     if (kind === "video") meta = await makeVideoThumb(blobUrl);
     return { path: blobUrl, thumb: meta?.thumb, size: bytes.length, width: meta?.width, height: meta?.height };
   }
@@ -180,7 +209,7 @@ export async function storeAssetFile(bytes: Uint8Array, ext: string, kind: Asset
   let height: number | undefined;
   try {
     let meta: { thumb: string; width: number; height: number } | null = null;
-    if (kind === "image") meta = await makeImageThumb(blobUrl);
+    if (kind === "image" || kind === "vector") meta = await makeImageThumb(blobUrl);
     if (kind === "video") meta = await makeVideoThumb(blobUrl);
     if (meta) {
       width = meta.width;

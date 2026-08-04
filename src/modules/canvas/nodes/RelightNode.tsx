@@ -1,13 +1,14 @@
 /**
- * 打光节点 — 上游图片重新布光：球面拖光源 / 六向按钮 / 亮度 / 颜色 / 轮廓光 / 智能模式
+ * 打光节点 — 上游图片重新布光：大球拖光源（光色/亮度/轮廓光实时预演）/ 六向预设 / 颜色 / 智能模式
  */
 import { memo, useMemo } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { NodeShell, OutModeToggle, PortImageIn, PortOut, PortTextIn } from "../NodeShell";
+import { NodeShell, OutModeToggle, PortIn, PortOut } from "../NodeShell";
+import { EditSurface } from "../EditSurface";
 import { IcBulb, IcCopy, IcLoading, IcRefresh } from "../../../ui/icons";
 import { ModelPicker } from "../../../ui/ModelPicker";
 import { Switch } from "../../../ui/kit";
-import { SphereGizmo } from "../../../ui/SphereGizmo";
+import { SpherePad } from "../../../ui/SpherePad";
 import { useBoard } from "../../../core/stores/boardStore";
 import { toast, useUi } from "../../../core/stores/uiStore";
 import { collectUpstream, runFlow } from "../../../core/runner";
@@ -62,81 +63,83 @@ export const RelightNode = memo(function RelightNode({ id, data, selected }: Nod
       }
     >
       <div className="mnode-body">
-        <div className="gizmo-row nodrag">
-          <SphereGizmo
+        <div className="sp-stage nodrag" title="点击球面直接定位光源；按住拖动环绕（绕到背面 = 逆光）；双击复位正面">
+          <SpherePad
+            mode="light"
             az={d.azimuth}
             el={d.elevation}
             image={upImage}
-            mode="light"
+            lightColor={d.color || undefined}
+            brightness={d.brightness}
+            rim={d.rim}
+            dimmed={d.smart}
             onChange={(az, el) => upd(id, { azimuth: az, elevation: el, smart: false })}
           />
-          <div className="gizmo-side">
-            <div className="ctl-row" title="开启后由模型分析画面，自动设计最佳打光方案">
-              <span>智能模式</span>
-              <Switch on={d.smart} onChange={(v) => upd(id, { smart: v })} />
-            </div>
-            <div className="slider-row" title="0% 很暗 · 50% 正常曝光 · 100% 很亮">
-              <span>亮度</span>
-              <input
-                type="range"
-                className="range nodrag"
-                min={0}
-                max={100}
-                step={5}
-                value={d.brightness}
-                disabled={d.smart}
-                onChange={(e) => upd(id, { brightness: +e.target.value })}
-              />
-              <b>{d.brightness}%</b>
-            </div>
-            <div className="ctl-row">
-              <span>颜色</span>
-              <span className="swatches">
-                <button
-                  className={`swatch none ${!d.color ? "on" : ""}`}
-                  title="自然白光（不指定颜色）"
-                  onClick={() => upd(id, { color: "", smart: false })}
-                />
-                {SWATCHES.map((c) => (
-                  <button
-                    key={c}
-                    className={`swatch ${d.color === c ? "on" : ""}`}
-                    style={{ background: c }}
-                    title={c}
-                    onClick={() => upd(id, { color: c, smart: false })}
-                  />
-                ))}
-                <label
-                  className={`swatch custom ${d.color && !SWATCHES.includes(d.color) ? "on" : ""}`}
-                  title="自定义光色"
-                  style={d.color && !SWATCHES.includes(d.color) ? { background: d.color } : undefined}
-                >
-                  <input
-                    type="color"
-                    value={d.color || "#ffffff"}
-                    onChange={(e) => upd(id, { color: e.target.value, smart: false })}
-                  />
-                </label>
-              </span>
-            </div>
-            <div className="ctl-row" title="在主体边缘加一圈轮廓光，把主体从背景里分离出来">
-              <span>轮廓光</span>
-              <Switch on={d.rim} onChange={(v) => upd(id, { rim: v })} />
-            </div>
-          </div>
         </div>
-        <div className={`dir-grid nodrag ${d.smart ? "dim" : ""}`}>
+        <div className="chips">
           {LIGHT_DIRS.map((L) => (
             <button
               key={L.label}
-              className={`opt-cell ${!d.smart && d.azimuth === L.az && d.elevation === L.el ? "on" : ""}`}
+              className={`chip ${!d.smart && d.azimuth === L.az && d.elevation === L.el ? "on" : ""}`}
               onClick={() => upd(id, { azimuth: L.az, elevation: L.el, smart: false })}
             >
-              <span className="oc-lab">{L.label}</span>
+              {L.label}
             </button>
           ))}
         </div>
-        <div className="gen-sum nodrag">
+        <div className="slider-row" title="0% 很暗 · 50% 正常曝光 · 100% 很亮">
+          <span>亮度</span>
+          <input
+            type="range"
+            className="range nodrag"
+            min={0}
+            max={100}
+            step={5}
+            value={d.brightness}
+            disabled={d.smart}
+            onChange={(e) => upd(id, { brightness: +e.target.value })}
+          />
+          <b>{d.brightness}%</b>
+        </div>
+        <div className="ctl-row">
+          <span>颜色</span>
+          <span className="swatches">
+            <button
+              className={`swatch none ${!d.color ? "on" : ""}`}
+              title="自然白光（不指定颜色）"
+              onClick={() => upd(id, { color: "", smart: false })}
+            />
+            {SWATCHES.map((c) => (
+              <button
+                key={c}
+                className={`swatch ${d.color === c ? "on" : ""}`}
+                style={{ background: c }}
+                title={c}
+                onClick={() => upd(id, { color: c, smart: false })}
+              />
+            ))}
+            <label
+              className={`swatch custom ${d.color && !SWATCHES.includes(d.color) ? "on" : ""}`}
+              title="自定义光色"
+              style={d.color && !SWATCHES.includes(d.color) ? { background: d.color } : undefined}
+            >
+              <input
+                type="color"
+                value={d.color || "#ffffff"}
+                onChange={(e) => upd(id, { color: e.target.value, smart: false })}
+              />
+            </label>
+          </span>
+        </div>
+        <div className="ctl-row nodrag" title="在主体边缘加一圈轮廓光，把主体从背景里分离出来">
+          <span>轮廓光</span>
+          <Switch on={d.rim} onChange={(v) => upd(id, { rim: v })} />
+        </div>
+        <div className="ctl-row nodrag" title="开启后由模型分析画面，自动设计最佳打光方案">
+          <span>智能模式</span>
+          <Switch on={d.smart} onChange={(v) => upd(id, { smart: v })} />
+        </div>
+        <div className="gen-sum">
           <IcBulb size={13} />
           <span>
             {d.smart
@@ -156,7 +159,9 @@ export const RelightNode = memo(function RelightNode({ id, data, selected }: Nod
                 <span>正在重新布光…</span>
               </div>
             ) : main ? (
-              <Thumb className="img-main nodrag" src={main} alt="" res onClick={() => setLightbox(main, upImage)} />
+              <EditSurface id={id} src={main}>
+                <Thumb className="img-main" src={main} alt="" res onClick={() => setLightbox(main, upImage)} />
+              </EditSurface>
             ) : null}
           </>
         ) : (
@@ -171,8 +176,7 @@ export const RelightNode = memo(function RelightNode({ id, data, selected }: Nod
           </div>
         )}
       </div>
-      <PortTextIn />
-      <PortImageIn />
+      <PortIn />
       <PortOut kind={mode === "prompt" ? "text" : "image"} />
     </NodeShell>
   );

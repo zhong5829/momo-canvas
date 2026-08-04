@@ -1,16 +1,18 @@
 /**
- * 角色卡节点 — 人物图片 → 视觉模型提炼档案 + 各素材提示词 → 一键生成三视图/表情/立绘/设定卡
+ * 角色卡节点 — 人物图片 → 视觉模型提炼档案 + 各素材提示词 → 一键生成三视图/表情/服装/立绘/设定卡
+ *  素材逐张生成、每张内容不堆砌（格子少区域大）；「补一张」自动换下一组内容追加，逐张补全设定。
+ *  输出统一单口：出图模式下勾选素材的首图全部传给下游（整套参考，角色一致性更稳）。
  *  也可从「角色库」应用预设（档案与提示词已就绪，直接生成）
  */
 import { memo } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { NodeShell, OutModeToggle, PortImageIn, PortOut, PortTextIn } from "../NodeShell";
-import { IcCheck, IcCopy, IcIdCard, IcLoading, IcRefresh, IcSparkles } from "../../../ui/icons";
+import type { NodeProps } from "@xyflow/react";
+import { NodeShell, OutModeToggle, PortIn, PortOut } from "../NodeShell";
+import { IcCheck, IcCopy, IcIdCard, IcLoading, IcPlus, IcRefresh, IcSparkles } from "../../../ui/icons";
 import { ModelPicker } from "../../../ui/ModelPicker";
 import { useBoard } from "../../../core/stores/boardStore";
 import { toast, useUi } from "../../../core/stores/uiStore";
 import { regenCharDeliverable, runFlow } from "../../../core/runner";
-import { CARD_STYLES, CHAR_DELIVERABLES } from "../../../core/charPresets";
+import { CARD_STYLES, CHAR_DELIVERABLES, DELIV_VARIATIONS } from "../../../core/charPresets";
 import { Thumb } from "../../../ui/Thumb";
 import type { CharCardData, CharDeliverable } from "../../../core/types";
 
@@ -65,7 +67,7 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
     >
       <div className="mnode-body">
         {p ? (
-          <div className="cc-profile nodrag">
+          <div className="cc-profile">
             <div className="cc-name">
               <b>{p.name}</b>
               {p.nameEn ? <i>{p.nameEn}</i> : null}
@@ -93,7 +95,7 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
             {p.intro ? <div className="cc-intro">{p.intro}</div> : null}
           </div>
         ) : (
-          <div className="gen-sum nodrag">
+          <div className="gen-sum">
             <IcIdCard size={13} />
             <span>连接一张人物图片或一段角色文字描述后运行：模型提炼角色档案并产出整套素材；也可从「角色库」应用预设</span>
           </div>
@@ -101,8 +103,8 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
 
         {!p ? (
           <>
-            <div className="cc-lab nodrag">设定卡排版风格</div>
-            <div className="opt-grid nodrag" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+            <div className="cc-lab">设定卡排版风格</div>
+            <div className="opt-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
               {CARD_STYLES.map((s) => (
                 <button
                   key={s.value}
@@ -114,7 +116,7 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
                 </button>
               ))}
             </div>
-            <div className="ctl-row nodrag" title="生图提示词的语言：多数绘画模型英文效果更好">
+            <div className="ctl-row" title="生图提示词的语言：多数绘画模型英文效果更好">
               <span className="cc-lab" style={{ margin: 0 }}>提示词语言</span>
               <span style={{ flex: 1 }} />
               <span className="lang-seg">
@@ -129,53 +131,61 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
           </>
         ) : null}
 
-        <div className="cc-lab nodrag">产出素材（勾选）</div>
+        <div className="cc-lab">产出素材（勾选 · 逐张生成，「补一张」自动换组）</div>
         <div className="cc-delivs nodrag">
           {CHAR_DELIVERABLES.map((dv) => {
             const on = d.deliverables.includes(dv.value);
             const imgs = d.results[dv.value] ?? [];
             const hasP = !!(d.prompts[dv.value] ?? "").trim();
+            const canVary = !!DELIV_VARIATIONS[dv.value]?.length;
             return (
               <div key={dv.value} className={`cc-deliv ${on ? "" : "off"}`}>
-                {/* 单素材输出端口：只把这一种素材（提示词/图片）接给下游 */}
-                <Handle
-                  type="source"
-                  position={Position.Right}
-                  id={`dl-${dv.value}`}
-                  data-lab={`${dv.label}出`}
-                  title={`单独输出「${dv.label}」${mode === "prompt" ? "提示词" : "图片"}`}
-                  className={`port port-${mode === "prompt" ? "text" : "image"} port-deliv`}
-                />
-                <button className={`cc-check ${on ? "on" : ""}`} title={dv.desc} onClick={() => toggleDeliv(dv.value)}>
-                  {on ? <IcCheck size={12} /> : null}
-                </button>
-                <span className="cc-deliv-name" title={dv.desc}>
-                  {dv.label}
-                </span>
+                <div className="cc-deliv-head">
+                  <button className={`cc-check ${on ? "on" : ""}`} title={dv.desc} onClick={() => toggleDeliv(dv.value)}>
+                    {on ? <IcCheck size={12} /> : null}
+                  </button>
+                  <span className="cc-deliv-name" title={dv.desc}>
+                    {dv.label}
+                  </span>
+                  <span style={{ flex: 1 }} />
+                  {hasP ? (
+                    <>
+                      <button className="icon-btn" title="复制该素材的提示词" onClick={() => void copyPrompt(dv.value)}>
+                        <IcCopy size={14} />
+                      </button>
+                      {mode === "image" ? (
+                        <>
+                          <button
+                            className="icon-btn"
+                            title="重新生成该素材（替换现有图）"
+                            disabled={running}
+                            onClick={() => void regenCharDeliverable(id, dv.value)}
+                          >
+                            <IcRefresh size={14} />
+                          </button>
+                          <button
+                            className="icon-btn"
+                            title={
+                              canVary
+                                ? `补一张：${dv.label}自动换成下一组内容后追加（逐张补全设定）`
+                                : "补一张：按同一提示词再生成一张并追加"
+                            }
+                            disabled={running}
+                            onClick={() => void regenCharDeliverable(id, dv.value, { append: true })}
+                          >
+                            <IcPlus size={14} />
+                          </button>
+                        </>
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
                 {imgs.length ? (
-                  <span className="cc-deliv-thumbs">
-                    {imgs.slice(0, 3).map((s, i) => (
+                  <div className="cc-deliv-imgs">
+                    {imgs.map((s, i) => (
                       <Thumb key={i} src={s} alt="" onClick={() => setLightbox(s)} />
                     ))}
-                  </span>
-                ) : null}
-                <span style={{ flex: 1 }} />
-                {hasP ? (
-                  <>
-                    <button className="icon-btn" title="复制该素材的提示词" onClick={() => void copyPrompt(dv.value)}>
-                      <IcCopy size={14} />
-                    </button>
-                    {mode === "image" ? (
-                      <button
-                        className="icon-btn"
-                        title="单独重新生成该素材"
-                        disabled={running}
-                        onClick={() => void regenCharDeliverable(id, dv.value)}
-                      >
-                        <IcRefresh size={14} />
-                      </button>
-                    ) : null}
-                  </>
+                  </div>
                 ) : null}
               </div>
             );
@@ -233,16 +243,14 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
                 : "仅生成提示词"}
         </button>
         {running && d.progress ? (
-          <div className="progress-line nodrag">
+          <div className="progress-line">
             <IcLoading size={14} />
             {d.progress}
           </div>
         ) : null}
       </div>
-      <PortTextIn />
-      <PortImageIn />
-      {/* 主输出放头部（素材行的独立端口在各行右侧，避免混在一起） */}
-      <PortOut kind={mode === "prompt" ? "text" : "image"} top={26} />
+      <PortIn />
+      <PortOut kind={mode === "prompt" ? "text" : "image"} />
     </NodeShell>
   );
 });

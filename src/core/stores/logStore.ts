@@ -51,8 +51,15 @@ export const useRunLog = create<LogState>((set, get) => ({
   init: () =>
     (initOnce ??= (async () => {
       const saved = await loadJSON<RunLogEntry[]>("runlogs.json", "v1");
+      // 历史日志补洗一遍：老版本的 url/请求体没做密钥脱敏，磁盘上可能已有明文
+      const washed = (saved ?? []).map((x) => ({
+        ...x,
+        url: redactSecrets(x.url),
+        reqBody: x.reqBody ? redactSecrets(x.reqBody) : x.reqBody,
+        respBody: x.respBody ? redactSecrets(x.respBody) : x.respBody,
+      }));
       // 旧在前新在后地合并：启动时已有的（本次会话产生的）排前面
-      set((s) => ({ entries: [...s.entries, ...(saved ?? [])].slice(0, KEEP), loaded: true }));
+      set((s) => ({ entries: [...s.entries, ...washed].slice(0, KEEP), loaded: true }));
     })()),
 
   push: (e) => {
@@ -81,9 +88,40 @@ export const useRunLog = create<LogState>((set, get) => ({
 
 const CAP = 2400;
 
-/** 折叠 base64/dataURL 长串，截断到 CAP 字符 */
+/**
+ * 密钥脱敏：把配置里所有 API Key 从文本中抹掉。
+ * Gemini 协议把 key 放 query（?key=xxx）、自定义协议把 {{apiKey}} 渲染进 body——
+ * 不洗的话完整密钥会落进 runlogs.json 并显示在运行日志面板，用户截图求助就等于公开密钥。
+ */
+export function redactSecrets(text: string): string {
+  if (!text) return text;
+  let t = text;
+  try {
+    // 动态取 settings（logStore 不静态依赖 settingsStore，避免加载顺序问题）
+    const st = settingsRef?.();
+    if (st) {
+      for (const key of st) {
+        if (key && key.length >= 8) t = t.split(key).join("***");
+      }
+    }
+  } catch {
+    /* 取不到配置就只走正则兜底 */
+  }
+  return t
+    .replace(/([?&](?:key|api_key|apikey|token|access_token)=)[^&\s"'<>]+/gi, "$1***")
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/g, "$1***")
+    .replace(/\bsk-[A-Za-z0-9_-]{10,}/g, "sk-***");
+}
+
+/** settings 里的全部密钥（settingsStore 启动时注册，避免循环依赖） */
+let settingsRef: (() => string[]) | null = null;
+export function registerSecretSource(fn: () => string[]) {
+  settingsRef = fn;
+}
+
+/** 折叠 base64/dataURL 长串，抹掉密钥，截断到 CAP 字符 */
 export function sanitizeBody(text: string): string {
-  let t = text
+  let t = redactSecrets(text)
     .replace(/data:[a-z/+.-]+;base64,[A-Za-z0-9+/=]{64,}/gi, (m) => `data:…[base64 ${m.length} 字符已省略]`)
     .replace(/"[A-Za-z0-9+/=]{512,}"/g, (m) => `"…[base64 ${m.length} 字符已省略]"`);
   if (t.length > CAP) t = `${t.slice(0, CAP)}\n…[共 ${text.length} 字符，已截断]`;

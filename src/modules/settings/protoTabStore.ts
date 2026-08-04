@@ -28,6 +28,8 @@ type ProtoTabState = {
   calBusy: boolean;
   ctrl: AbortController | null;
   calDone: CalDone | null;
+  /** 校准通过那一刻的协议快照：保存时与草稿比对，内容改过就作废「已校准」章 */
+  calSnap: CustomProtocol | null;
   patch: (p: Partial<Omit<ProtoTabState, "patch" | "logLine">>) => void;
   logLine: (m: string) => void;
 };
@@ -46,6 +48,7 @@ export const useProtoTab = create<ProtoTabState>((set) => ({
   calBusy: false,
   ctrl: null,
   calDone: null,
+  calSnap: null,
   patch: (p) => set(p),
   logLine: (m) => set((s) => ({ calLog: [...s.calLog, m] })),
 }));

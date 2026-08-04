@@ -14,6 +14,8 @@ export type CollectInput = {
   model?: string;
   /** 生成参数快照（Remix 还原用） */
   gen?: AssetGenMeta;
+  /** 来自哪个画布生成节点（资产卡「定位到画布节点」用） */
+  nodeId?: string;
 };
 
 type AssetState = {

@@ -9,7 +9,7 @@
  * 禁用系统代理，noProxy 又命中目标主机，实际效果 = 直连。
  */
 import { isTauri } from "../utils";
-import { sanitizeBody, shouldSkipLog, useRunLog } from "../stores/logStore";
+import { redactSecrets, sanitizeBody, shouldSkipLog, useRunLog } from "../stores/logStore";
 
 let tauriFetch: typeof fetch | null = null;
 
@@ -48,8 +48,10 @@ function report(
   err?: unknown,
 ) {
   try {
-    const url = String(input);
-    if (shouldSkipLog(url)) return;
+    const rawUrl = String(input);
+    if (shouldSkipLog(rawUrl)) return;
+    // Gemini 等协议把 key 放 query：日志里的 url 必须先脱敏
+    const url = redactSecrets(rawUrl);
     const entry = {
       ts: Date.now(),
       method: (init?.method ?? "GET").toUpperCase(),

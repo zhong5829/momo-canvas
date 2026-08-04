@@ -11,6 +11,7 @@ import { useAssets } from "../../core/stores/assetStore";
 import { useBoard } from "../../core/stores/boardStore";
 import { useSettings } from "../../core/stores/settingsStore";
 import { toast } from "../../core/stores/uiStore";
+import { PopSelect } from "../../ui/PopSelect";
 import { assetToDataUrl, assetUrl } from "../../core/services/assetFiles";
 import { errMsg, isTauri } from "../../core/utils";
 import { ShortcutBar, sendAsset } from "./ShortcutBar";
@@ -78,6 +79,7 @@ import {
   IcTag,
   IcTrash,
   IcUpload,
+  IcVector,
   IcVideo,
 } from "../../ui/icons";
 import "./assets.css";
@@ -88,10 +90,11 @@ const KIND_TABS: { key: AssetKind | "all"; label: string; icon: React.ReactNode 
   { key: "video", label: "视频", icon: <IcVideo size={17} /> },
   { key: "audio", label: "音频", icon: <IcMusic size={17} /> },
   { key: "pdf", label: "PDF", icon: <IcFile size={17} /> },
+  { key: "vector", label: "矢量", icon: <IcVector size={17} /> },
   { key: "other", label: "其他", icon: <IcFile size={17} /> },
 ];
 
-const KIND_BADGE: Record<AssetKind, string> = { image: "", video: "视频", audio: "音频", pdf: "PDF", other: "文件" };
+const KIND_BADGE: Record<AssetKind, string> = { image: "", video: "视频", audio: "音频", pdf: "PDF", vector: "SVG", other: "文件" };
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -449,6 +452,8 @@ export function AssetLibrary() {
                       <img src={assetUrl(it.thumb)} alt="" loading="lazy" />
                     ) : it.kind === "image" ? (
                       <img src={assetUrl(it.path)} alt="" loading="lazy" />
+                    ) : it.kind === "vector" ? (
+                      <img className="svg-bg" src={assetUrl(it.path)} alt="" loading="lazy" />
                     ) : it.kind === "audio" ? (
                       <IcMusic size={40} />
                     ) : it.kind === "video" ? (
@@ -476,26 +481,22 @@ export function AssetLibrary() {
           {selected.size ? (
             <div className="al-batchbar">
               <b>已选 {selected.size} 项</b>
-              <select
-                className="select"
-                style={{ width: 190, minHeight: 34 }}
+              <PopSelect
+                style={{ width: 190 }}
+                title="移动到文件夹"
                 value=""
-                onChange={(e) => {
-                  const v = e.target.value;
+                placeholder="移动到文件夹…"
+                options={[
+                  { value: "__root__", label: "（无文件夹）" },
+                  ...folders.map((f) => ({ value: f.id, label: f.name })),
+                ]}
+                onChange={(v) => {
                   if (!v) return;
                   moveTo([...selected], v === "__root__" ? null : v);
                   toast("已移动", "ok");
                   clearSel();
                 }}
-              >
-                <option value="">移动到文件夹…</option>
-                <option value="__root__">（无文件夹）</option>
-                {folders.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
+              />
               <div className="batch-tag">
                 <IcTag size={15} />
                 <input
@@ -744,6 +745,8 @@ function AssetPreview({
       <div className="ap-stage" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
         {item.kind === "image" ? (
           <img src={url} alt={item.name} />
+        ) : item.kind === "vector" ? (
+          <img className="svg-bg" src={url} alt={item.name} />
         ) : item.kind === "video" ? (
           <video src={url} controls autoPlay />
         ) : item.kind === "audio" ? (

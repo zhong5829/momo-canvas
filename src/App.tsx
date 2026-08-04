@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
+import { LayerEditor } from "./modules/canvas/LayerEditor";
 import { Titlebar } from "./modules/shell/Titlebar";
 import { SmartCanvas } from "./modules/canvas/SmartCanvas";
+import { AgentPanel } from "./modules/agent/AgentPanel";
 import { GalleryDock } from "./modules/shell/GalleryDock";
 import { SettingsDialog } from "./modules/settings/SettingsDialog";
 import { TemplateManager } from "./modules/comfy/TemplateManager";
@@ -12,6 +14,9 @@ import { useBoard } from "./core/stores/boardStore";
 import { useComfy } from "./core/stores/comfyStore";
 import { useAssets } from "./core/stores/assetStore";
 import { useTemplates } from "./core/stores/templateStore";
+import { useAgent } from "./core/stores/agentStore";
+import { useGenPref } from "./core/stores/genPrefStore";
+import { useUsage } from "./core/stores/usageStore";
 import { toast, useUi } from "./core/stores/uiStore";
 import { autoCheckOnStart } from "./core/services/updater";
 import { IcLogo } from "./ui/icons";
@@ -144,6 +149,7 @@ function SeqPlayer() {
 
 export default function App() {
   const [ready, setReady] = useState(false);
+  const agentOpen = useUi((s) => s.agentOpen);
 
   useEffect(() => {
     void Promise.all([
@@ -152,6 +158,9 @@ export default function App() {
       useComfy.getState().init(),
       useAssets.getState().init(),
       useTemplates.getState().init(),
+      useAgent.getState().initPrefs(),
+      useGenPref.getState().init(),
+      useUsage.getState().init(),
     ]).then(() => setReady(true));
     // 启动 5 秒后静默检查一次更新（失败不打扰）
     const t = setTimeout(() => {
@@ -192,6 +201,7 @@ export default function App() {
     <ReactFlowProvider>
       <Titlebar />
       <SmartCanvas />
+      {agentOpen ? <AgentPanel /> : null}
       <GalleryDock />
       <SettingsDialog />
       <TemplateManager />
@@ -199,6 +209,7 @@ export default function App() {
       <CharLibrary />
       <Lightbox />
       <SeqPlayer />
+      <LayerEditor />
       <Toasts />
     </ReactFlowProvider>
   );

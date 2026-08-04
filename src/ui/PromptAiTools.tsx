@@ -1,0 +1,153 @@
+/**
+ * 提示词 AI 工具菜单（生成弹窗 / 提示词节点共用）：
+ * 优化扩写 / 丰富细节 / 精简压缩 / 译英 / 图片反推 / 自定义指令 —— 结果就地替换当前文本，不新增节点。
+ * 整合了原「文本处理」节点的全部操作与提示词节点的「AI 扩写优化」（优化扩写 = 原两者合并）。
+ */
+import { useRef, useState } from "react";
+import { PopLayer } from "./PopSelect";
+import { IcLoading, IcSparkles } from "./icons";
+import { isCaptionOp, llmTextTransform } from "../core/runner";
+import { toast } from "../core/stores/uiStore";
+import { errMsg } from "../core/utils";
+import type { LlmTextOp } from "../core/types";
+
+const OPS: { op: LlmTextOp; label: string; desc: string }[] = [
+  { op: "optimize", label: "优化扩写", desc: "改写为高质量绘画提示词：补主体细节、构图、光影、风格" },
+  { op: "expand", label: "丰富细节", desc: "保持原意，补充场景与氛围描写" },
+  { op: "shorten", label: "精简压缩", desc: "保留核心信息，删去冗余" },
+  { op: "zh2en", label: "译成英文", desc: "翻成地道的英文绘画提示词" },
+  { op: "capPrompt", label: "反推提示词", desc: "从图片反推一段可复现的绘画提示词" },
+  { op: "capDetail", label: "详细描述", desc: "分段描述图片内容、风格与细节" },
+  { op: "capTags", label: "反推标签", desc: "输出英文标签词（danbooru 风格，逗号分隔）" },
+  { op: "custom", label: "自定义指令…", desc: "写一条处理指令，按指令改写文本" },
+];
+
+/** AI 工具清单（PromptToolsBtn 合并弹窗复用） */
+export const PROMPT_AI_OPS = OPS;
+
+/** 执行一次 AI 文本处理：校验输入 → 调模型 → 返回结果文本（失败已 toast，返回 null） */
+export async function runPromptAiOp(op: LlmTextOp, custom: string, value: string, image?: string): Promise<string | null> {
+  if (isCaptionOp(op) && !image) {
+    toast("反推需要先接入一张上游图片", "err");
+    return null;
+  }
+  if (!isCaptionOp(op) && !value.trim()) {
+    toast("先写点内容，再让 AI 处理", "err");
+    return null;
+  }
+  try {
+    return await llmTextTransform(op, custom, value, image);
+  } catch (e) {
+    toast(errMsg(e), "err");
+    return null;
+  }
+}
+
+export function PromptAiTools({
+  value,
+  image,
+  onApply,
+  className,
+  up,
+}: {
+  /** 当前文本（文本类操作的输入） */
+  value: string;
+  /** 反推类操作的图片（一般取上游第 1 张；没有时反推项置灰） */
+  image?: string;
+  /** 处理完成：用结果就地替换文本 */
+  onApply: (t: string) => void;
+  className?: string;
+  /** 强制向上弹出（底部生成面板用）；不传则按视口空间自动翻转（节点内用） */
+  up?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [view, setView] = useState<"menu" | "custom">("menu");
+  const [custom, setCustom] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const close = () => {
+    setOpen(false);
+    setView("menu");
+  };
+
+  const run = async (op: LlmTextOp) => {
+    setBusy(op);
+    try {
+      const out = await runPromptAiOp(op, custom, value, image);
+      if (out) {
+        onApply(out);
+        close();
+      }
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div ref={wrapRef} className={`pop-wrap ${className ?? ""}`}>
+      <button
+        className={`btn sm nodrag ${open ? "on" : ""}`}
+        disabled={!!busy}
+        title="AI 文本工具：优化 / 扩写 / 精简 / 译英 / 图片反推 —— 结果就地替换当前文本"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {busy ? <IcLoading size={15} /> : <IcSparkles size={15} />}
+        {busy ? "处理中" : "AI 工具"}
+      </button>
+      {open ? (
+        <PopLayer anchorRef={wrapRef} onClose={close} up={up} className="pa-pop">
+          {view === "menu" ? (
+            <div className="pop-list">
+              {OPS.map((o) => {
+                const noImg = isCaptionOp(o.op) && !image;
+                return (
+                  <button
+                    key={o.op}
+                    className="pop-item"
+                    disabled={!!busy || noImg}
+                    onClick={() => (o.op === "custom" ? setView("custom") : void run(o.op))}
+                  >
+                    <span className="pi-text">
+                      <span className="pi-label">
+                        {busy === o.op ? <IcLoading size={13} /> : null}
+                        {o.label}
+                      </span>
+                      <span className="pi-desc">
+                        {o.desc}
+                        {noImg ? "（需接入上游图片）" : ""}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="pa-custom">
+              <div className="pop-title">自定义指令</div>
+              <textarea
+                className="textarea nodrag nowheel"
+                rows={3}
+                placeholder="例：改成赛博朋克风格的画面描述 / 提取其中的配色方案"
+                value={custom}
+                onChange={(e) => setCustom(e.target.value)}
+              />
+              <div className="pa-custom-foot">
+                <button className="btn sm" onClick={() => setView("menu")}>
+                  返回
+                </button>
+                <button
+                  className="btn sm primary"
+                  disabled={!!busy || !custom.trim()}
+                  onClick={() => void run("custom")}
+                >
+                  {busy ? <IcLoading size={14} /> : null}
+                  执行并替换
+                </button>
+              </div>
+            </div>
+          )}
+        </PopLayer>
+      ) : null}
+    </div>
+  );
+}

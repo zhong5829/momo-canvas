@@ -1,29 +1,43 @@
 /**
- * 节点内模型选择器 — 平铺全部「服务商 - 模型」组合 + 「默认」
+ * 节点内模型选择器 — LibLib 式浮层：图标 + 模型名 + 服务商描述 + 选中勾。
  * 值为复合键「providerId::model」；兼容旧数据里只存服务商 id 的情况。
  */
+import type { ReactNode } from "react";
 import { modelKey, splitModelKey } from "../core/stores/settingsStore";
 import { useSettings } from "../core/stores/settingsStore";
 import type { ModelRole } from "../core/types";
+import { PopSelect, type PopOption } from "./PopSelect";
+import { IcBrain, IcImage, IcMic, IcMusic, IcSparkles, IcVideo } from "./icons";
+
+const ROLE_ICON: Record<ModelRole, ReactNode> = {
+  chat: <IcBrain size={16} />,
+  image: <IcImage size={16} />,
+  video: <IcVideo size={16} />,
+  audio: <IcMusic size={16} />,
+  asr: <IcMic size={16} />,
+};
 
 export function ModelPicker({
   role,
   value,
   onChange,
+  up,
 }: {
   role: ModelRole;
   value?: string;
   onChange: (key?: string) => void;
+  /** 向上弹出（底部生成栏等贴近屏幕下缘的场景） */
+  up?: boolean;
 }) {
   const providers = useSettings((s) => s.settings.models.providers);
   const defaults = useSettings((s) => s.settings.models.defaults);
 
   const entries = providers.flatMap((p) =>
-    (p.models[role]?.models ?? []).map((m) => ({ key: modelKey(p.id, m), label: `${p.name} - ${m}` })),
+    (p.models[role]?.models ?? []).map((m) => ({ key: modelKey(p.id, m), model: m, provider: p.name })),
   );
   const defEntry = entries.find((e) => e.key === defaults[role]) ?? entries[0];
 
-  // 旧数据只存了服务商 id → 映射到该服务商的第一个模型，保证下拉框能正确回显
+  // 旧数据只存了服务商 id → 映射到该服务商的第一个模型，保证能正确回显
   let current = value ?? "";
   if (current && !current.includes("::")) {
     const { pid } = splitModelKey(current);
@@ -31,19 +45,31 @@ export function ModelPicker({
     current = first ? modelKey(pid!, first) : "";
   }
 
+  const options: PopOption[] = [
+    {
+      value: "",
+      label: "默认",
+      desc: defEntry ? `跟随角色默认 · ${defEntry.provider} ${defEntry.model}` : "尚未配置模型",
+      icon: <IcSparkles size={16} />,
+    },
+    ...entries.map((e) => ({
+      value: e.key,
+      label: e.model,
+      desc: e.provider,
+      icon: ROLE_ICON[role],
+    })),
+  ];
+
   return (
-    <select
-      className="select nodrag model-picker"
+    <PopSelect
+      className="nodrag model-picker"
+      layerClassName="mp-layer"
+      title="模型选择"
       value={current}
-      title="该节点使用的模型"
-      onChange={(e) => onChange(e.target.value || undefined)}
-    >
-      <option value="">{defEntry ? `默认 · ${defEntry.label}` : "默认（尚未配置模型）"}</option>
-      {entries.map((e) => (
-        <option key={e.key} value={e.key}>
-          {e.label}
-        </option>
-      ))}
-    </select>
+      options={options}
+      placeholder="选择模型…"
+      onChange={(v) => onChange(v || undefined)}
+      up={up}
+    />
   );
 }

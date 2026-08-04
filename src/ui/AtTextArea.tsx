@@ -6,7 +6,7 @@
  */
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, type CSSProperties } from "react";
 import { useBoard } from "../core/stores/boardStore";
-import { orderedInEdges } from "../core/runner";
+import { collectImageRefsFor } from "../core/runner";
 import { makeThumb, thumbSync } from "./Thumb";
 
 export type AtRef = { label: string; src: string };
@@ -18,29 +18,11 @@ export type AtTextAreaHandle = {
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** 生成节点自己的上游参考图（与 runner.resolveAtRefs 同序），供提示词框渲染 @ 胶囊 */
+/** 生成节点自己的上游参考图（与 runner.resolveAtRefs 同序，含组成员图），供提示词框渲染 @ 胶囊 */
 export function useOwnUpstreamImageRefs(nodeId: string): AtRef[] {
   const nodes = useBoard((s) => s.nodes);
   const edges = useBoard((s) => s.edges);
-  return useMemo(() => {
-    const out: AtRef[] = [];
-    const seen = new Set<string>();
-    for (const e of orderedInEdges(nodeId, nodes, edges)) {
-      if (e.targetHandle !== "in-image" || seen.has(e.source)) continue;
-      const n = nodes.find((x) => x.id === e.source);
-      if (!n) continue;
-      const nd = n.data as Record<string, unknown>;
-      const src =
-        n.type === "image"
-          ? (nd.src as string | undefined)
-          : ((nd.results as string[] | undefined)?.[(nd.picked as number | undefined) ?? 0] ?? undefined);
-      if (!src) continue;
-      seen.add(e.source);
-      const raw = n.type === "image" && nd.name ? String(nd.name).replace(/\.\w+$/, "") : "";
-      out.push({ src, label: raw ? raw.slice(0, 12) : `图${out.length + 1}` });
-    }
-    return out;
-  }, [nodes, edges, nodeId]);
+  return useMemo(() => collectImageRefsFor(nodeId), [nodes, edges, nodeId]);
 }
 
 /** DOM → 纯文本（胶囊还原为 @token；<br>/块级元素还原为换行） */
@@ -129,11 +111,18 @@ export const AtTextArea = forwardRef<
   const composing = useRef(false);
   const refsRef = useRef(refs);
   refsRef.current = refs;
+  // value 变化是否来自用户在本编辑器内的输入/插入 —— 是则绝不重建 DOM（否则光标会蹦到末尾）
+  const internal = useRef(false);
 
-  // 外部 value 与 DOM 不一致时才重建（打字过程 serialize === value，不会打断光标/输入法）
+  // 仅「外部」改动（历史回填、AI 扩写、撤销重做、refs 导致胶囊增减）才重建 DOM；
+  // 用户自己打字/插入胶囊引起的 value 变化，DOM 已是最新，跳过重建以保持光标位置
   useEffect(() => {
     const el = ref.current;
     if (!el || composing.current) return;
+    if (internal.current) {
+      internal.current = false;
+      return;
+    }
     if (serialize(el) !== value) {
       renderInto(el, value, refsRef.current);
       if (document.activeElement === el) caretToEnd(el);
@@ -165,6 +154,7 @@ export const AtTextArea = forwardRef<
       nr.collapse(true);
       sel?.removeAllRanges();
       sel?.addRange(nr);
+      internal.current = true; // 程序化插入胶囊：DOM 已更新，不要重建
       onChange(serialize(el));
     },
   }));
@@ -181,7 +171,10 @@ export const AtTextArea = forwardRef<
       onInput={() => {
         if (composing.current) return;
         const el = ref.current;
-        if (el) onChange(serialize(el));
+        if (el) {
+          internal.current = true; // 用户输入：别让 useEffect 重建 DOM 打断光标
+          onChange(serialize(el));
+        }
       }}
       onCompositionStart={() => {
         composing.current = true;
@@ -189,7 +182,10 @@ export const AtTextArea = forwardRef<
       onCompositionEnd={() => {
         composing.current = false;
         const el = ref.current;
-        if (el) onChange(serialize(el));
+        if (el) {
+          internal.current = true;
+          onChange(serialize(el));
+        }
       }}
       onPaste={(e) => {
         // 粘贴一律按纯文本插入（外来富文本会污染编辑器结构）

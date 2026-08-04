@@ -5,6 +5,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, Field, Row, Switch } from "../../ui/kit";
+import { PopSelect } from "../../ui/PopSelect";
 import { useComfy } from "../../core/stores/comfyStore";
 import { toast, useUi } from "../../core/stores/uiStore";
 import {
@@ -526,22 +527,23 @@ function NodeDetail({
                         setDraft({ ...draft, expose: { ...draft.expose, [key]: { ...ex, label: e.target.value } } })
                       }
                     />
-                    <select
-                      className="select"
+                    <PopSelect
+                      style={{ width: 110, flex: "none" }}
                       value={ex.kind}
-                      onChange={(e) =>
+                      options={[
+                        { value: "text", label: "文本" },
+                        { value: "number", label: "数值" },
+                        { value: "seed", label: "种子" },
+                        { value: "image", label: "图片" },
+                        { value: "toggle", label: "开关" },
+                      ]}
+                      onChange={(v) =>
                         setDraft({
                           ...draft,
-                          expose: { ...draft.expose, [key]: { ...ex, kind: e.target.value as ComfyParamKind } },
+                          expose: { ...draft.expose, [key]: { ...ex, kind: v as ComfyParamKind } },
                         })
                       }
-                    >
-                      <option value="text">文本</option>
-                      <option value="number">数值</option>
-                      <option value="seed">种子</option>
-                      <option value="image">图片</option>
-                      <option value="toggle">开关</option>
-                    </select>
+                    />
                   </div>
                 ) : null}
               </div>

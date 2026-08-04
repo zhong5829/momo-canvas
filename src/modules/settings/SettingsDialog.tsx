@@ -4,17 +4,22 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Modal, Field, Switch, Row } from "../../ui/kit";
+import { PopSelect } from "../../ui/PopSelect";
+import { ModelPicker } from "../../ui/ModelPicker";
 import { flattenCard, modelKey, resolveModelCard, splitModelKey, useSettings } from "../../core/stores/settingsStore";
 import { useComfy } from "../../core/stores/comfyStore";
 import { toast, useUi } from "../../core/stores/uiStore";
+import { useUsage } from "../../core/stores/usageStore";
 import { chatOnce } from "../../core/services/llm";
 import { fetchModelList } from "../../core/services/modelList";
 import { calibrateProtocol } from "../../core/services/protoCalibrate";
+import { placeholdersIn, protoFingerprint, unknownPlaceholders, validateProto, varsDoc } from "../../core/services/protoSpec";
 import { MANUAL, useProtoTab } from "./protoTabStore";
 import { xfetch } from "../../core/services/http";
-import { errMsg, isTauri, uid } from "../../core/utils";
+import { errMsg, isTauri, parseJsonLoose, uid } from "../../core/utils";
 import { importTemplateFilesAuto, packTemplates, saveTextFile } from "../comfy/templateIO";
 import {
+  IcBlack,
   IcChat,
   IcCheck,
   IcClose,
@@ -27,6 +32,7 @@ import {
   IcKeyboard,
   IcLoading,
   IcMoon,
+  IcMic,
   IcMusic,
   IcPlay,
   IcPlus,
@@ -35,11 +41,15 @@ import {
   IcSun,
   IcTrash,
   IcUpload,
+  IcUpscale,
   IcVideo,
 } from "../../ui/icons";
+import { EnhanceModelsTab } from "./EnhanceModelsTab";
 import { IcLogo } from "../../ui/icons";
 import { checkUpdate, currentVersion, isPortable, GH_REPO, type UpdateInfo } from "../../core/services/updater";
 import { PROTO_PRESETS, applyProtoPreset } from "../../core/protoPresets";
+import { SEARCH_PROVIDERS } from "../../core/services/webSearch";
+import { openExternal } from "../../core/external";
 import { playDone, playError } from "../../core/sound";
 import {
   DEFAULT_HOTKEYS,
@@ -62,10 +72,12 @@ const TABS = [
   { key: "protocols", label: "协议", icon: <IcFlow size={17} /> },
   { key: "search", label: "联网搜索", icon: <IcGlobe size={17} /> },
   { key: "save", label: "图片保存", icon: <IcGallery size={17} /> },
+  { key: "enhanceModels", label: "超清模型", icon: <IcUpscale size={17} /> },
   { key: "comfy", label: "ComfyUI", icon: <IcFlow size={17} /> },
   { key: "sound", label: "音效提醒", icon: <IcMusic size={17} /> },
   { key: "hotkeys", label: "快捷键", icon: <IcKeyboard size={17} /> },
   { key: "appearance", label: "外观主题", icon: <IcSun size={17} /> },
+  { key: "usage", label: "用量与稳定性", icon: <IcGallery size={17} /> },
   { key: "about", label: "关于与更新", icon: <IcLogo size={17} /> },
 ];
 
@@ -77,7 +89,7 @@ export function SettingsDialog() {
   const shifted = useUi((s) => s.sideEditorOpen);
   if (!open) return null;
   return (
-    <Modal title="设置" onClose={close} width={1120} className={shifted ? "shifted" : ""}>
+    <Modal title="设置" onClose={close} width={1180} className={shifted ? "shifted" : ""}>
       <div className="settings-body">
         <div className="settings-nav">
           {TABS.map((t) => (
@@ -92,10 +104,12 @@ export function SettingsDialog() {
           {tab === "protocols" && <ProtocolTab />}
           {tab === "search" && <SearchTab />}
           {tab === "save" && <SaveTab />}
+          {tab === "enhanceModels" && <EnhanceModelsTab />}
           {tab === "comfy" && <ComfyTab />}
           {tab === "sound" && <SoundTab />}
           {tab === "hotkeys" && <HotkeysTab />}
           {tab === "appearance" && <AppearanceTab />}
+          {tab === "usage" && <UsageTab />}
           {tab === "about" && <AboutTab />}
         </div>
       </div>
@@ -105,23 +119,49 @@ export function SettingsDialog() {
 
 /* ================= 配置导出 / 导入 ================= */
 
-async function exportCfg() {
+/** 写文本到用户选择的位置（Tauri 存盘对话框 / 浏览器下载） */
+async function saveTextAs(text: string, filename: string) {
+  if (isTauri) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const ext = filename.split(".").pop() ?? "json";
+    const path = await save({ defaultPath: filename, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
+    if (!path) return null;
+    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+    await writeTextFile(path, text);
+    return path;
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  return filename;
+}
+
+/**
+ * 导出配置：
+ *  - stripKeys=true（默认，给别人/传网盘）：所有 API Key 置空并打 __keysStripped 标记，
+ *    接收方导入后填自己的 Key；自己导入时本机已有的 Key 自动保留。
+ *  - stripKeys=false（分享给信任的人直接用）：整份配置 AES 加密成分享包，
+ *    文件里看不到明文密钥，接收方导入即可用（注意：能用就意味着技术上能被提取，只防翻看）。
+ */
+async function exportCfg(stripKeys: boolean) {
   try {
-    const json = JSON.stringify(useSettings.getState().settings, null, 2);
-    if (isTauri) {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({ defaultPath: "momo-settings.json", filters: [{ name: "JSON", extensions: ["json"] }] });
-      if (!path) return;
-      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-      await writeTextFile(path, json);
-      toast(`配置已导出 → ${path}`, "ok");
+    const s = useSettings.getState().settings;
+    if (stripKeys) {
+      const cleaned = {
+        ...s,
+        models: { ...s.models, providers: s.models.providers.map((p) => ({ ...p, apiKey: "" })) },
+        search: { ...s.search, apiKey: "" },
+        __keysStripped: true,
+      };
+      const path = await saveTextAs(JSON.stringify(cleaned, null, 2), "momo-settings.json");
+      if (path) toast(`配置已导出（已抹去全部 API Key）→ ${path}`, "ok");
     } else {
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([json], { type: "application/json" }));
-      a.download = "momo-settings.json";
-      a.click();
-      URL.revokeObjectURL(a.href);
-      toast("配置已导出", "ok");
+      const { encryptCfg } = await import("../../core/cfgCrypto");
+      const pkg = await encryptCfg(JSON.stringify(s));
+      const path = await saveTextAs(JSON.stringify(pkg), "momo-settings.momocfg");
+      if (path) toast(`加密分享包已导出 → ${path}（含密钥，只发给信任的人）`, "ok");
     }
   } catch (e) {
     toast(errMsg(e), "err");
@@ -133,7 +173,7 @@ async function importCfg() {
     let text = "";
     if (isTauri) {
       const { open } = await import("@tauri-apps/plugin-dialog");
-      const path = await open({ filters: [{ name: "JSON", extensions: ["json"] }], multiple: false });
+      const path = await open({ filters: [{ name: "配置文件", extensions: ["json", "momocfg"] }], multiple: false });
       if (typeof path !== "string") return;
       const { readTextFile } = await import("@tauri-apps/plugin-fs");
       text = await readTextFile(path);
@@ -141,7 +181,7 @@ async function importCfg() {
       text = await new Promise<string>((resolve, reject) => {
         const inp = document.createElement("input");
         inp.type = "file";
-        inp.accept = ".json";
+        inp.accept = ".json,.momocfg";
         inp.onchange = () => {
           const f = inp.files?.[0];
           if (!f) return reject(new Error("未选择文件"));
@@ -150,11 +190,50 @@ async function importCfg() {
         inp.click();
       });
     }
-    useSettings.getState().importSettings(JSON.parse(text));
+    let parsed = JSON.parse(text) as Record<string, unknown>;
+    // 加密分享包 → 先解密
+    const { isEncryptedCfg, decryptCfg } = await import("../../core/cfgCrypto");
+    if (isEncryptedCfg(parsed)) parsed = JSON.parse(await decryptCfg(parsed)) as Record<string, unknown>;
+    // 抹密钥导出的文件：本机已有的 Key 按服务商 id / 地址回填，不要用空串覆盖
+    if (parsed.__keysStripped) {
+      const cur = useSettings.getState().settings;
+      const models = parsed.models as { providers?: { id?: string; baseUrl?: string; apiKey?: string }[] } | undefined;
+      for (const p of models?.providers ?? []) {
+        if (p.apiKey) continue;
+        const match = cur.models.providers.find((x) => x.id === p.id) ?? cur.models.providers.find((x) => x.baseUrl && x.baseUrl === p.baseUrl);
+        if (match?.apiKey) p.apiKey = match.apiKey;
+      }
+      const search = parsed.search as { apiKey?: string } | undefined;
+      if (search && !search.apiKey && cur.search.apiKey) search.apiKey = cur.search.apiKey;
+      delete parsed.__keysStripped;
+    }
+    useSettings.getState().importSettings(parsed);
     toast("配置已导入 ✓", "ok");
   } catch (e) {
     toast(errMsg(e), "err");
   }
+}
+
+/**
+ * 分区说明按钮：正文里不再铺一大段说明，收进标题右侧的「?」，
+ * 鼠标移上去（或键盘聚焦）弹出小浮窗，移开即收。
+ */
+function SecHelp({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="sec-help" tabIndex={0} role="button" aria-label="查看说明">
+      ?<span className="sec-help-pop">{children}</span>
+    </span>
+  );
+}
+
+/** 带说明按钮的分区标题 */
+function SecTitle({ title, children }: { title: string; children?: React.ReactNode }) {
+  return (
+    <h3 className="sec-h">
+      {title}
+      {children ? <SecHelp>{children}</SecHelp> : null}
+    </h3>
+  );
 }
 
 /* ================= 模型配置（服务商卡片） ================= */
@@ -164,15 +243,26 @@ const ROLE_ICON: Record<ModelRole, React.ReactNode> = {
   image: <IcSparkles size={16} />,
   video: <IcVideo size={16} />,
   audio: <IcMusic size={16} />,
+  asr: <IcMic size={16} />,
 };
 
-const ROLES: ModelRole[] = ["chat", "image", "video", "audio"];
+const ROLES: ModelRole[] = ["chat", "image", "video", "audio", "asr"];
+
+/** 默认模型行的短标签（五个并排一行，用长名会撑爆） */
+const ROLE_SHORT: Record<ModelRole, string> = {
+  chat: "对话",
+  image: "绘画",
+  video: "视频",
+  audio: "音频",
+  asr: "语音",
+};
 
 const MODEL_PLACEHOLDER: Record<ModelRole, string> = {
   chat: "输入模型名回车添加，如 deepseek-chat",
   image: "输入模型名回车添加，如 gpt-image-1",
   video: "输入模型名回车添加，如 cogvideox-3",
   audio: "输入模型名回车添加，如 tts-1 / speech-02",
+  asr: "输入模型名回车添加，如 gpt-4o-transcribe / whisper-1",
 };
 
 /** 编辑草稿：三个角色槽位全部实体化，models 为空表示该用途未启用 */
@@ -196,7 +286,7 @@ function toDraft(p?: ProviderCard): ProviderDraft {
     name: p?.name ?? "",
     baseUrl: p?.baseUrl ?? "",
     apiKey: p?.apiKey ?? "",
-    slots: { chat: slot("chat"), image: slot("image"), video: slot("video"), audio: slot("audio") },
+    slots: { chat: slot("chat"), image: slot("image"), video: slot("video"), audio: slot("audio"), asr: slot("asr") },
   };
 }
 
@@ -256,17 +346,63 @@ function ModelsTab() {
 
   return (
     <>
-      <h3>模型配置</h3>
-      <p className="sec-desc">
-        一格 = 一个服务商（中转站/官方）：Base URL 与 API Key 只填一次，对话、绘画、视频每种用途都可以添加多个模型，
+      <SecTitle title="模型配置">
+        一格 = 一个服务商（中转站/官方）：Base URL 与 API Key 只填一次，对话、绘画、视频、音频、语音识别每种用途都可以添加多个模型，
         点击方格会在设置窗口右侧弹出编辑面板。配置存在系统用户数据目录并自动备份，也可手动导出保管。
-      </p>
-      <Row style={{ marginBottom: 12 }}>
+      </SecTitle>
+      {/* 默认模型总览（置顶）：五类用途各选一个，节点/面板不单独指定时全用这里的 */}
+      <div className="def-models">
+        <div className="dm-title">
+          默认模型
+          <span className="hint">
+            画布节点、创作助手不单独指定模型时，一律调用这里选的；节点上仍可临时改用别的模型。
+          </span>
+        </div>
+        <div className="dm-grid">
+          {ROLES.map((role) => {
+            const has = models.providers.some((p) => (p.models[role]?.models.length ?? 0) > 0);
+            return (
+              <div key={role} className="dm-row">
+                <span className="dm-lab" title={ROLE_LABEL[role]}>
+                  {ROLE_ICON[role]}
+                  {ROLE_SHORT[role]}
+                </span>
+                {has ? (
+                  <ModelPicker
+                    role={role}
+                    value={models.defaults[role]}
+                    onChange={(v) => {
+                      if (v) setDefault(role, v);
+                    }}
+                  />
+                ) : (
+                  <span className="dm-none" title="先在下方服务商卡片里给这类用途添加模型">
+                    未配置
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <Row style={{ margin: "16px 0 12px" }}>
         <span style={{ flex: 1 }} />
-        <button className="btn sm" title="把全部设置导出为 JSON 文件保管" onClick={() => void exportCfg()}>
+        <button
+          className="btn sm"
+          title="导出全部设置，API Key 一律抹去（推荐：给别人 / 传网盘都安全，接收方填自己的 Key；自己重新导入时本机 Key 自动保留）"
+          onClick={() => void exportCfg(true)}
+        >
           <IcDownload size={15} /> 导出配置
         </button>
-        <button className="btn sm" title="从导出的 JSON 文件恢复全部设置" onClick={() => void importCfg()}>
+        <button
+          className="btn sm"
+          title="含密钥的加密分享包（.momocfg）：文件里看不到明文密钥，接收方导入即可直接使用。注意：能直接用就意味着密钥也随包给了对方，只发给信任的人"
+          onClick={() => void exportCfg(false)}
+        >
+          <IcDownload size={15} /> 加密分享包
+        </button>
+        <button className="btn sm" title="从导出的配置文件恢复全部设置（支持 .json 与 .momocfg 加密包）" onClick={() => void importCfg()}>
           <IcUpload size={15} /> 导入配置
         </button>
       </Row>
@@ -300,7 +436,8 @@ function ModelsTab() {
         ))}
       </div>
       <div className="hint" style={{ marginTop: 6 }}>
-        卡片上的三个图标：对话 / 绘画 / 视频。图标点亮 = 该服务商配置了这类模型；<b>绿点 = 这类模型的当前默认来源</b>（在下方各角色的单选里切换）。
+        卡片上的五个图标：对话 / 绘画 / 视频 / 音频 / 语音识别。图标点亮 = 该服务商配置了这类模型；
+        <b>绿点 = 这类模型的当前默认来源</b>（在顶部「默认模型」里切换）。
       </div>
 
       {editing
@@ -329,19 +466,13 @@ function ModelsTab() {
                             {isDefault ? <IcCheck size={14} /> : null} {ROLE_LABEL[role]}默认
                           </button>
                           {isDefault && slot.models.length > 1 ? (
-                            <select
-                              className="select"
-                              style={{ width: 128, flex: "none" }}
-                              title={`选择哪个模型作为${ROLE_LABEL[role]}默认`}
+                            <PopSelect
+                              style={{ width: 148, flex: "none" }}
+                              title={`${ROLE_LABEL[role]}默认模型`}
                               value={def.model ?? slot.models[0]}
-                              onChange={(e) => setDefault(role, modelKey(savedEditing.id, e.target.value))}
-                            >
-                              {slot.models.map((m) => (
-                                <option key={m} value={m}>
-                                  {m}
-                                </option>
-                              ))}
-                            </select>
+                              options={slot.models.map((m) => ({ value: m, label: m }))}
+                              onChange={(v) => setDefault(role, modelKey(savedEditing.id, v))}
+                            />
                           ) : null}
                         </span>
                       );
@@ -378,7 +509,7 @@ function ModelsTab() {
   );
 }
 
-const EMPTY_BY_ROLE: Record<ModelRole, string> = { chat: "", image: "", video: "", audio: "" };
+const EMPTY_BY_ROLE: Record<ModelRole, string> = { chat: "", image: "", video: "", audio: "", asr: "" };
 
 function ProviderEditor({
   draft,
@@ -486,32 +617,28 @@ function ProviderEditor({
               <span className="pe-slot-hint">可添加多个 · 不添加 = 该服务商不提供此用途</span>
             </div>
             <Row gap={10}>
-              <select
-                className="select"
-                style={{ flex: 1 }}
+              <PopSelect
+                // 协议名可能很长（自定义协议）：触发按钮限宽截断，全名在弹层里看
+                style={{ flex: "1 1 0", minWidth: 0, maxWidth: 190 }}
                 title="协议"
                 value={slot.protocol}
-                onChange={(e) => patchSlot(role, { protocol: e.target.value as AnyProtocol })}
-              >
-                {PROTOCOLS[role].map((x) => (
-                  <option key={x.value} value={x.value}>
-                    {x.label}
-                  </option>
-                ))}
-                {role !== "chat"
-                  ? customProtocols
-                      .filter((p) => (p.role === "video" ? "video" : p.role === "audio" ? "audio" : "image") === role)
-                      .map((p) => (
-                        <option key={p.id} value={`custom:${p.id}`}>
-                          自定义 · {p.name}
-                          {p.verifiedAt ? " ✓已校准" : "（未校准）"}
-                        </option>
-                      ))
-                  : null}
-              </select>
+                options={[
+                  ...PROTOCOLS[role].map((x) => ({ value: x.value, label: x.label })),
+                  ...(role !== "chat"
+                    ? customProtocols
+                        .filter((p) => (p.role === "video" ? "video" : p.role === "audio" ? "audio" : "image") === role)
+                        .map((p) => ({
+                          value: `custom:${p.id}`,
+                          label: `★ ${p.name}`,
+                          desc: p.verifiedAt ? "✓ 已校准" : "未校准（自定义协议）",
+                        }))
+                    : []),
+                ]}
+                onChange={(v) => patchSlot(role, { protocol: v as AnyProtocol })}
+              />
               <input
                 className="input"
-                style={{ flex: 1.5 }}
+                style={{ flex: "1.5 1 0", minWidth: 0 }}
                 placeholder={MODEL_PLACEHOLDER[role]}
                 value={inputs[role]}
                 onChange={(e) => setInputs((s) => ({ ...s, [role]: e.target.value }))}
@@ -563,24 +690,24 @@ function ProviderEditor({
                     onChange={(e) => setQueries((s) => ({ ...s, [role]: e.target.value }))}
                   />
                 </div>
-                <select
-                  className="select pe-pick"
+                <PopSelect
+                  className="pe-pick"
+                  title="点选即添加"
                   value=""
-                  onChange={(e) => {
-                    if (e.target.value) addModel(role, e.target.value);
-                  }}
-                >
-                  <option value="">
-                    {kw
+                  placeholder={
+                    kw
                       ? `筛出 ${filtered.length} / ${list.length} 个模型，点选即添加…`
-                      : `从拉取到的 ${list.length} 个模型中点选即添加…`}
-                  </option>
-                  {filtered.map((m) => (
-                    <option key={m} value={m} disabled={slot.models.includes(m)}>
-                      {slot.models.includes(m) ? `✓ ${m}` : m}
-                    </option>
-                  ))}
-                </select>
+                      : `从拉取到的 ${list.length} 个模型中点选即添加…`
+                  }
+                  options={filtered.map((m) => ({
+                    value: m,
+                    label: slot.models.includes(m) ? `✓ ${m}` : m,
+                    disabled: slot.models.includes(m),
+                  }))}
+                  onChange={(v) => {
+                    if (v) addModel(role, v);
+                  }}
+                />
               </>
             ) : null}
           </div>
@@ -601,12 +728,13 @@ function ProviderEditor({
 
 /* ================= 协议（自定义协议 + 协议助手） ================= */
 
-const PROTOCOL_SYSTEM = `你是 API 协议分析专家。用户会粘贴一个 AI 生成类中转站/服务商的接口文档、示例请求或抓包内容（可能是图片生成，也可能是视频生成）。请分析后输出一份 momo 画布的自定义协议 JSON（只输出 JSON，不要任何解释、不要代码块标记）。
+const protocolSystem = (role: CustomProtocol["role"]) => `你是 API 协议分析专家。用户会粘贴一个 AI 生成类中转站/服务商的接口文档、示例请求或抓包内容（图片 / 视频 / 音频生成都有可能）。请分析后输出一份 momo 画布的自定义协议 JSON（只输出 JSON，不要任何解释、不要代码块标记）。
+用户在界面上把这份文档标为「${role === "video" ? "视频" : role === "audio" ? "音频" : "图片"}生成」，若你判断确实不是，再改 role。
 
 JSON 结构（TypeScript 描述）：
 {
   "name": string,            // 协议显示名，如 "某某站异步生图"
-  "role": "image" | "video", // 【务必仔细判断】该接口生成的是图片还是视频：看接口路径（如 /video/、/videos）、参数（时长/帧率）、返回字段（video_url、mp4 等）。视频接口必须填 "video"
+  "role": "image" | "video" | "audio", // 【务必仔细判断】该接口生成的是图片、视频还是音频：看接口路径（/images、/videos、/audio/speech）、参数（时长/帧率/音色）、返回字段（video_url、mp4、audio_url 等）
   "submit": {                // 提交生成请求
     "url": string,           // 完整 URL，可用占位符 {{baseUrl}}
     "method": "POST"|"GET",
@@ -626,11 +754,30 @@ JSON 结构（TypeScript 描述）：
   "resultPath": string       // 最终响应中图片/视频(url或base64)的 JSON 路径；数组用 []，如 "data[].url"
 }
 
-可用占位符：{{baseUrl}} {{apiKey}} {{model}} {{prompt}} {{size}} {{n}} {{taskId}} {{image}}（第一张参考图/首帧的 dataURL）{{image2}}（第二张参考图）{{images}}（全部参考图的 JSON 数组字面量，模板里不要加引号，如 "image": {{images}}）{{mask}}（局部重绘/扩图的蒙版 PNG dataURL）。
-【重要】若文档显示接口支持图生图（image/images 等字段），请务必把图片字段写进 body 模板，否则参考图发不出去；支持蒙版编辑（mask/inpaint）也请写上 {{mask}} 字段。
+${varsDoc(role)}
+【重要】body 必须是 JSON 字符串模板（一整个字符串），不能写成嵌套对象。{{prompt}} 必须出现，否则提示词发不出去。
+【重要】若文档显示接口支持图生图（image/images 等字段），请务必把图片字段写进 body 模板，否则参考图发不出去；支持蒙版编辑（mask/inpaint）也请写上 {{mask}} 字段；视频接口把时长/分辨率/比例字段接到 {{duration}}/{{resolution}}/{{aspect}}，音频接口把音色接到 {{voice}}，否则画布面板上的设置全部不生效。
 条件块语法（可选字段/端点切换用）：{{?var}}…{{/var}} 变量非空时保留；{{^var}}…{{/var}} 变量为空时保留。例：url 写 "{{baseUrl}}/v1/images/{{?images}}edits{{/images}}{{^images}}generations{{/images}}"；body 里写 {{?mask}},"mask":{"image_url":"{{mask}}"}{{/mask}}。
 JSON 路径语法：点号访问对象字段，字段名后加 [] 表示展开数组，如 "data.images[].url"。
 如文档信息不足，按 OpenAI 风格合理推断并在 name 里标注「(待验证)」。`;
+
+/**
+ * 从粘贴内容里挑出「值得抓的文档链接」。
+ * 以前是无差别捞前两个 http URL —— 而输入框恰恰鼓励粘 curl 示例，
+ * 于是第一个 URL 往往是用户自己的生成端点，程序会对它发一次无鉴权 GET，
+ * 拿回 401 的错误 JSON 还当成"抓取到的文档"喂给模型（xfetch 对 4xx 不抛错，静默污染）。
+ */
+function pickDocUrls(text: string): string[] {
+  const all = text.match(/https?:\/\/[^\s"'<>）)】\]]+/g) ?? [];
+  const apiLike = /\/(v\d+)\/|\/(chat\/completions|completions|images?|generations?|videos?|audio|speech|embeddings|edits|submit|query|task)s?(\/|$|\?)/i;
+  return [...new Set(all.filter((u) => !apiLike.test(u)))].slice(0, 2);
+}
+
+/** 抓来的正文看着像不像文档（404 页、登录页、JS 壳页面、错误 JSON 一律不算） */
+function looksLikeDoc(text: string): boolean {
+  if (text.length < 300) return false;
+  return !/(enable ?javascript|页面不存在|not found|请先登录|sign in to continue|access denied)/i.test(text.slice(0, 400));
+}
 
 /** 粗糙但够用的 HTML → 纯文本（协议助手抓取文档链接用） */
 function htmlToText(html: string): string {
@@ -650,13 +797,43 @@ function htmlToText(html: string): string {
     .trim();
 }
 
+/** 抓取粘贴内容里的文档链接（校验状态码/类型/正文成色，抓不到就明说，不拿垃圾正文冒充文档） */
+async function fetchDocs(docs: string, limit: number): Promise<string> {
+  let material = "";
+  for (const u of pickDocUrls(docs)) {
+    try {
+      toast(`正在抓取文档：${u.slice(0, 60)}…`, "info");
+      const resp = await xfetch(u);
+      if (!resp.ok) {
+        toast(`抓取 ${u.slice(0, 50)} 返回 ${resp.status}，已跳过（只用你粘贴的文字分析）`, "err");
+        continue;
+      }
+      const ct = (resp.headers?.get?.("content-type") ?? "").toLowerCase();
+      if (ct && !/html|text|markdown|json|plain/.test(ct)) {
+        toast(`${u.slice(0, 50)} 返回的是 ${ct}，不是文档页，已跳过`, "err");
+        continue;
+      }
+      const text = htmlToText(await resp.text()).slice(0, limit);
+      if (!looksLikeDoc(text)) {
+        toast(`${u.slice(0, 50)} 抓到的内容不像文档（可能是登录页或前端渲染页），已跳过——请把关键接口段落直接复制过来`, "err");
+        continue;
+      }
+      material += `\n\n=== 以下内容抓取自 ${u} ===\n${text}`;
+      toast(`已抓取 ${text.length} 字文档内容 ✓`, "ok");
+    } catch (e) {
+      toast(`抓取 ${u.slice(0, 50)} 失败：${errMsg(e)}，将只用已粘贴的文字分析`, "err");
+    }
+  }
+  return material;
+}
+
 function ProtocolTab() {
   const settings = useSettings((s) => s.settings);
   const update = useSettings((s) => s.update);
   const upsertProvider = useSettings((s) => s.upsertProvider);
   const [busy, setBusy] = useState(false);
   /* 草稿与校准现场都在 protoTabStore：切到其他页面/关掉弹窗不丢，正在跑的测试可停止 */
-  const { docs, draft, roleSel, testProvider, testModel, manualBase, manualKey, calLog, calBusy, ctrl, calDone, patch, logLine } =
+  const { docs, draft, roleSel, testProvider, testModel, manualBase, manualKey, calLog, calBusy, ctrl, calDone, calSnap, patch, logLine } =
     useProtoTab();
   const providers = settings.models.providers;
   const selProvider = testProvider || providers[0]?.id || MANUAL;
@@ -674,8 +851,9 @@ function ProtocolTab() {
   const runCalibrate = async () => {
     let proto: CustomProtocol;
     try {
-      proto = JSON.parse(draft) as CustomProtocol;
-      if (!proto.submit?.url || !proto.resultPath) throw new Error("协议缺少 submit.url / resultPath");
+      const r = validateProto(parseJsonLoose<CustomProtocol>(draft) ?? JSON.parse(draft));
+      proto = r.proto;
+      if (r.warnings.length) toast(`协议有待确认之处：${r.warnings.join("；")}`, "info");
     } catch (e) {
       toast(`右侧协议 JSON 不完整：${errMsg(e)}`, "err");
       return;
@@ -711,6 +889,7 @@ function ProtocolTab() {
       patch({
         draft: JSON.stringify(fixed, null, 2),
         calDone: { model: testModel.trim(), providerId: prov?.id, baseUrl, apiKey, role: roleSel },
+        calSnap: fixed, // 存下这一刻的样子：之后再手改协议，「已校准」章会自动作废
       });
       logLine(`✅ 校准完成（取到 ${results.length} 个结果），协议已盖「已校准」章 —— 点下方按钮一键保存并应用到模型配置`);
       toast("测试通过，协议已按真实响应校准 ✓", "ok");
@@ -727,11 +906,17 @@ function ProtocolTab() {
     const done = calDone;
     if (!done) return;
     try {
-      const p = JSON.parse(draft) as CustomProtocol;
-      if (!p.name || !p.submit?.url || !p.resultPath) throw new Error("协议缺少必填字段：name / submit.url / resultPath");
+      const { proto: p } = validateProto(parseJsonLoose<CustomProtocol>(draft) ?? JSON.parse(draft));
       if (!p.id) p.id = uid(6);
       p.role = done.role;
-      update("customProtocols", [...settings.customProtocols.filter((x) => x.id !== p.id), p]);
+      // 校准通过后又手改了协议 → 这份没测过，不能带着「已校准」章落地
+      if (p.verifiedAt && (!calSnap || protoFingerprint(p) !== protoFingerprint(calSnap))) {
+        delete p.verifiedAt;
+        toast("协议在校准后被修改过，「已校准」标记已清除——建议重新跑一次测试", "info");
+      }
+      const list = settings.customProtocols;
+      const idx = list.findIndex((x) => x.id === p.id);
+      update("customProtocols", idx >= 0 ? list.map((x, k) => (k === idx ? p : x)) : [...list, p]);
       const role = done.role === "video" ? "video" : done.role === "audio" ? "audio" : "image";
       const roleLabel = role === "video" ? "视频" : role === "audio" ? "音频" : "绘画";
       if (done.providerId) {
@@ -751,7 +936,7 @@ function ProtocolTab() {
         });
         toast(`协议「${p.name}」已保存，并新建服务商「${host}」、配好${roleLabel}槽位（模型 ${done.model}）✓ 可直接使用`, "ok");
       }
-      patch({ calDone: null, draft: "" });
+      patch({ calDone: null, draft: "", calSnap: null });
     } catch (e) {
       toast(errMsg(e), "err");
     }
@@ -764,28 +949,42 @@ function ProtocolTab() {
     }
     setBusy(true);
     try {
-      // 文档里的 http 链接自动抓取正文一并交给模型（最多取前 2 个）
-      let material = docs.slice(0, 24000);
-      const urls = docs.match(/https?:\/\/[^\s"'<>）)】\]]+/g)?.slice(0, 2) ?? [];
-      for (const u of urls) {
-        try {
-          toast(`正在抓取文档：${u.slice(0, 60)}…`, "info");
-          const resp = await xfetch(u);
-          const text = htmlToText(await resp.text()).slice(0, 20000);
-          if (text) material += `\n\n=== 以下内容抓取自 ${u} ===\n${text}`;
-        } catch (e) {
-          toast(`抓取 ${u.slice(0, 50)} 失败：${errMsg(e)}，将只用已粘贴的文字分析`, "err");
-        }
-      }
+      // 文档里的 http 链接自动抓取正文一并交给模型（最多取前 2 个，跳过看起来是 API 端点的地址）
+      const material = docs.slice(0, 24000) + (await fetchDocs(docs, 20000));
       const card = resolveModelCard("chat");
-      const out = await chatOnce(card, PROTOCOL_SYSTEM, material.slice(0, 48000));
-      const json = out.match(/\{[\s\S]*\}/)?.[0] ?? out;
-      const parsed = JSON.parse(json) as CustomProtocol;
-      const pr = parsed.role === "video" ? "video" : parsed.role === "audio" ? "audio" : "image";
-      patch({ roleSel: pr, draft: json });
+      const out = await chatOnce(card, protocolSystem(roleSel), material.slice(0, 48000));
+      // 宽容解析：模型经常在 JSON 前后加一句说明或包代码块，硬 JSON.parse 会直接崩
+      const parsed = parseJsonLoose<CustomProtocol>(out);
+      if (!parsed) {
+        toast(
+          `模型没有返回可解析的协议 JSON。已把原始回复填进右侧编辑框，你可以手动修整；也可以补充更完整的接口文档（请求示例 + 响应示例）后重试`,
+          "err",
+        );
+        patch({ draft: out.slice(0, 8000) });
+        return;
+      }
+      // 类型/必填校验：能自动纠的（body 写成对象等）当场纠，纠不了的明说缺哪个，别等运行时才炸
+      let proto: CustomProtocol;
+      let warnings: string[] = [];
+      try {
+        ({ proto, warnings } = validateProto(parsed));
+      } catch (err) {
+        patch({ draft: JSON.stringify(parsed, null, 2) });
+        toast(`协议草稿已生成，但有问题：${errMsg(err)}——已填进右侧编辑框，补齐后再保存`, "err");
+        return;
+      }
+      const pr = proto.role;
+      // 用途不再静默覆盖用户的选择：先按你在界面上选的走，助手判断不一致时提示你自己决定
+      const conflict = pr !== roleSel;
+      patch({ draft: JSON.stringify({ ...proto, role: roleSel }, null, 2) });
+      const lab = (r: string) => (r === "video" ? "视频" : r === "audio" ? "音频" : "图片");
       toast(
-        `协议草稿已生成 ✓ 助手判定用途为「${pr === "video" ? "视频" : pr === "audio" ? "音频" : "图片"}生成」，请核对右侧 JSON 与用途后保存`,
-        "ok",
+        conflict
+          ? `协议草稿已生成 ✓ 但助手判定这是「${lab(pr)}生成」接口，与你选的「${lab(roleSel)}生成」不一致——请在下方「协议用途」自行确认（草稿仍按你选的用途保存）`
+          : warnings.length
+            ? `协议草稿已生成 ✓ 需注意：${warnings.join("；")}`
+            : `协议草稿已生成 ✓ 用途「${lab(roleSel)}生成」，请核对右侧 JSON 后保存`,
+        conflict || warnings.length ? "info" : "ok",
       );
     } catch (e) {
       toast(`生成失败：${errMsg(e)}`, "err");
@@ -799,18 +998,7 @@ function ProtocolTab() {
     if (!draft.trim() || busy) return;
     setBusy(true);
     try {
-      let material = docs.trim().slice(0, 20000);
-      const urls = docs.match(/https?:\/\/[^\s"'<>）)】\]]+/g)?.slice(0, 2) ?? [];
-      for (const u of urls) {
-        try {
-          toast(`正在抓取文档：${u.slice(0, 60)}…`, "info");
-          const resp = await xfetch(u);
-          const text = htmlToText(await resp.text()).slice(0, 16000);
-          if (text) material += `\n\n=== 以下内容抓取自 ${u} ===\n${text}`;
-        } catch {
-          /* 链接抓不到就按经验补全 */
-        }
-      }
+      const material = docs.trim().slice(0, 20000) + (await fetchDocs(docs, 16000));
       const card = resolveModelCard("chat");
       const ask = (roleSel === "audio"
         ? [
@@ -840,10 +1028,17 @@ function ProtocolTab() {
         `\n当前协议：\n${draft}`,
         material ? `\n参考文档：\n${material}` : "\n（没有粘贴文档：按站点风格合理推断）",
       ]).join("\n");
-      const out = await chatOnce(card, PROTOCOL_SYSTEM, ask.slice(0, 48000));
-      const json = out.match(/\{[\s\S]*\}/)?.[0] ?? out;
-      JSON.parse(json); // 先校验再落草稿
-      patch({ draft: json });
+      const out = await chatOnce(card, protocolSystem(roleSel), ask.slice(0, 48000));
+      const parsed = parseJsonLoose<CustomProtocol>(out);
+      if (!parsed) throw new Error("模型没有返回可解析的协议 JSON（可补充更完整的接口文档后重试）");
+      const { proto, warnings } = validateProto(parsed);
+      // 身份字段以当前草稿为准，模型不许改（改了会变成另一条协议、丢掉绑定）
+      const cur = parseJsonLoose<CustomProtocol>(draft);
+      if (cur?.id) proto.id = cur.id;
+      proto.role = roleSel;
+      delete proto.verifiedAt; // 模板变了就不再是那份测过的协议
+      if (warnings.length) toast(`补全结果需注意：${warnings.join("；")}`, "info");
+      patch({ draft: JSON.stringify(proto, null, 2) });
       toast(
         roleSel === "video"
           ? "已补全图生视频/尾帧/参数字段 ✓ 核对右侧 JSON → 保存 → 校准"
@@ -861,18 +1056,26 @@ function ProtocolTab() {
 
   const save = () => {
     try {
-      const p = JSON.parse(draft) as CustomProtocol;
-      if (!p.name || !p.submit?.url || !p.resultPath)
-        throw new Error("协议缺少必填字段：name / submit.url / resultPath");
+      const { proto: p, warnings } = validateProto(parseJsonLoose<CustomProtocol>(draft) ?? JSON.parse(draft));
       if (!p.id) p.id = uid(6);
       // 用途以界面选择为准（可纠正助手判断）
       p.role = roleSel;
-      update("customProtocols", [...settings.customProtocols.filter((x) => x.id !== p.id), p]);
+      // 「已校准」是这条链路的信任锚点：内容改过就不能继续挂着上次那枚章
+      if (p.verifiedAt && (!calSnap || protoFingerprint(p) !== protoFingerprint(calSnap))) {
+        delete p.verifiedAt;
+        warnings.push("协议内容与上次测试通过的版本不一致，「已校准」标记已清除，建议重新跑一次校准");
+      }
+      const list = settings.customProtocols;
+      const i = list.findIndex((x) => x.id === p.id);
+      update("customProtocols", i >= 0 ? list.map((x, k) => (k === i ? p : x)) : [...list, p]);
+      const lab = p.role === "video" ? "视频" : p.role === "audio" ? "音频" : "图片";
       toast(
-        `协议「${p.name}」已保存（${p.role === "video" ? "视频" : p.role === "audio" ? "音频" : "图片"}生成）——到「模型配置」里给服务商的${p.role === "video" ? "视频" : p.role === "audio" ? "音频" : "绘画"}槽位选择「自定义 · ${p.name}」即可使用`,
-        "ok",
+        warnings.length
+          ? `协议「${p.name}」已保存（${lab}生成）。需注意：${warnings.join("；")}`
+          : `协议「${p.name}」已保存（${lab}生成）——到「模型配置」里给服务商的${p.role === "image" ? "绘画" : lab}槽位选择「★ ${p.name}」即可使用`,
+        warnings.length ? "info" : "ok",
       );
-      patch({ draft: "" });
+      patch({ draft: "", calSnap: null });
     } catch (e) {
       toast(errMsg(e), "err");
     }
@@ -880,11 +1083,11 @@ function ProtocolTab() {
 
   return (
     <>
-      <h3>协议</h3>
-      <p className="sec-desc">
-        遇到不是 OpenAI 兼容的中转站（比如异步任务式生图/生视频）？把它的接口文档或文档链接粘贴给「协议助手」，由你配置的对话模型分析生成协议；
-        核对用途（图片/视频）并保存后，就能在「模型配置」对应槽位的协议下拉里选用。协议也可以手写/修改 JSON。
-      </p>
+      <SecTitle title="协议">
+        遇到不是 OpenAI 兼容的中转站（比如异步任务式生图/生视频）？把它的接口文档或文档链接粘贴给「协议助手」，
+        由你配置的对话模型分析生成协议；核对用途（图片/视频）并保存后，就能在「模型配置」对应槽位的协议下拉里选用。
+        协议也可以手写 / 修改 JSON。
+      </SecTitle>
       <Row gap={10} style={{ alignItems: "flex-start", marginBottom: 14 }}>
         <Switch on={settings.protoSelfHeal} onChange={(v) => update("protoSelfHeal", v)} />
         <div>
@@ -899,7 +1102,7 @@ function ProtocolTab() {
       <div className="gp-lab" style={{ marginBottom: 8 }}>常用中转站预设（一键导入 / 修复）</div>
       <div className="preset-list">
         {PROTO_PRESETS.map((pp) => (
-          <div key={pp.key} className="preset-row">
+          <div key={pp.key} className="preset-row" title={`${pp.label}\n\n${pp.note}`}>
             <div className="pr-info">
               <b>{pp.label}</b>
               <span>{pp.note}</span>
@@ -934,7 +1137,7 @@ function ProtocolTab() {
                 {p.name}
                 {p.verifiedAt ? " ✓" : ""}
                 <button
-                  onClick={() => patch({ draft: JSON.stringify(p, null, 2), roleSel: p.role })}
+                  onClick={() => patch({ draft: JSON.stringify(p, null, 2), roleSel: p.role, calSnap: p })}
                   title="编辑"
                   aria-label="编辑"
                 >
@@ -979,6 +1182,23 @@ function ProtocolTab() {
             value={draft}
             onChange={(e) => patch({ draft: e.target.value })}
           />
+          {/* 通用体检：缺 {{prompt}} 或占位符名字拼错——这两条不会报错，只会静默出一张与输入无关的图 */}
+          {(() => {
+            if (!draft.trim()) return null;
+            const p = parseJsonLoose<CustomProtocol>(draft);
+            if (!p?.submit?.url) return null;
+            const msgs: string[] = [];
+            try {
+              if (!placeholdersIn(p).has("prompt")) msgs.push("模板里没有 {{prompt}}，提示词发不出去（会照样扣费，出一张与输入无关的结果）");
+              const unk = unknownPlaceholders(p);
+              if (unk.length) msgs.push(`有应用不认识的占位符 ${unk.map((k) => `{{${k}}}`).join(" ")}，运行时会被渲染成空串（多半是名字拼错）`);
+            } catch {
+              return null;
+            }
+            return msgs.length ? (
+              <div className="hint" style={{ color: "var(--warn, #d97706)" }}>⚠ {msgs.join("；")}</div>
+            ) : null;
+          })()}
           {/* 能力体检：保存前就把「只能文生图/没有真蒙版」讲清楚，并给出一键修复入口 */}
           {roleSel === "image" && draft.trim() ? (
             !["{{image}}", "{{images}}", "{{image2}}"].some((k) => draft.includes(k)) ? (
@@ -1025,6 +1245,18 @@ function ProtocolTab() {
               <div className="hint">✓ 模板含首帧/尾帧/参数占位符：文生视频 / 图生视频 / 首尾帧 / 面板参数均可用。</div>
             )
           ) : null}
+          {roleSel === "audio" && draft.trim() ? (
+            !draft.includes("{{voice}}") ? (
+              <div className="hint">
+                ℹ 模板不含 {"{{voice}}"}：音色/歌手/风格选择不会生效（只能用服务商默认音色）。
+                <button className="btn sm" style={{ marginLeft: 8 }} disabled={busy} onClick={() => void completeDraft()}>
+                  {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全音色字段
+                </button>
+              </div>
+            ) : (
+              <div className="hint">✓ 模板含 {"{{prompt}}"} 与 {"{{voice}}"}：朗读文本与音色都能下发。</div>
+            )
+          ) : null}
           <Row gap={8} style={{ alignItems: "center" }}>
             <span className="gp-lab" style={{ margin: 0 }} title="决定该协议出现在哪个模型槽位、结果按图片还是视频处理">
               协议用途
@@ -1054,14 +1286,16 @@ function ProtocolTab() {
         测试在后台运行：切到其他页面不会中断，日志保留在这里，也可以随时停止。
       </p>
       <Row gap={8} style={{ alignItems: "center", flexWrap: "wrap" }}>
-        <select className="select" style={{ width: 200 }} value={selProvider} onChange={(e) => pickProvider(e.target.value)}>
-          {providers.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-          <option value={MANUAL}>手动输入 Base URL / Key…</option>
-        </select>
+        <PopSelect
+          style={{ width: 220 }}
+          title="借用服务商的 Key"
+          value={selProvider}
+          options={[
+            ...providers.map((p) => ({ value: p.id, label: p.name })),
+            { value: MANUAL, label: "手动输入 Base URL / Key…" },
+          ]}
+          onChange={(v) => pickProvider(v)}
+        />
         {manual ? (
           <>
             <input
@@ -1166,8 +1400,9 @@ function SoundTab() {
 
   return (
     <>
-      <h3>音效提醒</h3>
-      <p className="sec-desc">任务完成/报错时的提示音与语音播报。完成音在点击「生成/运行」的目标节点跑完后响起；报错音随报错中心触发。</p>
+      <SecTitle title="音效提醒">
+        任务完成/报错时的提示音与语音播报。完成音在点击「生成/运行」的目标节点跑完后响起；报错音随报错中心触发。
+      </SecTitle>
       <Row gap={12} style={{ alignItems: "center", marginBottom: 14 }}>
         <Switch on={sound.enabled} onChange={(v) => patch({ enabled: v })} />
         <b>启用音效提醒</b>
@@ -1247,19 +1482,34 @@ function SearchTab() {
   const update = useSettings((s) => s.update);
   const patch = (part: Partial<Settings["search"]>) => update("search", { ...settings.search, ...part });
   const p = settings.search.provider;
+  const meta = SEARCH_PROVIDERS.find((x) => x.value === p);
   return (
     <>
-      <h3>联网搜索</h3>
-      <p className="sec-desc">开启对话节点上的 🌐 后，提问将先联网检索，AI 结合实时结果作答并给出来源。</p>
+      <SecTitle title="联网搜索">
+        开启创作助手上的 🌐 后，提问会先联网检索再作答并给出来源。模型自带联网能力（GLM / MiniMax / 混元等）时优先用模型自己的搜索，
+        失败自动降级到这里配置的搜索接口。推荐国内直连的智谱 / 博查 / LangSearch（都有免费额度或价格很低）。
+      </SecTitle>
       <Field label="搜索服务商">
-        <select className="select" value={p} onChange={(e) => patch({ provider: e.target.value as SearchProvider })}>
-          <option value="tavily">Tavily（tavily.com，注册即有免费额度）</option>
-          <option value="bocha">博查 Bocha（国内直连）</option>
-          <option value="searxng">SearXNG（自建实例，免 Key）</option>
-        </select>
+        <Row gap={8} style={{ alignItems: "center" }}>
+          <PopSelect
+            style={{ width: 260 }}
+            value={p}
+            options={SEARCH_PROVIDERS.map((x) => ({ value: x.value, label: x.label, desc: x.desc }))}
+            onChange={(v) => patch({ provider: v as SearchProvider })}
+          />
+          {meta ? (
+            <button
+              className="btn sm"
+              title={`打开 ${meta.site}（注册 / 获取 API Key）`}
+              onClick={() => void openExternal(meta.site)}
+            >
+              <IcGlobe size={13} /> 官网 ↗
+            </button>
+          ) : null}
+        </Row>
       </Field>
-      {p !== "searxng" ? (
-        <Field label="API Key">
+      {meta?.needs !== "baseUrl" ? (
+        <Field label="API Key" hint={meta ? `到 ${meta.site.replace(/^https?:\/\//, "")} 注册获取（${meta.desc}）` : undefined}>
           <input className="input" type="password" value={settings.search.apiKey}
             onChange={(e) => patch({ apiKey: e.target.value.trim() })} />
         </Field>
@@ -1270,12 +1520,12 @@ function SearchTab() {
         </Field>
       )}
       <Field label="结果条数">
-        <select className="select" style={{ width: 140 }} value={settings.search.maxResults}
-          onChange={(e) => patch({ maxResults: Number(e.target.value) })}>
-          {[3, 5, 8, 10].map((n) => (
-            <option key={n} value={n}>{n} 条</option>
-          ))}
-        </select>
+        <PopSelect
+          style={{ width: 140 }}
+          value={String(settings.search.maxResults)}
+          options={[3, 5, 8, 10].map((n) => ({ value: String(n), label: `${n} 条` }))}
+          onChange={(v) => patch({ maxResults: Number(v) })}
+        />
       </Field>
     </>
   );
@@ -1324,10 +1574,9 @@ function SaveTab() {
 
   return (
     <>
-      <h3>图片保存</h3>
-      <p className="sec-desc">
+      <SecTitle title="图片保存">
         控制「另存为 / 自动保存」写入磁盘的位置、格式与命名。画布生成的内容会另外自动收录进资产库，两者互不影响。
-      </p>
+      </SecTitle>
       <Field label="保存文件夹">
         <Row>
           <input className="input" value={settings.save.dir} placeholder="尚未选择…"
@@ -1340,12 +1589,15 @@ function SaveTab() {
       <Row gap={12} style={{ alignItems: "flex-start" }}>
         <div style={{ flex: 1 }}>
           <Field label="保存格式">
-            <select className="select" value={settings.save.format}
-              onChange={(e) => patch({ format: e.target.value as Settings["save"]["format"] })}>
-              <option value="png">PNG（无损）</option>
-              <option value="jpeg">JPG（体积小）</option>
-              <option value="webp">WebP（兼顾两者）</option>
-            </select>
+            <PopSelect
+              value={settings.save.format}
+              options={[
+                { value: "png", label: "PNG", desc: "无损" },
+                { value: "jpeg", label: "JPG", desc: "体积小" },
+                { value: "webp", label: "WebP", desc: "兼顾两者" },
+              ]}
+              onChange={(v) => patch({ format: v as Settings["save"]["format"] })}
+            />
           </Field>
         </div>
         <div style={{ flex: 1.6 }}>
@@ -1402,8 +1654,9 @@ function ComfyTab() {
 
   return (
     <>
-      <h3>ComfyUI</h3>
-      <p className="sec-desc">连接本机或局域网内已启动的 ComfyUI 服务，通过工作流模板在画布上直接出图。</p>
+      <SecTitle title="ComfyUI">
+        连接本机或局域网内已启动的 ComfyUI 服务，通过工作流模板在画布上直接出图。
+      </SecTitle>
       <Field label="服务地址">
         <Row>
           <input className="input" value={settings.comfy.host} placeholder="http://127.0.0.1:8188"
@@ -1539,6 +1792,42 @@ function comboLabel(combo: string): string {
     .join(" + ");
 }
 
+/** 快捷键分组（设置页两列排布用；未列入的动作会自动归到「其他」） */
+const HOTKEY_GROUPS: { title: string; actions: HotkeyAction[] }[] = [
+  {
+    title: "画布操作",
+    actions: ["moveTool", "group", "ignore", "align", "duplicate", "delete", "undo", "redo", "popLock"],
+  },
+  { title: "视图", actions: ["fitView", "zoomIn", "zoomOut", "zen", "search", "spotlight"] },
+  { title: "运行", actions: ["runAll"] },
+  {
+    title: "面板与窗口",
+    actions: ["agent", "voiceCall", "assets", "gallery", "charLib", "errCenter", "runLog", "settings", "theme", "newBoard"],
+  },
+  {
+    title: "添加节点",
+    actions: [
+      "addImage",
+      "addVideo",
+      "addAudio",
+      "addPrompt",
+      "addStylePreset",
+      "addNote",
+      "addCombine",
+      "addStoryboard",
+      "addImageGen",
+      "addVideoGen",
+      "addAudioGen",
+      "addComfy",
+      "addRelight",
+      "addMultiAngle",
+      "addCharCard",
+      "addVideoDub",
+    ],
+  },
+  { title: "已并入其他功能（保留兼容）", actions: ["addChat", "addLlmText"] },
+];
+
 const FIXED_KEYS: { label: string; keys: string[] }[] = [
   { label: "临时平移画布", keys: ["Space", "拖动"] },
   { label: "多选 / 框选连线", keys: ["Ctrl", "点击或框选"] },
@@ -1586,18 +1875,28 @@ function HotkeysTab() {
 
   return (
     <>
-      <h3>快捷键</h3>
-      <p className="sec-desc">点击键帽后按下新按键即可重新绑定（Esc 取消）。下方为固定组合键，仅作速查。</p>
-      {(Object.keys(HOTKEY_LABEL) as HotkeyAction[]).map((action) => (
-        <div className="hk-row" key={action}>
-          <span className="hk-name">{HOTKEY_LABEL[action]}</span>
-          <button
-            className={`keycap ${capturing === action ? "cap" : ""}`}
-            title="点击后按下新按键"
-            onClick={() => setCapturing(capturing === action ? null : action)}
-          >
-            {capturing === action ? "按键…" : hotkeys[action] ? comboLabel(hotkeys[action]) : "未绑定"}
-          </button>
+      <SecTitle title="快捷键">
+        点击键帽后按下新按键即可重新绑定（Esc 取消）。按功能分组、两列排布；最下方为固定组合键，仅作速查。
+      </SecTitle>
+      {HOTKEY_GROUPS.map((g) => (
+        <div key={g.title} className="hk-group">
+          <div className="hk-gtitle">{g.title}</div>
+          <div className="hk-grid">
+            {g.actions.map((action) => (
+              <div className="hk-row" key={action}>
+                <span className="hk-name" title={HOTKEY_LABEL[action]}>
+                  {HOTKEY_LABEL[action]}
+                </span>
+                <button
+                  className={`keycap ${capturing === action ? "cap" : ""}`}
+                  title="点击后按下新按键"
+                  onClick={() => setCapturing(capturing === action ? null : action)}
+                >
+                  {capturing === action ? "按键…" : hotkeys[action] ? comboLabel(hotkeys[action]) : "未绑定"}
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       ))}
       <Row style={{ margin: "6px 0 18px" }}>
@@ -1606,19 +1905,147 @@ function HotkeysTab() {
         </button>
       </Row>
       <h3 style={{ fontSize: "var(--fs-base)" }}>固定快捷键</h3>
-      {FIXED_KEYS.map((f) => (
-        <div className="hk-row dim" key={f.label}>
-          <span className="hk-name">{f.label}</span>
-          <span className="hk-combo">
-            {f.keys.map((k, i) => (
-              <span key={i}>
-                {i > 0 ? <i className="hk-plus">+</i> : null}
-                <kbd className="keycap sm">{k}</kbd>
+      <div className="hk-grid">
+        {FIXED_KEYS.map((f) => (
+          <div className="hk-row dim" key={f.label}>
+            <span className="hk-name">{f.label}</span>
+            <span className="hk-combo">
+              {f.keys.map((k, i) => (
+                <span key={i}>
+                  {i > 0 ? <i className="hk-plus">+</i> : null}
+                  <kbd className="keycap sm">{k}</kbd>
+                </span>
+              ))}
+            </span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/* ================= 用量与稳定性 ================= */
+function UsageTab() {
+  const settings = useSettings((s) => s.settings);
+  const update = useSettings((s) => s.update);
+  // rangeUsage/todayCost 每次返回新对象/需计算，不能做 selector（会无限重渲染）；读一次即可（切回此 tab 重新挂载会刷新）
+  const range = useUsage.getState().rangeUsage(7);
+  const todayCost = useUsage.getState().todayCost();
+  const retry = settings.retry;
+  const budget = settings.budget;
+  const num = (v: string) => Number(v) || 0;
+  const maxCost = Math.max(0.01, ...range.rows.map((r) => r.cost));
+  return (
+    <>
+      <SecTitle title="用量与花费">
+        每次生成（图/视频/音频）自动按模型单价记账、按天聚合预估花费；价格为粗略估算，不作为计费依据。
+      </SecTitle>
+      <div className="gp-lab" style={{ marginBottom: 8 }}>
+        今日 ¥{todayCost.toFixed(2)} · 近 7 天累计 ¥{range.total.toFixed(2)}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 6 }}>
+        {range.rows.length ? (
+          range.rows.map((r) => (
+            <div key={r.day} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+              <span style={{ flex: "0 0 42px", color: "var(--text-2)" }}>{r.day.slice(5)}</span>
+              <span
+                style={{
+                  height: 10,
+                  width: `${Math.max(3, (r.cost / maxCost) * 160)}px`,
+                  borderRadius: 5,
+                  background: "color-mix(in srgb, var(--accent) 60%, transparent)",
+                }}
+              />
+              <span style={{ color: "var(--text-2)" }}>
+                ¥{r.cost.toFixed(2)} · {r.calls} 次{r.fails ? ` · 失败 ${r.fails}` : ""}
               </span>
-            ))}
-          </span>
-        </div>
-      ))}
+            </div>
+          ))
+        ) : (
+          <div className="hint">还没有用量记录（生成图片/视频后这里会出现数据）</div>
+        )}
+      </div>
+
+      <div className="gp-lab" style={{ marginTop: 18, marginBottom: 6 }}>
+        预算护栏（0 = 不限制）
+      </div>
+      <Row gap={12} style={{ alignItems: "center" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+          日预算上限 ¥
+          <input
+            className="input"
+            type="number"
+            style={{ width: 100 }}
+            value={budget.dailyCap}
+            onChange={(e) => update("budget", { ...budget, dailyCap: num(e.target.value) })}
+          />
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+          超此花费二次确认 ¥
+          <input
+            className="input"
+            type="number"
+            style={{ width: 100 }}
+            value={budget.confirmOverCost}
+            onChange={(e) => update("budget", { ...budget, confirmOverCost: num(e.target.value) })}
+          />
+        </label>
+      </Row>
+      <p className="sec-desc" style={{ marginTop: 4 }}>
+        超日预算会阻断并报错；超确认阈值弹窗确认。Token 类（对话/分镜）按实际记账、暂不预拦。
+      </p>
+
+      <div className="gp-lab" style={{ marginTop: 18, marginBottom: 6 }}>
+        失败重试（中转站 429 / 5xx / 网络抖动）
+      </div>
+      <Row gap={12} style={{ alignItems: "center" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+          幂等请求重试
+          <input
+            className="input"
+            type="number"
+            style={{ width: 70 }}
+            value={retry.idempotentMax}
+            onChange={(e) => update("retry", { ...retry, idempotentMax: num(e.target.value) })}
+          />
+          次
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+          生成类重试
+          <input
+            className="input"
+            type="number"
+            style={{ width: 70 }}
+            value={retry.submitMax}
+            onChange={(e) => update("retry", { ...retry, submitMax: num(e.target.value) })}
+          />
+          次
+        </label>
+      </Row>
+      <p className="sec-desc" style={{ marginTop: 4 }}>
+        幂等请求（轮询/搜索/下载）自动重试，无扣费风险；生成类重试有重复扣费风险，默认关，按需开启。
+      </p>
+
+      <div className="gp-lab" style={{ marginTop: 18, marginBottom: 6 }}>
+        备用模型（主模型重试耗尽后换卡再试一次）
+      </div>
+      <Row gap={12} style={{ flexDirection: "column", alignItems: "stretch" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+          <span style={{ flex: "0 0 64px" }}>绘画备用</span>
+          <ModelPicker role="image" value={retry.fallbackImage || undefined} onChange={(v) => update("retry", { ...retry, fallbackImage: v || "" })} />
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+          <span style={{ flex: "0 0 64px" }}>视频备用</span>
+          <ModelPicker role="video" value={retry.fallbackVideo || undefined} onChange={(v) => update("retry", { ...retry, fallbackVideo: v || "" })} />
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+          <span style={{ flex: "0 0 64px" }}>音频备用</span>
+          <ModelPicker role="audio" value={retry.fallbackAudio || undefined} onChange={(v) => update("retry", { ...retry, fallbackAudio: v || "" })} />
+        </label>
+      </Row>
+      <p className="sec-desc" style={{ marginTop: 4 }}>
+        留空 = 不兜底。建议选与主模型同家族的备用，跨家族时面板参数会自动适配。
+      </p>
     </>
   );
 }
@@ -1630,8 +2057,9 @@ function AppearanceTab() {
   const update = useSettings((s) => s.update);
   return (
     <>
-      <h3>外观主题</h3>
-      <p className="sec-desc">两套精心调校的主题，随时一键切换（标题栏月亮/太阳按钮同样可切换）。</p>
+      <SecTitle title="外观主题">
+        三套精心调校的主题，随时一键切换（标题栏主题按钮或 Ctrl+Shift+T 同样可切换）。
+      </SecTitle>
       <div className="theme-cards">
         <div className={`theme-card ${theme === "light" ? "on" : ""}`} onClick={() => update("theme", "light")}>
           <div className="tc-preview" style={{ background: "#eef1f8" }}>
@@ -1646,6 +2074,13 @@ function AppearanceTab() {
             <div style={{ position: "absolute", inset: "50px auto auto 34px", width: 110, height: 30, borderRadius: 8, background: "linear-gradient(135deg,#5b8cff,#9a6bff)" }} />
           </div>
           <div className="tc-name"><IcMoon size={16} /> 深空蓝 · 深色主题</div>
+        </div>
+        <div className={`theme-card ${theme === "black" ? "on" : ""}`} onClick={() => update("theme", "black")}>
+          <div className="tc-preview" style={{ background: "#0d0e15" }}>
+            <div style={{ position: "absolute", inset: "12px auto auto 12px", width: 90, height: 28, borderRadius: 8, background: "#1a1c26", border: "1px solid rgba(255,255,255,.08)" }} />
+            <div style={{ position: "absolute", inset: "50px auto auto 34px", width: 110, height: 30, borderRadius: 8, background: "linear-gradient(135deg,#ff7a45,#ffc857)" }} />
+          </div>
+          <div className="tc-name"><IcBlack size={16} /> 深邃黑 · 暖橙强调</div>
         </div>
       </div>
       <h3 style={{ marginTop: 24 }}>性能</h3>

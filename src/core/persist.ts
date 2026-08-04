@@ -19,19 +19,28 @@ async function getStore(file: string): Promise<LazyStoreT> {
   return s;
 }
 
-export async function loadJSON<T>(file: string, key: string): Promise<T | null> {
+/** 读取结果：区分「文件不存在/没存过」（ok + null）与「读取失败」（!ok）——
+ *  后者绝不能当成首次启动处理，否则随后的一次保存会把可能还能抢救的数据整份覆盖 */
+export type LoadResult<T> = { ok: true; value: T | null } | { ok: false; reason: string };
+
+export async function loadJSONChecked<T>(file: string, key: string): Promise<LoadResult<T>> {
   try {
     if (isTauri) {
       const s = await getStore(file);
       const v = await s.get<T>(key);
-      return (v as T) ?? null;
+      return { ok: true, value: (v as T) ?? null };
     }
     const raw = localStorage.getItem(`momo:${file}:${key}`);
-    return raw ? (JSON.parse(raw) as T) : null;
+    return { ok: true, value: raw ? (JSON.parse(raw) as T) : null };
   } catch (e) {
     console.warn("[persist] load failed", file, key, e);
-    return null;
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
+}
+
+export async function loadJSON<T>(file: string, key: string): Promise<T | null> {
+  const r = await loadJSONChecked<T>(file, key);
+  return r.ok ? r.value : null;
 }
 
 export async function saveJSON(file: string, key: string, value: unknown): Promise<void> {

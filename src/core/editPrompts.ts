@@ -2,7 +2,7 @@
  * 图片编辑类节点的指令构造 — 中转站模型能力参差，全部走「参考图 + 中文指令」的通用通道；
  * GPT Image 家族另有真 mask 通道（runner 里按家族分流）。
  */
-import type { EnhanceData, MattingBg, OutpaintPads } from "./types";
+import type { EnhanceParams, OutpaintPads } from "./types";
 
 /** 指令式局部重绘（Banana/通用家族）：图1 原图 + 图2 红色标注图 */
 export function inpaintInstruct(userPrompt: string): string {
@@ -53,32 +53,8 @@ export function outpaintMaskPrompt(userPrompt: string): string {
     .join("\n");
 }
 
-export const MATTING_BG_LABEL: Record<MattingBg, string> = {
-  transparent: "透明底",
-  white: "纯白底",
-  green: "纯绿幕",
-  black: "纯黑底",
-};
-
-/** 抠图指令：GPT 家族配合 background=transparent；其余家族输出纯色底 */
-export function mattingInstruct(subject: string, bg: MattingBg, transparentOk: boolean): string {
-  const who = subject.trim() || "画面中最主要的主体";
-  const bgText = bg === "transparent" && transparentOk
-    ? "背景完全透明（输出带 alpha 通道的 PNG）"
-    : bg === "green"
-      ? "背景为纯绿色（#00B140 绿幕）"
-      : bg === "black"
-        ? "背景为纯黑色"
-        : "背景为纯白色";
-  return [
-    `把${who}从画面中完整抠出：主体的形状、颜色、细节、边缘（含毛发/半透明部分）保持与原图一致，不要重绘或美化主体。`,
-    `去除全部原背景，${bgText}。`,
-    "输出只含主体与该背景的图片。",
-  ].join("\n");
-}
-
 /** 高清增强指令 */
-export function enhanceInstruct(focus: EnhanceData["focus"]): string {
+export function enhanceInstruct(focus: EnhanceParams["focus"]): string {
   const extra =
     focus === "face"
       ? "重点修复人物面部：五官清晰自然、皮肤质感真实，不改变人物长相与表情。"

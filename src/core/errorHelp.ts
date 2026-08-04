@@ -2,7 +2,9 @@
  * 报错帮助 — 常见英文/网络错误翻译成中文提示 + AI 报错分析（报错中心用）
  */
 import { useSettings } from "./stores/settingsStore";
+import { validateProto } from "./services/protoSpec";
 import type { CustomProtocol } from "./types";
+import { parseJsonLoose } from "./utils";
 
 /** 常见英文/网络报错 → 中文解释；匹配不到返回 null */
 export function humanizeError(msg: string): string | null {
@@ -26,6 +28,35 @@ export function humanizeError(msg: string): string | null {
   return null;
 }
 
+/** 状态码是否可重试（429 限流 / 5xx 服务端错误）。用于幂等请求与生成类重试判定 */
+export function isRetryableStatus(s: number): boolean {
+  return s === 429 || (s >= 500 && s <= 599);
+}
+
+/**
+ * 错误消息是否属于「瞬时错误」可重试（网络/超时/429/5xx）。
+ * 三分类，默认 false（未知错误不盲目重试，避免无谓重试浪费额度/扣费）：
+ *  ① 计费问题（余额/欠费/quota）→ 重试无益，直接换备用或失败
+ *  ② 鉴权/路径/证书/非 JSON（401/403/404/SSL）→ 重试也没用
+ *  ③ 网络/超时/限流/5xx → 才重试
+ */
+export function isTransientError(msg: string): boolean {
+  if (/余额|欠费|insufficient[ _-]?quota|quota[ _-]?exhaust|额度/.test(msg)) return false;
+  if (
+    /\b401\b|unauthorized|invalid[ _-]?(api[ _-]?key|token)|\b403\b|forbidden|permission denied|\b404\b|not found|certificate|ssl|tls|not valid json|响应不是 JSON|协议不存在|的用途是/.test(
+      msg,
+    )
+  )
+    return false;
+  if (
+    /connection (refused|reset|closed)|failed to connect|ECONNREFUSED|error sending request|timed? ?out|ETIMEDOUT|\b429\b|rate.?limit|\b5\d{2}\b|internal server error|bad gateway|service unavailable|gateway timeout/i.test(
+      msg,
+    )
+  )
+    return true;
+  return false;
+}
+
 export const ERR_ANALYZE_SYSTEM = `你是 momo 智能画布（调用各类 AI 生成服务的桌面应用）的排障专家。用户给你一条应用内的报错，以及当前配置上下文（服务商 Base URL 列表、自定义协议 JSON，均不含密钥）。
 请用中文精炼输出：
 1.【原因】一句话点明最可能的原因
@@ -43,18 +74,27 @@ export function buildErrContext(): string {
   return JSON.stringify({ 服务商: providers, 自定义协议: s.customProtocols }, null, 1).slice(0, 6000);
 }
 
-/** 从 AI 分析结果里提取「修正后的协议 JSON」（没有或不完整返回 null） */
+/**
+ * 从 AI 分析结果里提取「修正后的协议 JSON」（没有、不合法、或对不上已存协议时返回 null）。
+ * 用途（role）一律以本机已存的那份为准：模型回显得再对，也不能让一键修复把
+ * 音频协议改成图片协议——那会让它从音频槽位里直接消失，还很难反推是哪一步干的。
+ */
 export function extractProtocolFix(text: string): CustomProtocol | null {
   const m = text.match(/```json\s*([\s\S]*?)```/);
   if (!m) return null;
+  const raw = parseJsonLoose<CustomProtocol>(m[1]);
+  if (!raw?.id) return null;
+  // 必须对应一条真实存在的协议，否则模型编个 id 就会凭空插入一条没人用的协议
+  const exist = useSettings.getState().settings.customProtocols.find((x) => x.id === raw.id);
+  if (!exist) return null;
   try {
-    const p = JSON.parse(m[1]) as CustomProtocol;
-    if (p?.id && p?.name && p?.submit?.url && p?.resultPath) {
-      p.role = p.role === "video" ? "video" : "image";
-      return p;
-    }
+    const { proto } = validateProto(raw);
+    proto.id = exist.id;
+    proto.name = exist.name;
+    proto.role = exist.role;
+    delete proto.verifiedAt; // 没跑过真实测试，不能带着「已校准」章落地
+    return proto;
   } catch {
-    /* JSON 不合法就当没有 */
+    return null;
   }
-  return null;
 }

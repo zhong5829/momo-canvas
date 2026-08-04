@@ -148,6 +148,35 @@ const QWEN_PRESETS: SizePreset[] = [
   { ratio: "16:9", w: 1664, h: 928 },
 ];
 
+/** 各家族允许的最长边（放大清晰度档时的硬上限，超了服务端会 400 或静默缩回） */
+const FAMILY_EDGE_CAP: Record<ImageFamily, number> = {
+  banana: 4096,
+  gpt: 3840,
+  seedream: 4096, // Seedream 4.0 直出 4K
+  flux: 2048,
+  qwen: 1664, // 万相官方推荐档上限
+  kolors: 2048,
+  generic: 4096,
+};
+
+/**
+ * 家族预设尺寸 × 清晰度档 → 实际宽高。
+ * 以前非 banana/gpt 家族拿到 resolution 直接丢掉（创作助手明说 4K 也只出 1K），
+ * 这里按像素面积把预设放大到目标档，同时守住各家族的最长边上限。
+ */
+export function scalePresetToTier(p: SizePreset, tier: string | undefined, f: ImageFamily): { w: number; h: number } {
+  const target = TIER_AREA[tier ?? "1K"];
+  const area = p.w * p.h;
+  // 只放大不缩小：seedream 预设本来就是 2K 级，选 1K/2K 时保持官方推荐值
+  if (!target || target <= area) return { w: p.w, h: p.h };
+  let k = Math.sqrt(target / area);
+  const cap = FAMILY_EDGE_CAP[f];
+  const long = Math.max(p.w, p.h) * k;
+  if (long > cap) k = cap / Math.max(p.w, p.h);
+  const to16 = (v: number) => Math.max(256, Math.round(v / 16) * 16);
+  return { w: to16(p.w * k), h: to16(p.h * k) };
+}
+
 /** 该家族在面板上展示的预设尺寸组（banana/gpt 走各自专用面板，不用这个） */
 export function familyPresets(f: ImageFamily): SizePreset[] {
   switch (f) {
@@ -175,4 +204,53 @@ export function familyMaxRef(f: ImageFamily): number {
   if (f === "gpt") return 16;
   if (f === "seedream") return 10;
   return 8;
+}
+
+/* ================= 对话模型能力（视觉输入 / 自带联网搜索） ================= */
+export type ChatCaps = {
+  /** 支持图片输入（多模态） */
+  vision: boolean;
+  /** 模型自带联网搜索（请求里带 tools 即可，无需外部搜索接口） */
+  builtinSearch: boolean;
+  /** 能力依据说明（UI 提示用） */
+  note?: string;
+};
+
+/** 按模型名/协议推断对话模型能力——名字会不断出新，规则按家族特征匹配，宁可漏判不误判 */
+export function chatCaps(card: Pick<ModelCard, "protocol" | "model">): ChatCaps {
+  const m = card.model.toLowerCase();
+  // Claude / Gemini 全系多模态：协议或名字命中都算（中转站常以 openai 协议提供 claude/gemini）
+  const vision =
+    card.protocol === "anthropic" ||
+    card.protocol === "gemini" ||
+    /(claude|gemini)/.test(m) ||
+    // 明确带视觉的系列 / 视觉后缀（vl、-v、vision、omni）；纯推理模型（o1/o3）不算
+    /(gpt-4o|gpt-4\.1|gpt-4v|gpt-5|kimi-latest|kimi-thinking|moonshot-v1-.*vision|minimax-(vl|m\d)|glm-4\.\dv|glm-4v|glm-5|qwen.*(vl|omni)|doubao.*(vision|seed-1|1\.5-vision)|step-1o|step-1v|hunyuan-vision|internvl|minicpm-v|llava|deepseek-vl|pixtral|llama.*vision|grok.*vision)/.test(
+      m,
+    );
+  // 「自带联网」以能否真的构造出 tools 请求体为准，判定与发送不再各说各话
+  const builtinSearch = !!builtinSearchTools(card.model);
+  const notes: string[] = [];
+  if (vision) notes.push("视觉");
+  if (builtinSearch) {
+    if (/glm/.test(m)) notes.push("GLM 自带联网");
+    else if (/minimax/.test(m)) notes.push("MiniMax 自带联网");
+    else if (/hunyuan/.test(m)) notes.push("混元自带联网");
+    else notes.push("自带联网");
+  }
+  return { vision, builtinSearch, note: notes.join(" · ") || undefined };
+}
+
+/**
+ * OpenAI 兼容协议下，各家族「自带联网」的 tools 请求体（中转站不支持时由调用方降级）。
+ * 只收录「一次请求内就能出结果」的形态；Kimi/Moonshot 的 $web_search 属于 builtin_function，
+ * 需要客户端把 tool_calls 原样回传再续一轮，本项目的流式实现不做工具回传，
+ * 因此不在这里登记（Kimi 走内置搜索接口，效果一致且不会中途失败）。
+ */
+export function builtinSearchTools(model: string): unknown[] | undefined {
+  const m = model.toLowerCase();
+  if (m.includes("glm")) return [{ type: "web_search", web_search: { enable: true, search_result: true } }];
+  if (m.includes("minimax")) return [{ type: "web_search" }];
+  if (m.includes("hunyuan")) return [{ type: "web_search", web_search: { enable: true } }];
+  return undefined;
 }

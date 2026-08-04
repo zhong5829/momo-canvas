@@ -1,13 +1,13 @@
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { NodeShell, PortImageIn, PortOut, PortTextIn, PortVideoIn } from "../NodeShell";
-import { IcDice, IcDownload, IcFlow, IcGear, IcLoading, IcPlay } from "../../../ui/icons";
+import { NodeShell, PortIn, PortOut } from "../NodeShell";
+import { EditSurface } from "../EditSurface";
+import { IcDice, IcDownload, IcFlow, IcLoading } from "../../../ui/icons";
 import { Switch } from "../../../ui/kit";
 import { useBoard } from "../../../core/stores/boardStore";
 import { useComfy } from "../../../core/stores/comfyStore";
 import { useSettings } from "../../../core/stores/settingsStore";
 import { toast, useUi } from "../../../core/stores/uiStore";
-import { runFlow } from "../../../core/runner";
 import { saveImageAs } from "../../../core/services/imageSaver";
 import { errMsg } from "../../../core/utils";
 import { Thumb } from "../../../ui/Thumb";
@@ -18,13 +18,10 @@ export const ComfyNode = memo(function ComfyNode({ id, data, selected }: NodePro
   const d = data as ComfyData;
   const upd = useBoard((s) => s.updateData);
   const templates = useComfy((s) => s.templates);
-  const setTemplateMgr = useUi((s) => s.setTemplateMgr);
   const setLightbox = useUi((s) => s.setLightbox);
   const running = d.status === "running";
   const tpl = templates.find((t) => t.id === d.templateId);
   const main = d.results?.[d.picked ?? 0];
-
-  const setParam = (key: string, v: string | number) => upd(id, { params: { ...d.params, [key]: v } });
 
   const save = async () => {
     if (!main) return;
@@ -45,6 +42,7 @@ export const ComfyNode = memo(function ComfyNode({ id, data, selected }: NodePro
       error={d.error}
       selected={selected}
       width={330}
+      hideUpstream
       headExtra={
         main ? (
           <span className="acts nodrag" style={{ opacity: 1 }}>
@@ -56,41 +54,17 @@ export const ComfyNode = memo(function ComfyNode({ id, data, selected }: NodePro
       }
     >
       <div className="mnode-body">
-        <div style={{ display: "flex", gap: 7 }}>
-          <select
-            className="select nodrag"
-            style={{ flex: 1, minHeight: 36 }}
-            value={d.templateId ?? ""}
-            onChange={(e) => upd(id, { templateId: e.target.value || undefined, params: {} })}
-          >
-            <option value="">选择工作流模板…</option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-          <button className="icon-btn nodrag" title="管理模板（导入 / 编辑参数）" onClick={() => setTemplateMgr(true)}>
-            <IcGear size={18} />
-          </button>
-        </div>
-
         {tpl ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {tpl.params.map((p) => (
-              <ParamField key={p.key} p={p} value={d.params?.[p.key]} onChange={(v) => setParam(p.key, v as never)} />
-            ))}
+          <div className="gen-sum" title="模板与参数在底部设置面板调整（选中本节点即弹出）">
+            {tpl.name}
+            {tpl.params.length ? ` · ${Object.keys(d.params ?? {}).length}/${tpl.params.length} 参数已调` : ""}
           </div>
         ) : (
           <div className="hint" style={{ fontSize: 12.5, color: "var(--text-3)", lineHeight: 1.6 }}>
-            还没有模板？点右上齿轮导入 ComfyUI 工作流（API 格式 JSON），并勾选要暴露的参数。
+            选中本节点，在底部设置面板选择工作流模板并调整参数
           </div>
         )}
 
-        <button className="btn primary nodrag" disabled={running || !tpl} onClick={() => void runFlow(id)}>
-          {running ? <IcLoading size={17} /> : <IcPlay size={16} />}
-          {running ? "执行中…" : "运行工作流"}
-        </button>
         {running && d.progress ? (
           <div className="progress-line">
             <IcLoading size={14} />
@@ -105,7 +79,9 @@ export const ComfyNode = memo(function ComfyNode({ id, data, selected }: NodePro
         ) : null}
         {main && !running ? (
           <>
-            <Thumb className="img-main nodrag" src={main} alt="" res onClick={() => setLightbox(main)} />
+            <EditSurface id={id} src={main}>
+              <Thumb className="img-main" src={main} alt="" res onClick={() => setLightbox(main)} />
+            </EditSurface>
             {d.results.length > 1 ? (
               <div className="thumbs nodrag">
                 {d.results.map((s, i) => (
@@ -122,7 +98,7 @@ export const ComfyNode = memo(function ComfyNode({ id, data, selected }: NodePro
           </>
         ) : null}
         {d.videoResults?.length && !running ? (
-          <VideoThumb className="img-main nodrag" src={d.videoResults[0]} />
+          <VideoThumb className="img-main" src={d.videoResults[0]} />
         ) : null}
         {d.textOut && !running ? (
           <div className="comfy-textout nodrag">
@@ -136,15 +112,13 @@ export const ComfyNode = memo(function ComfyNode({ id, data, selected }: NodePro
           </div>
         ) : null}
       </div>
-      <PortTextIn />
-      <PortImageIn />
-      <PortVideoIn top={90} />
+      <PortIn />
       <PortOut kind={d.videoResults?.length && !d.results?.length ? "video" : "image"} />
     </NodeShell>
   );
 });
 
-function ParamField({
+export function ParamField({
   p,
   value,
   onChange,

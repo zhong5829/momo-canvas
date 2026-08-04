@@ -26,3 +26,16 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Tauri 打包产物收集目录（由 scripts/collect-app.mjs 同步，勿入库）
+APP/
+
+# 本地超分模型权重（大文件不入库）；第三方声明保留进仓库与发行包
+models/*
+!models/THIRD_PARTY_MODELS.txt
+
+# 本机图片质量黄金样本：引用 AppData 用户资产，不进入仓库/发行包
+quality-baseline/manifest.json
+quality-baseline/report.html
+quality-baseline/report.json
+quality-baseline/report_assets/

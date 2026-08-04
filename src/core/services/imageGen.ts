@@ -3,11 +3,12 @@
  *  - openai  文生图 /images/generations；带参考图 /images/edits（multipart）
  *  - gemini  generateContent（nano banana 系列，支持参考图）
  */
-import type { ModelCard } from "../types";
+import type { CustomProtocol, ModelCard } from "../types";
 import { xfetch, trimBase, readErrorBody } from "./http";
-import { extractResultStrings, resolveCustomProto, runCustomFlow } from "./customProto";
+import { absolutize, extractResultStrings, resolveCustomProto, runCustomFlow, render } from "./customProto";
 import { runWithSelfHeal } from "./protoSelfHeal";
 import { dataUrlToBlob, toDataUrl } from "../utils";
+import { gptSize } from "../modelMeta";
 
 export type ImageGenReq = {
   prompt: string;
@@ -24,6 +25,12 @@ export type ImageGenReq = {
   mask?: string;
   /** GPT Image：背景（transparent = 输出透明 PNG） */
   background?: string;
+  /** 随机种子：锁定后可复现（仅支持的家族/中转站生效，不支持的会被忽略） */
+  seed?: number;
+  /** 负向提示词：不想出现的内容 */
+  negative?: string;
+  /** 停止信号（节点上的停止按钮）：请求与轮询都会随之中断 */
+  signal?: AbortSignal;
 };
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -63,7 +70,7 @@ async function normalizeResults(j: any): Promise<string[]> {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** 解析响应；没直接给图但给了异步任务信息（status_url）时自动轮询到出图 */
-async function parseImageResponse(resp: Response, ctx: { base: string; headers: Record<string, string> }): Promise<string[]> {
+async function parseImageResponse(resp: Response, ctx: { base: string; headers: Record<string, string>; signal?: AbortSignal }): Promise<string[]> {
   const j = await resp.json();
   const imgs = await normalizeResults(j);
   if (imgs.length) return imgs;
@@ -77,10 +84,11 @@ async function parseImageResponse(resp: Response, ctx: { base: string; headers: 
     const deadline = Date.now() + 10 * 60_000;
     for (;;) {
       await sleep(3000);
+      if (ctx.signal?.aborted) throw new Error("已取消");
       if (Date.now() > deadline) throw new Error(`异步生图任务轮询超时（10 分钟），任务 ID：${taskId ?? "未知"}`);
       let pj: unknown;
       try {
-        const r = await xfetch(url, { headers: ctx.headers });
+        const r = await xfetch(url, { headers: ctx.headers, signal: ctx.signal });
         if (!r.ok) continue;
         pj = await r.json();
       } catch {
@@ -114,7 +122,14 @@ async function parseImageResponse(resp: Response, ctx: { base: string; headers: 
 async function genOpenAI(card: ModelCard, req: ImageGenReq): Promise<string[]> {
   const base = trimBase(card.baseUrl);
   const headers: Record<string, string> = card.apiKey ? { Authorization: `Bearer ${card.apiKey}` } : {};
-  const size = req.size || card.size || "1024x1024";
+  // 中转站常以 OpenAI 兼容协议提供 Nano Banana/Gemini 生图：此时上游只给了 aspect/resolution
+  // （这两个字段只有原生 gemini 协议会读），必须在这里折算成 WxH，否则一律回落 1024x1024 出方图
+  let size = req.size || card.size;
+  if (!size && req.aspect && req.aspect !== "auto") {
+    const s = gptSize(req.aspect, req.resolution ?? "1K");
+    if (s) size = `${s.w}x${s.h}`;
+  }
+  size = size || "1024x1024";
   const n = req.n ?? 1;
 
   if (req.refImages?.length) {
@@ -126,6 +141,8 @@ async function genOpenAI(card: ModelCard, req: ImageGenReq): Promise<string[]> {
     if (size !== "auto") fd.append("size", size);
     if (req.quality && req.quality !== "auto") fd.append("quality", req.quality);
     if (req.background) fd.append("background", req.background);
+    if (req.seed !== undefined && Number.isFinite(req.seed)) fd.append("seed", String(Math.round(req.seed)));
+    if (req.negative) fd.append("negative_prompt", req.negative);
     if (req.mask) fd.append("mask", dataUrlToBlob(req.mask), "mask.png");
     refs.forEach((img, i) => {
       fd.append(refs.length > 1 ? "image[]" : "image", dataUrlToBlob(img), `ref_${i}.png`);
@@ -134,19 +151,24 @@ async function genOpenAI(card: ModelCard, req: ImageGenReq): Promise<string[]> {
     console.info(
       `[imageGen] POST ${base}/images/edits · model=${card.model} · 参考图=${refs.length} 张 · mask=${req.mask ? "已附带" : "无"} · size=${size} · n=${n}`,
     );
-    const resp = await xfetch(`${base}/images/edits`, { method: "POST", headers, body: fd });
+    const resp = await xfetch(`${base}/images/edits`, { method: "POST", headers, body: fd, signal: req.signal });
     if (!resp.ok) throw new Error(`图生图请求失败 ${resp.status}: ${await readErrorBody(resp)}`);
-    return parseImageResponse(resp, { base, headers });
+    return parseImageResponse(resp, { base, headers, signal: req.signal });
   }
 
   const body: Record<string, unknown> = { model: card.model, prompt: req.prompt, n };
   if (size !== "auto") body.size = size;
   if (req.quality && req.quality !== "auto") body.quality = req.quality;
   if (req.background) body.background = req.background;
+  // 随机种子 / 负向提示词：seedream/flux/qwen/万相 等家族与多数中转站支持；
+  // 不支持的会忽略未知字段，发了也无害
+  if (req.seed !== undefined && Number.isFinite(req.seed)) body.seed = Math.round(req.seed);
+  if (req.negative) body.negative_prompt = req.negative;
   let resp = await xfetch(`${base}/images/generations`, {
     method: "POST",
     headers: { ...headers, "Content-Type": "application/json" },
     body: JSON.stringify({ ...body, response_format: "b64_json" }),
+    signal: req.signal,
   });
   if (!resp.ok) {
     // 部分供应商不接受 response_format，去掉重试一次
@@ -154,10 +176,11 @@ async function genOpenAI(card: ModelCard, req: ImageGenReq): Promise<string[]> {
       method: "POST",
       headers: { ...headers, "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: req.signal,
     });
   }
   if (!resp.ok) throw new Error(`生图请求失败 ${resp.status}: ${await readErrorBody(resp)}`);
-  return parseImageResponse(resp, { base, headers });
+  return parseImageResponse(resp, { base, headers, signal: req.signal });
 }
 
 async function genGemini(card: ModelCard, req: ImageGenReq): Promise<string[]> {
@@ -185,6 +208,7 @@ async function genGemini(card: ModelCard, req: ImageGenReq): Promise<string[]> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: req.signal,
     });
     if (!resp.ok) throw new Error(`Gemini 生图失败 ${resp.status}: ${await readErrorBody(resp)}`);
     const j = await resp.json();
@@ -215,38 +239,85 @@ async function genCustom(card: ModelCard, req: ImageGenReq): Promise<string[]> {
       `自定义协议「${proto.name}」的模板不含 {{mask}} 蒙版占位符，真蒙版通道走不通。` +
         `请把节点上的「通道」切成「指令式」，或到「设置 → 协议」为模板加上 {{mask}} 字段`,
     );
+  /** 最终响应 → 图片 dataURL 列表（提交/轮询之后的纯解析步骤，自愈重解析时复用，避免重复扣费） */
+  const parseImages = async (p: CustomProtocol, final: unknown): Promise<string[]> => {
+    const base = trimBase(card.baseUrl);
+    // 相对地址（/files/xx.png）与协议相对地址（//cdn.xx/xx.png）先补成绝对地址，
+    // 否则明明取到了结果却被逐条丢弃，报错还会把排查方向引到"resultPath 写错了"
+    const raw = extractResultStrings(final, p.resultPath, "image").map((s) => absolutize(s, base));
+    const out: string[] = [];
+    const skipped: string[] = [];
+    for (const r of raw) {
+      if (r.startsWith("http")) out.push(await toDataUrl(r, (u, i) => xfetch(u as string, i), "image"));
+      else if (r.startsWith("data:image")) out.push(r);
+      else if (r.length > 200) out.push(`data:image/png;base64,${r}`);
+      else skipped.push(r.slice(0, 60));
+    }
+    if (!out.length && skipped.length)
+      throw new Error(`按路径「${p.resultPath}」取到 ${skipped.length} 条内容，但都不像可用的图片地址：${skipped.join(" / ")}`);
+    return out;
+  };
+
   // 自愈闭环：运行失败且像协议配置问题时，AI 依据执行现场自动修协议并重试一次
-  return runWithSelfHeal(proto, "生成图像", async (p, trace) => {
+  return runWithSelfHeal(proto, "生成图像", async (p, ctx) => {
+    const trace = ctx.trace;
     const vars: Record<string, string> = {
       baseUrl: trimBase(card.baseUrl),
       apiKey: card.apiKey,
       model: card.model,
-      prompt: req.prompt.replace(/"/g, '\\"').replace(/\n/g, "\\n"),
+      // 完整 JSON 转义：处理 \r \t \ 控制字符等（手动 replace 只转义 " 和 \n 会漏，破坏请求体 JSON）
+      prompt: JSON.stringify(req.prompt).slice(1, -1),
       // 图生图的 auto 保持 auto（跟随原图分辨率，重绘/扩图需要）；文生图才默认 1024x1024
-      size: req.size && req.size !== "auto" ? req.size : req.refImages?.length ? "auto" : "1024x1024",
+      // 只给了 aspect 时（Nano Banana 家族）先折算成 WxH，避免自定义协议拿不到尺寸
+      size: (() => {
+        if (req.size && req.size !== "auto") return req.size;
+        if (req.aspect && req.aspect !== "auto") {
+          const s = gptSize(req.aspect, req.resolution ?? "1K");
+          if (s) return `${s.w}x${s.h}`;
+        }
+        return req.refImages?.length ? "auto" : "1024x1024";
+      })(),
       n: String(req.n ?? 1),
       taskId: "",
+      // 画幅相关占位符：{{aspect}} 如 16:9 · {{resolution}} 1K/2K/4K · {{quality}} auto/high/medium/low
+      aspect: req.aspect && req.aspect !== "auto" ? req.aspect : "",
+      resolution: req.resolution ?? "",
+      quality: req.quality && req.quality !== "auto" ? req.quality : "",
       // 图片占位符：{{image}} 首图 dataURL · {{image2}} 第二图 · {{images}} 全部参考图的 JSON 数组字面量（不要加引号）
       image: req.refImages?.[0] ?? "",
       image2: req.refImages?.[1] ?? "",
       images: JSON.stringify(req.refImages ?? []),
       // {{mask}} 蒙版 PNG dataURL（局部重绘/扩图的真蒙版通道）
       mask: req.mask ?? "",
+      // 随机种子 / 负向提示词（仅模板里写了 {{seed}} / {{negative}} 的协议才发出去）
+      seed: req.seed !== undefined && Number.isFinite(req.seed) ? String(Math.round(req.seed)) : "",
+      negative: JSON.stringify(req.negative ?? "").slice(1, -1),
     };
-    const final = await runCustomFlow(p, vars, undefined, trace);
-    const raw = extractResultStrings(final, p.resultPath, "image");
-    const out: string[] = [];
-    for (const r of raw) {
-      if (r.startsWith("http")) out.push(await toDataUrl(r, (u, i) => xfetch(u as string, i)));
-      else if (r.startsWith("data:image")) out.push(r);
-      else if (r.length > 200) out.push(`data:image/png;base64,${r}`);
-    }
+    // 排查中转站请求体兼容性：F12 控制台可见实际渲染后的请求体（body 前 300 字符，dataURL 在后段不显示）
+    console.info(
+      `[imageGen:custom] POST ${render(p.submit.url, vars)} · model=${card.model} · 参考图=${req.refImages?.length ?? 0} 张 · mask=${req.mask ? "已附带" : "无"} · body前300=${render(p.submit.body ?? "", vars).slice(0, 300)}`,
+    );
+    const final = await runCustomFlow(p, vars, undefined, trace, req.signal);
+    // 记下最终响应：万一只是 resultPath 写错，自愈可以直接从这份响应里救结果，不必重新生成
+    ctx.lastFinal = final;
+    const out = await parseImages(p, final);
     if (!out.length)
       throw new Error(
         `协议「${p.name}」未取到图片（路径 ${p.resultPath}）。响应：${JSON.stringify(final).slice(0, 250)}`,
       );
     return out;
-  });
+  },
+  undefined,
+  // 自愈重解析：只用修好的路径重读这次的响应，不重发生成请求
+  async (p, final) => {
+    try {
+      const out = await parseImages(p, final);
+      return out.length ? out : null;
+    } catch {
+      return null;
+    }
+  },
+  trimBase(card.baseUrl));
 }
 
 export async function generateImage(card: ModelCard, req: ImageGenReq): Promise<string[]> {

@@ -1,0 +1,17 @@
+MOMO Canvas 内置模型声明
+========================
+
+公开发行包仅内置 scripts/production-models.json 白名单中的模型。
+这些模型由 Philip Hofmann（Helaman）发布，采用 CC BY 4.0 许可：
+
+- 4xNomosWebPhoto ESRGAN
+- 4xNomosWebPhoto RealPLKSR
+- 4xNomosUni SPAN multijpg
+- 1xDeJPG RealPLKSR OTF 60
+
+许可全文：https://creativecommons.org/licenses/by/4.0/
+模型资料：https://openmodeldb.info/
+发行包使用 nesaorg 提供的 ONNX 转换版本，并在应用中保留模型名、架构与许可标识。
+
+UltraSharp V2 / UltraSharp V2 Lite 采用 CC BY-NC-SA 4.0，不进入公开商业发行包；
+仅当用户明确启用细节强度时按需下载使用。商用软件内置或分发前应另行取得许可。

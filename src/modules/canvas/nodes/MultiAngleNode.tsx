@@ -1,12 +1,13 @@
 /**
- * 多角度节点 — 换机位重拍上游图片：预设视角 / 球面拖机位 / 水平环绕 / 垂直俯仰 / 景别
+ * 多角度节点 — 换机位重拍上游图片：大球拖机位（景别推拉实时预演）/ 预设视角 / 水平环绕 / 垂直俯仰 / 景别
  */
 import { memo, useMemo } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { NodeShell, OutModeToggle, PortImageIn, PortOut, PortTextIn } from "../NodeShell";
+import { NodeShell, OutModeToggle, PortIn, PortOut } from "../NodeShell";
+import { EditSurface } from "../EditSurface";
 import { IcCopy, IcLoading, IcOrbit, IcRefresh } from "../../../ui/icons";
 import { ModelPicker } from "../../../ui/ModelPicker";
-import { SphereGizmo } from "../../../ui/SphereGizmo";
+import { SpherePad } from "../../../ui/SpherePad";
 import { useBoard } from "../../../core/stores/boardStore";
 import { toast, useUi } from "../../../core/stores/uiStore";
 import { collectUpstream, runFlow } from "../../../core/runner";
@@ -60,69 +61,68 @@ export const MultiAngleNode = memo(function MultiAngleNode({ id, data, selected 
       }
     >
       <div className="mnode-body">
-        <div className="chips nodrag" style={{ maxHeight: "none" }}>
+        <div className="sp-stage nodrag" title="点击球面直接定位机位；按住拖动环绕（绕到背面 = 拍背面）；双击复位正面">
+          <SpherePad
+            mode="camera"
+            az={d.yaw}
+            el={d.pitch}
+            image={upImage}
+            shot={d.shot}
+            onChange={(az, el) => upd(id, { yaw: az, pitch: Math.max(-60, Math.min(60, el)), preset: "custom" })}
+          />
+        </div>
+        <div className="chips" style={{ maxHeight: "none" }}>
           {ANGLE_PRESETS.map((p) => (
             <button
               key={p.value}
               className={`chip ${d.preset === p.value ? "on" : ""}`}
-              title={p.prompt || "用下方球面/滑杆自定义机位"}
+              title={p.prompt || "用上方球面/下方滑杆自定义机位"}
               onClick={() => upd(id, { preset: p.value })}
             >
               {p.label}
             </button>
           ))}
         </div>
-        <div className="gizmo-row nodrag">
-          <SphereGizmo
-            az={d.yaw}
-            el={d.pitch}
-            image={upImage}
-            mode="camera"
-            onChange={(az, el) => upd(id, { yaw: az, pitch: Math.max(-60, Math.min(60, el)), preset: "custom" })}
+        <div className="slider-row" title="围绕主体水平环绕机位：0° 原机位，±180° 背面">
+          <span>水平环绕</span>
+          <input
+            type="range"
+            className="range nodrag"
+            min={-180}
+            max={180}
+            step={5}
+            value={d.yaw}
+            onChange={(e) => upd(id, { yaw: +e.target.value, preset: "custom" })}
           />
-          <div className="gizmo-side">
-            <div className="slider-row" title="围绕主体水平环绕机位：0° 原机位，±180° 背面">
-              <span>水平环绕</span>
-              <input
-                type="range"
-                className="range nodrag"
-                min={-180}
-                max={180}
-                step={5}
-                value={d.yaw}
-                onChange={(e) => upd(id, { yaw: +e.target.value, preset: "custom" })}
-              />
-              <b>{d.yaw}°</b>
-            </div>
-            <div className="slider-row" title="正值俯拍（相机升高），负值仰拍（相机降低）">
-              <span>垂直俯仰</span>
-              <input
-                type="range"
-                className="range nodrag"
-                min={-60}
-                max={60}
-                step={5}
-                value={d.pitch}
-                onChange={(e) => upd(id, { pitch: +e.target.value, preset: "custom" })}
-              />
-              <b>{d.pitch}°</b>
-            </div>
-            <div className="slider-row" title="取景远近：特写 → 远景">
-              <span>景别缩放</span>
-              <input
-                type="range"
-                className="range nodrag"
-                min={0}
-                max={4}
-                step={1}
-                value={d.shot}
-                onChange={(e) => upd(id, { shot: +e.target.value, preset: "custom" })}
-              />
-              <b>{SHOT_LABELS[d.shot] ?? "中景"}</b>
-            </div>
-          </div>
+          <b>{d.yaw}°</b>
         </div>
-        <div className="gen-sum nodrag">
+        <div className="slider-row" title="正值俯拍（相机升高），负值仰拍（相机降低）">
+          <span>垂直俯仰</span>
+          <input
+            type="range"
+            className="range nodrag"
+            min={-60}
+            max={60}
+            step={5}
+            value={d.pitch}
+            onChange={(e) => upd(id, { pitch: +e.target.value, preset: "custom" })}
+          />
+          <b>{d.pitch}°</b>
+        </div>
+        <div className="slider-row" title="取景远近：特写 → 远景">
+          <span>景别缩放</span>
+          <input
+            type="range"
+            className="range nodrag"
+            min={0}
+            max={4}
+            step={1}
+            value={d.shot}
+            onChange={(e) => upd(id, { shot: +e.target.value, preset: "custom" })}
+          />
+          <b>{SHOT_LABELS[d.shot] ?? "中景"}</b>
+        </div>
+        <div className="gen-sum">
           <IcOrbit size={13} />
           <span>
             {d.preset !== "custom" && presetMeta
@@ -142,7 +142,9 @@ export const MultiAngleNode = memo(function MultiAngleNode({ id, data, selected 
                 <span>正在移动机位重拍…</span>
               </div>
             ) : main ? (
-              <Thumb className="img-main nodrag" src={main} alt="" res onClick={() => setLightbox(main, upImage)} />
+              <EditSurface id={id} src={main}>
+                <Thumb className="img-main" src={main} alt="" res onClick={() => setLightbox(main, upImage)} />
+              </EditSurface>
             ) : null}
           </>
         ) : (
@@ -157,8 +159,7 @@ export const MultiAngleNode = memo(function MultiAngleNode({ id, data, selected 
           </div>
         )}
       </div>
-      <PortTextIn />
-      <PortImageIn />
+      <PortIn />
       <PortOut kind={mode === "prompt" ? "text" : "image"} />
     </NodeShell>
   );

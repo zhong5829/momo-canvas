@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MOMO-Canvas",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "identifier": "site.jinpengi.momo",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -22,7 +22,7 @@
         "decorations": false,
         "shadow": true,
         "dragDropEnabled": false,
-        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-gpu-rasterization --enable-zero-copy"
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"
       }
     ],
     "security": {
@@ -37,6 +37,13 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "resources": {
+      "../models/sr/4xNomosWebPhoto_esrgan_fp32_opset17.onnx": "models/4xNomosWebPhoto_esrgan_fp32_opset17.onnx",
+      "../models/sr/4xNomosWebPhoto_RealPLKSR_fp32_opset17.onnx": "models/4xNomosWebPhoto_RealPLKSR_fp32_opset17.onnx",
+      "../models/sr/4xNomosUni_span_multijpg_fp32_opset17.onnx": "models/4xNomosUni_span_multijpg_fp32_opset17.onnx",
+      "../models/sr/1xDeJPG_realplksr_otf_60_fp32_opset17.onnx": "models/1xDeJPG_realplksr_otf_60_fp32_opset17.onnx",
+      "../models/THIRD_PARTY_MODELS.txt": "models/THIRD_PARTY_MODELS.txt"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
