@@ -60,6 +60,7 @@ type SettingsState = {
   upsertProvider: (p: ProviderCard) => void;
   removeProvider: (id: string) => void;
   setDefault: (role: ModelRole, id: string) => void;
+  reorderProviders: (from: number, to: number) => void;
   /** 从导出的 JSON 恢复整套配置 */
   importSettings: (raw: unknown) => void;
 };
@@ -243,6 +244,14 @@ export const useSettings = create<SettingsState>((set, get) => {
     setDefault: (role, id) => {
       const s = get().settings;
       commit({ ...s, models: { ...s.models, defaults: { ...s.models.defaults, [role]: id } } });
+    },
+    reorderProviders: (from, to) => {
+      const s = get().settings;
+      const providers = [...s.models.providers];
+      if (from < 0 || from >= providers.length || to < 0 || to >= providers.length || from === to) return;
+      const [moved] = providers.splice(from, 1);
+      providers.splice(to, 0, moved);
+      commit({ ...s, models: fixDefaults({ providers, defaults: s.models.defaults }) });
     },
   };
 });

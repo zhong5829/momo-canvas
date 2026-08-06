@@ -11,6 +11,7 @@
   animation: fadeIn 160ms ease;
 }
 .assetlib {
+  position: relative;
   width: min(1240px, 94vw);
   height: min(820px, 90vh);
   background: var(--panel-solid);
@@ -318,6 +319,171 @@ img.svg-bg {
   background: var(--accent);
   border-color: var(--accent);
   opacity: 1;
+}
+
+/* 多结果生成组：主卡后方露出两层错位卡边，和普通单资产形成明确区分。 */
+.a-group-stack {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 5px 5px 0;
+}
+.a-group-stack::before,
+.a-group-stack::after {
+  content: "";
+  position: absolute;
+  border-radius: var(--r-md);
+  border: 1px solid var(--panel-border);
+  background: var(--panel-solid);
+  pointer-events: none;
+}
+.a-group-stack::before {
+  inset: 4px 1px 1px 4px;
+  opacity: 0.78;
+}
+.a-group-stack::after {
+  inset: 7px -2px -2px 7px;
+  opacity: 0.48;
+}
+.a-group-card {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+}
+.a-group-count {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #fff;
+  background: color-mix(in srgb, var(--text-1) 72%, transparent);
+  backdrop-filter: blur(6px);
+  font-size: 11px;
+  font-weight: 800;
+  pointer-events: none;
+}
+
+/* 组卡聚焦展开：只压暗资产库本身，保留当前任务上下文，点灰区或 Esc 收起。 */
+.a-group-focus {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 34px;
+  background: color-mix(in srgb, var(--text-1) 42%, transparent);
+  backdrop-filter: grayscale(0.35) blur(3px);
+  animation: fadeIn 150ms ease;
+}
+.a-group-panel {
+  width: min(920px, 90%);
+  max-height: min(680px, 84%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-lg);
+  background: var(--panel-solid);
+  box-shadow: var(--panel-shadow);
+  animation: popIn 190ms var(--ease);
+}
+.a-group-panel > header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.a-group-panel > header > span {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  background: var(--grad-brand-soft);
+}
+.a-group-panel > header > div {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+.a-group-panel > header b {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.a-group-panel > header small {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.a-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(138px, 1fr));
+  grid-auto-rows: 180px;
+  gap: 12px;
+  padding: 16px;
+  overflow-y: auto;
+}
+.a-group-member {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  background: var(--input-bg);
+  text-align: left;
+  transition: transform var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.a-group-member:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+  box-shadow: var(--node-shadow);
+}
+.a-group-member .a-thumb {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+}
+.a-group-member .a-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.a-group-member-name {
+  padding: 8px 10px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.a-group-final {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--accent);
+  font-size: 10.5px;
+  font-weight: 800;
 }
 
 /* 批量操作条 */

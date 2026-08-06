@@ -16,6 +16,8 @@ export type CollectInput = {
   gen?: AssetGenMeta;
   /** 来自哪个画布生成节点（资产卡「定位到画布节点」用） */
   nodeId?: string;
+  /** 多结果生成的分组信息；groupSlot 相同会原位替换旧资产 */
+  group?: Pick<AssetItem, "groupId" | "groupLabel" | "groupKind" | "groupSlot" | "groupCover">;
 };
 
 type AssetState = {
@@ -101,10 +103,17 @@ export const useAssets = create<AssetState>((set, get) => {
           folderId,
           source: "canvas",
           gen: input.gen,
+          nodeId: input.nodeId,
+          ...input.group,
           createdAt: Date.now(),
         };
-        set((s) => ({ items: [item, ...s.items] }));
+        // 电商切片重生/重新拼接：同组同槽只保留最新版本，并清理被替换的磁盘文件。
+        const replaced = input.group?.groupId && input.group.groupSlot
+          ? get().items.find((i) => i.groupId === input.group!.groupId && i.groupSlot === input.group!.groupSlot)
+          : undefined;
+        set((s) => ({ items: [item, ...s.items.filter((i) => i.id !== replaced?.id)] }));
         persist();
+        if (replaced) void deleteAssetFile(replaced.path, replaced.thumb);
         return item;
       } catch (e) {
         console.warn("[assets] collect failed", e);

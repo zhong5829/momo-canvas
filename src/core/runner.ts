@@ -14,11 +14,13 @@ import { generateAudio } from "./services/audioGen";
 import { webSearch, searchContext } from "./services/webSearch";
 import { runComfyTemplate } from "./services/comfy";
 import { autoSaveImage } from "./services/imageSaver";
-import { familyMaxCount, gptSize, imageFamily, nearestAspect, parseRatio } from "./modelMeta";
+import { chatCaps, familyMaxCount, familyMaxRef, gptSize, imageFamily, nearestAspect, parseRatio } from "./modelMeta";
 import { videoFamily, videoMeta } from "./videoMeta";
 import { imageDims } from "./imageInfo";
 import { buildAnglePrompt, buildRelightPrompt } from "./cameraLight";
 import { charAnalysisSystem, DELIV_LABEL, DELIV_VARIATIONS } from "./charPresets";
+import { ecomAnalysisSystem, h5AnalysisSystem, parseEcomAnalysis } from "./ecomPresets";
+import { stitchVertical } from "./stitchCanvas";
 import { creativityPhrase } from "./editPrompts";
 import { errMsg, isTauri, parseJsonLoose, uid } from "./utils";
 import { acquireSlot, beginTask, endTask, isAbortError, taskSignal } from "./runControl";
@@ -44,6 +46,9 @@ import type {
   VectorizeData,
   CombineData,
   GenHistoryEntry,
+  EcomAnalysis,
+  EcomImageData,
+  EcomSlide,
   ImageData,
   ImageGenData,
   LlmTextData,
@@ -179,6 +184,20 @@ function nodeOutput(
     case "storyboard": {
       const g = d as StoryboardData;
       if (g.shots?.length) texts.push(g.shots.map((sh) => `【${sh.time}】${sh.prompt}`).join("\n"));
+      break;
+    }
+    case "ecomImage": {
+      const g = d as EcomImageData;
+      if (g.outMode === "prompt") {
+        // 提示词模式：各切片提示词逐条输出（下游可接生成图像节点自行出图）
+        for (const s of g.analysis?.slides ?? []) {
+          const t = (s.prompt ?? "").trim();
+          if (t) texts.push(t);
+        }
+      } else {
+        const r = g.result;
+        if (r) images.push(r);
+      }
       break;
     }
     case "video": {
@@ -438,10 +457,29 @@ async function maybeAutoSave(images: string[], meta: { prompt?: string; model?: 
 function collectToLibrary(
   kind: "image" | "video",
   srcs: string[],
-  meta: { prompt?: string; model?: string; gen?: AssetGenMeta; nodeId?: string },
+  meta: {
+    prompt?: string;
+    model?: string;
+    gen?: AssetGenMeta;
+    nodeId?: string;
+    group?: {
+      groupId?: string;
+      groupLabel?: string;
+      groupKind?: "generation" | "ecom";
+      groupSlot?: string;
+      groupCover?: boolean;
+    };
+  },
 ) {
-  for (const src of srcs) {
-    void useAssets.getState().collect({ src, kind, prompt: meta.prompt, model: meta.model, gen: meta.gen, nodeId: meta.nodeId });
+  const autoGroup: NonNullable<typeof meta.group> | undefined = !meta.group && srcs.length > 1
+    ? { groupId: `gen-${uid(12)}`, groupLabel: meta.prompt?.trim() || "批量生成", groupKind: "generation" as const }
+    : undefined;
+  const baseGroup = meta.group ?? autoGroup;
+  for (const [index, src] of srcs.entries()) {
+    const group = baseGroup
+      ? { ...baseGroup, groupSlot: baseGroup.groupSlot ?? `result:${index}` }
+      : undefined;
+    void useAssets.getState().collect({ src, kind, prompt: meta.prompt, model: meta.model, gen: meta.gen, nodeId: meta.nodeId, group });
   }
 }
 
@@ -1562,6 +1600,42 @@ function charData(id: string): CharCardData | undefined {
   return useBoard.getState().nodes.find((n) => n.id === id)?.data as CharCardData | undefined;
 }
 
+/** 表情集网格：按所选画幅推导 cols×rows —— 越接近正方形越接近 2×2，越扁加列、越长加行，
+ *  让表情数量随比例自适应（1:1→4，3:4→6，16:9→8，9:16→8…）。 */
+function expressionGrid(aspect?: string): { cols: number; rows: number } {
+  const r = aspect && aspect !== "auto" ? parseRatio(aspect) : null;
+  const rr = r && r > 0 ? r : 1;
+  const cols = Math.max(2, Math.min(5, Math.round(rr * 2)));
+  const rows = Math.max(2, Math.min(5, Math.round(2 / rr)));
+  return { cols, rows };
+}
+
+/** 把外貌锚点 / 用户文字描述 / 半身→全身补全指令拼进单条素材提示词。
+ *  修复「生成不参考用户描述」「半身照补不出全身」：runner 出图不能只靠分析阶段把描述烧进 prompts
+ *  （视觉模型遵守度不稳），这里显式把 profile 外貌锚点与上游用户描述逐字重复进每条 prompt，
+ *  并要求三视图/立绘必须全身（参考图仅为半身时合理扩展补全）。改这一处同时覆盖整套生成与「补一张/重生」。 */
+function enrichCharPrompt(id: string, data: CharCardData, k: CharDeliverable, base: string): string {
+  const p = data.profile;
+  const parts: string[] = [base];
+  if (p) {
+    const anchor = [p.appearance, p.outfit, p.accessories ?? []].flat().filter(Boolean).join("；");
+    if (anchor) parts.push(`角色外貌锚点（多张图必须逐字保持一致）：${anchor}`);
+    if (p.artStyle) parts.push(`画风：${p.artStyle}`);
+  }
+  const texts = collectUpstream(id).texts;
+  if (texts.length) parts.push(`用户补充设定（必须体现在画面中）：${texts.join("；")}`);
+  if (k === "expressions") {
+    const g = expressionGrid(data.aspect);
+    parts.push(
+      `本图比例为 ${data.aspect && data.aspect !== "auto" ? data.aspect : "1:1"}，请用 ${g.cols}×${g.rows} 网格排列 ${g.cols * g.rows} 种互不相同、差异明显的表情（而非默认 2×2 四种），每格区域充足、五官细节清晰。`,
+    );
+  }
+  if (k === "turnaround" || k === "portrait") {
+    parts.push("必须为完整全身画面（若参考图仅为半身，合理扩展补全下半身至全身，保持人物一致）");
+  }
+  return parts.join("\n");
+}
+
 /** 生成单个素材并写回（收录记录/资产库）；append = 追加到该素材已有图之后（「补一张」）；返回第一张结果 */
 async function genCharDeliverable(
   id: string,
@@ -1573,7 +1647,15 @@ async function genCharDeliverable(
   const data = charData(id);
   if (!data) return;
   const card = resolveModelCard("image", data.imageModelId);
-  const results = await generateImage(card, { prompt, n: 1, refImages: refs.length ? refs.slice(0, 2) : undefined });
+  const finalPrompt = enrichCharPrompt(id, data, k, prompt);
+  const results = await generateImage(card, {
+    prompt: finalPrompt,
+    n: 1,
+    refImages: refs.length ? refs.slice(0, 2) : undefined,
+    aspect: data.aspect && data.aspect !== "auto" ? data.aspect : undefined,
+    resolution: data.resolution,
+    quality: data.quality,
+  });
   const cur = charData(id);
   const merged = opts?.append ? [...(cur?.results?.[k] ?? []), ...results] : results;
   upd(id, { results: { ...(cur?.results ?? {}), [k]: merged } });
@@ -1672,6 +1754,374 @@ export async function regenCharDeliverable(id: string, k: CharDeliverable, opts?
   } catch (e) {
     upd(id, { status: "error", error: errMsg(e), progress: undefined });
     pushError("角色卡", errMsg(e));
+  }
+}
+
+/* ---------- 电商长图 ---------- */
+
+/** 读取电商节点当前 data */
+function ecomData(id: string): EcomImageData | undefined {
+  return useBoard.getState().nodes.find((n) => n.id === id)?.data as EcomImageData | undefined;
+}
+
+/** 拼接单片生图提示词：画面提示词 + 产品/内容锚点 + 风格调性 + 风格参考提示 + 卖点文案（写进画面） */
+function ecomEnriched(slide: EcomSlide, prod: EcomAnalysis["product"] | undefined, hasRef: boolean): string {
+  const anchorBits = prod
+    ? [prod.name, prod.category, prod.material, prod.color, ...(prod.features ?? [])].filter(Boolean).join("，")
+    : "";
+  const parts: string[] = [slide.prompt];
+  if (anchorBits) parts.push(`产品/内容一致性锚点（必须与其它切片保持同一主体、同一品牌调性）：${anchorBits}`);
+  if (prod?.styleTone) parts.push(`风格调性：${prod.styleTone}`);
+  if (hasRef) parts.push("请参考所附参考图的整体风格、配色与版式质感，与其它切片保持统一。");
+  if (slide.copy) {
+    parts.push(`请把以下文案以电商海报排版直接写进画面（产品旁空白区，清晰可读、不乱码不溢出）：「${slide.copy}」`);
+  }
+  return parts.join("\n");
+}
+
+/** 从切片提示词里解析用户 @引用的上游图（@图名 → src），顺序与 collectImageRefsFor 一致 */
+function atRefsFromPrompt(prompt: string | undefined, nodeId: string): string[] {
+  if (!prompt || !prompt.includes("@")) return [];
+  const all = collectImageRefsFor(nodeId);
+  return all.filter((r) => prompt.includes(`@${r.label}`)).map((r) => r.src);
+}
+
+/** 选参考图：该片提示词里 @引用的图 > 上一片(过渡) > 首张产出(风格锚)；product 模式保底塞 1 张产品图防丢主体；去重取前 max 张 */
+function ecomRefs(o: {
+  atRefs?: string[];
+  prev?: string;
+  anchor?: string;
+  productImg?: string;
+  mode: "product" | "h5";
+  max: number;
+}): string[] {
+  const max = Math.max(1, o.max);
+  // product 模式保底留 1 张产品图槽：用户 @的参考图再多也不丢主体一致性
+  const reserve = o.mode === "product" && o.productImg ? 1 : 0;
+  const head = [...(o.atRefs ?? []), o.prev, o.anchor].filter((x): x is string => !!x);
+  const dedupHead = [...new Set(head)].slice(0, Math.max(0, max - reserve));
+  const chain = reserve && o.productImg ? [...dedupHead, o.productImg] : dedupHead;
+  return [...new Set(chain)].slice(0, max);
+}
+
+/** 把切片提示词里的 @图名 替换成「图N」，N 与该片刻实际传给模型的 refs 顺序一致（模型按图N 引用） */
+function ecomResolvePrompt(prompt: string | undefined, refs: string[], nodeId: string): string {
+  if (!prompt || !prompt.includes("@")) return prompt ?? "";
+  const all = collectImageRefsFor(nodeId);
+  let out = prompt;
+  for (const r of all) {
+    if (!out.includes(`@${r.label}`)) continue;
+    const idx = refs.indexOf(r.src);
+    if (idx >= 0) out = out.split(`@${r.label}`).join(`图${idx + 1}`);
+  }
+  return out;
+}
+
+/** 把参考图缩成长边 256 的等比 jpeg 小图（最多 maxCount 张），落盘到 slide.refs 供工作台左下展示；缩失败回退原图 */
+async function refsToThumbs(refs: string[], maxCount = 4, longSide = 256): Promise<string[]> {
+  const out: string[] = [];
+  for (const r of refs.slice(0, maxCount)) {
+    try {
+      const blob = await (await fetch(r)).blob();
+      const bmp = await createImageBitmap(blob);
+      const scale = Math.min(1, longSide / Math.max(bmp.width, bmp.height));
+      const w = Math.max(16, Math.round(bmp.width * scale));
+      const h = Math.max(16, Math.round(bmp.height * scale));
+      const c = document.createElement("canvas");
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext("2d");
+      if (!ctx) {
+        bmp.close();
+        out.push(r);
+        continue;
+      }
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(bmp, 0, 0, w, h);
+      bmp.close();
+      out.push(c.toDataURL("image/jpeg", 0.85));
+    } catch {
+      out.push(r); // 外置 blob 等读取失败时回退原图
+    }
+  }
+  return out;
+}
+
+/** Phase 1：分析 / 切片规划 —— 用对话模型产出「切片脚本」（标题 + 提示词 + 文案），不调绘画模型。
+ *  产物写回 data.analysis + data.slides（可在工作台里编辑提示词），等你确认后再 generateEcom。 */
+export async function analyzeEcom(id: string) {
+  const data = ecomData(id);
+  if (!data || data.status === "running") return;
+  const { texts, images } = collectUpstream(id);
+  const mode = data.mode ?? "product";
+  const tone = mode === "h5" ? (data.h5StyleTone ?? "") : (data.styleTone ?? "");
+  const productImg = images[0];
+  const longText = (data.productDesc ?? "").trim() || texts.join("\n").trim();
+  if (mode === "product") {
+    if (!productImg && !data.analysis) {
+      toast("请先连接一张产品拍照图（或商品图）到电商长图节点", "err");
+      return;
+    }
+  } else if (!longText && !data.analysis) {
+    toast("H5 模式：请在「文案」里粘贴长文案，或连接上游文本节点", "err");
+    return;
+  }
+  upd(id, { status: "running", error: undefined, progress: mode === "h5" ? "按内容切片长文中…" : "分析产品图中…" });
+  try {
+    const chatCard = resolveModelCard("chat", data.chatModelId);
+    let text: string;
+    if (mode === "product") {
+      if (!productImg) throw new Error("没有产品图可供分析：请连接一张产品拍照图");
+      if (!chatCaps(chatCard).vision) {
+        throw new Error(`当前对话模型「${chatCard.name}」不支持视觉输入，请在「设置」换一个多模态模型`);
+      }
+      text = (
+        await chatStream(
+          chatCard,
+          [{ role: "user", text: "请分析这张产品拍照图并按要求输出 JSON。", images: [productImg] }],
+          {
+            system: ecomAnalysisSystem({ styleTone: tone, sliceCount: data.sliceCount, aspect: data.aspect, productDesc: longText }),
+            signal: taskSignal(id),
+          },
+        )
+      ).text;
+    } else {
+      text = (
+        await chatStream(
+          chatCard,
+          [{ role: "user", text: `请把下面这篇文案按要求切成若干长图切片并输出 JSON：\n\n${longText}` }],
+          { system: h5AnalysisSystem({ styleTone: tone, sliceCount: data.sliceCount, aspect: data.aspect }), signal: taskSignal(id) },
+        )
+      ).text;
+    }
+    const analysis = parseEcomAnalysis(text);
+    if (!analysis) {
+      throw new Error(
+        `分析结果解析失败：模型没有按 JSON 格式返回（请重试，或在「设置」换一个遵循 JSON 的对话模型）。模型回复前 200 字：${text.slice(0, 200).replace(/\s+/g, " ")}`,
+      );
+    }
+    const slides: EcomSlide[] = analysis.slides.map((s) => ({ title: s.title, prompt: s.prompt, copy: s.copy }));
+    // 只规划：清掉旧图，保留可编辑的提示词脚本，等用户确认后再生成长图
+    upd(id, { status: "done", analysis, slides, result: undefined, progress: undefined });
+    notifyDone(mode === "h5" ? "切片规划" : "产品分析");
+  } catch (e) {
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", error: undefined, progress: undefined });
+      return;
+    }
+    upd(id, { status: "error", error: errMsg(e), progress: undefined });
+    pushError("电商长图", errMsg(e));
+  }
+}
+
+/** Phase 2：生成长图 —— 按 data.slides（可能已被编辑过的提示词）逐片统一风格生成 → 纵向拼接。 */
+export async function generateEcom(id: string) {
+  const data = ecomData(id);
+  if (!data || data.status === "running") return;
+  const analysis = data.analysis;
+  const src = data.slides;
+  if (!analysis || !src || !src.length) {
+    toast("请先点「分析并规划」生成切片脚本，再生成长图", "err");
+    return;
+  }
+  const { images } = collectUpstream(id);
+  const mode = data.mode ?? "product";
+  const productImg = images[0];
+  let maxRef = 8;
+  try {
+    maxRef = familyMaxRef(imageFamily(resolveModelCard("image", data.imageModelId)));
+  } catch {
+    /* 无可用绘画模型时回落到默认上限 */
+  }
+  upd(id, { status: "running", error: undefined, progress: "生成切片中…" });
+  try {
+    const imgCard = resolveModelCard("image", data.imageModelId);
+    const groupId = `ecom-${uid(12)}`;
+    const groupLabel = `${analysis.product.name || "电商长图"} · ${src.length} 片`;
+    upd(id, { assetGroupId: groupId });
+    const seed = data.seed;
+    // 浅拷贝保留旧 img/refs：循环内逐片覆盖，中途失败时未到达的切片仍保留旧图（不丢已扣费结果）
+    const slides: EcomSlide[] = src.map((s) => ({ ...s }));
+    let prev: string | undefined;
+    let anchor: string | undefined;
+    for (let i = 0; i < slides.length; i++) {
+      if (taskSignal(id)?.aborted) throw new DOMException("Aborted", "AbortError");
+      upd(id, { progress: `生成切片 ${i + 1}/${slides.length}：${slides[i].title}…` });
+      const refs = ecomRefs({ atRefs: atRefsFromPrompt(slides[i].prompt, id), prev, anchor, productImg, mode, max: maxRef });
+      const enriched = ecomEnriched({ ...slides[i], prompt: ecomResolvePrompt(slides[i].prompt, refs, id) }, analysis.product, refs.length > 0);
+      const results = await generateImage(imgCard, {
+        prompt: enriched,
+        n: 1,
+        refImages: refs.length ? refs : undefined,
+        aspect: data.aspect && data.aspect !== "auto" ? data.aspect : undefined,
+        resolution: data.resolution,
+        quality: data.quality,
+        seed,
+        signal: taskSignal(id),
+      });
+      slides[i] = { ...slides[i], img: results[0], refs: await refsToThumbs(refs, Math.min(refs.length, 8)) };
+      anchor ??= results[0];
+      prev = results[0];
+      upd(id, { slides: [...slides] });
+      useUi.getState().addGallery({ kind: "image", src: results[0], prompt: enriched, model: imgCard.model, nodeId: id });
+      collectToLibrary("image", [results[0]], {
+        prompt: `${analysis.product.name || "电商长图"} · 切片 ${i + 1} · ${slides[i].title}`,
+        model: imgCard.name,
+        nodeId: id,
+        group: { groupId, groupLabel, groupKind: "ecom", groupSlot: `slice:${i}` },
+      });
+    }
+
+    // 默认不再自动拼接：只写切片，长图由工作台「拼接」按钮显式触发（见 stitchEcomResult）
+    upd(id, { status: "done", slides, result: undefined, progress: undefined });
+    notifyDone("切片生成");
+  } catch (e) {
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", error: undefined, progress: undefined });
+      return;
+    }
+    upd(id, { status: "error", error: errMsg(e), progress: undefined });
+    pushError("电商长图", errMsg(e));
+  }
+}
+
+/** 电商长图主入口（runFlow / 全部运行 用）：没规划过就先规划；规划过就生成。
+ *  outMode=prompt 时只规划不生成（先审脚本）。 */
+export async function runEcomImage(id: string) {
+  const data = ecomData(id);
+  if (!data || data.status === "running") return;
+  if (!data.analysis || !data.slides?.length) return analyzeEcom(id);
+  if (data.outMode === "prompt") return; // 提示词模式：只规划
+  return generateEcom(id);
+}
+
+/** 工作台：调整切片顺序（from→to），同步更新拼接顺序；有图则重新拼接长图 */
+export async function reorderEcomSlides(id: string, from: number, to: number) {
+  const data = ecomData(id);
+  if (!data || data.status === "running") return;
+  const slides = data.slides ?? [];
+  if (from === to || from < 0 || to < 0 || from >= slides.length || to >= slides.length) return;
+  const next = [...slides];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  // 调序后旧长图与新顺序不一致：清掉 result（默认不自动重拼，需手动点「拼接」）
+  upd(id, { slides: next, result: undefined });
+}
+
+/** 工作台「拼接」按钮：把当前 slides[].img 纵向拼成完整长图，写 data.result（供下游节点 + 保存长图）。
+ *  默认不拼接：generate/regen/reorder 都只产切片不写 result，只有本函数写。 */
+export async function stitchEcomResult(id: string) {
+  const data = ecomData(id);
+  if (!data || data.status === "running") return;
+  const slides = data.slides ?? [];
+  const imgs = slides.map((s) => s.img).filter((x): x is string => !!x);
+  if (!imgs.length) {
+    toast("还没有切片图，先「生成长图」", "err");
+    return;
+  }
+  upd(id, { status: "running", error: undefined, progress: "拼接长图中…" });
+  try {
+    let modelName = "未知模型";
+    try {
+      modelName = resolveModelCard("image", data.imageModelId).name;
+    } catch {
+      /* 拼接是纯本地 canvas 操作，不依赖模型；仅在元数据里回落占位名 */
+    }
+    const longImg = await stitchVertical(imgs, { width: "min", gap: 0, capHeight: 8192 });
+    const name = data.analysis?.product.name ?? "电商长图";
+    const groupId = data.assetGroupId ?? `ecom-${uid(12)}`;
+    const groupLabel = `${name} · ${imgs.length} 片`;
+    upd(id, { status: "done", result: longImg.dataUrl, progress: undefined, assetGroupId: groupId });
+    pushHistory(id, {
+      prompt: `${name} · ${imgs.length} 片拼接`,
+      params: { aspect: data.aspect, n: imgs.length },
+      results: [longImg.dataUrl],
+    });
+    // 兼容升级前已生成但尚未分组的切片：第一次拼接时补收录全部切片。
+    if (!data.assetGroupId) {
+      imgs.forEach((src, index) => collectToLibrary("image", [src], {
+        prompt: `${name} · 切片 ${index + 1}`,
+        model: modelName,
+        nodeId: id,
+        group: { groupId, groupLabel, groupKind: "ecom", groupSlot: `slice:${index}` },
+      }));
+    }
+    collectToLibrary("image", [longImg.dataUrl], {
+      prompt: `${name} · ${imgs.length} 片拼接`,
+      model: modelName,
+      nodeId: id,
+      group: { groupId, groupLabel, groupKind: "ecom", groupSlot: "final", groupCover: true },
+    });
+    void maybeAutoSave([longImg.dataUrl], { prompt: name, model: modelName });
+    notifyDone("长图拼接");
+  } catch (e) {
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", error: undefined, progress: undefined });
+      return;
+    }
+    upd(id, { status: "error", error: errMsg(e), progress: undefined });
+    pushError("电商长图 · 拼接", errMsg(e));
+  }
+}
+
+/** 单独重新生成某一片（工作台面板用）；默认不再自动拼接，需到工作台点「拼接」 */
+export async function regenEcomSlide(id: string, index: number) {
+  const data = ecomData(id);
+  if (!data || data.status === "running") return;
+  const slides = data.slides ?? [];
+  const slide = slides[index];
+  if (!slide) {
+    toast("该切片不存在", "err");
+    return;
+  }
+  const { images } = collectUpstream(id);
+  const mode = data.mode ?? "product";
+  const productImg = images[0];
+  let maxRef = 8;
+  try {
+    maxRef = familyMaxRef(imageFamily(resolveModelCard("image", data.imageModelId)));
+  } catch {
+    /* 无可用绘画模型时回落 */
+  }
+  upd(id, { status: "running", error: undefined, progress: `重新生成切片 ${index + 1}…` });
+  try {
+    const imgCard = resolveModelCard("image", data.imageModelId);
+    const anchor = slides.find((s) => s.img)?.img;
+    const prev = index > 0 ? slides[index - 1]?.img : undefined;
+    const refs = ecomRefs({ atRefs: atRefsFromPrompt(slide.prompt, id), prev, anchor, productImg, mode, max: maxRef });
+    const enriched = ecomEnriched({ ...slide, prompt: ecomResolvePrompt(slide.prompt, refs, id) }, data.analysis?.product, refs.length > 0);
+    const results = await generateImage(imgCard, {
+      prompt: enriched,
+      n: 1,
+      refImages: refs.length ? refs : undefined,
+      aspect: data.aspect && data.aspect !== "auto" ? data.aspect : undefined,
+      resolution: data.resolution,
+      quality: data.quality,
+      seed: data.seed,
+      signal: taskSignal(id),
+    });
+    slides[index] = { ...slide, img: results[0], refs: await refsToThumbs(refs, Math.min(refs.length, 8)) };
+    const groupId = data.assetGroupId ?? `ecom-${uid(12)}`;
+    const groupLabel = `${data.analysis?.product.name || "电商长图"} · ${slides.length} 片`;
+    upd(id, { slides: [...slides], assetGroupId: groupId });
+    useUi.getState().addGallery({ kind: "image", src: results[0], prompt: enriched, model: imgCard.model, nodeId: id });
+    collectToLibrary("image", [results[0]], {
+      prompt: `${data.analysis?.product.name || "电商长图"} · 切片 ${index + 1} · ${slide.title}`,
+      model: imgCard.name,
+      nodeId: id,
+      group: { groupId, groupLabel, groupKind: "ecom", groupSlot: `slice:${index}` },
+    });
+
+    // 重生后旧长图与该片不一致：清掉 result（默认不自动重拼，需手动点「拼接」）
+    upd(id, { status: "done", progress: undefined, result: undefined });
+    notifyDone("切片生成");
+  } catch (e) {
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", error: undefined, progress: undefined });
+      return;
+    }
+    upd(id, { status: "error", error: errMsg(e), progress: undefined });
+    pushError("电商长图", errMsg(e));
   }
 }
 
@@ -1910,6 +2360,7 @@ const RUNNERS: Partial<Record<NodeKind, (id: string) => Promise<void>>> = {
   relight: gated("relight", runRelight),
   multiAngle: gated("multiAngle", runMultiAngle),
   charCard: gated("charCard", runCharCard),
+  ecomImage: gated("ecomImage", runEcomImage),
   storyboard: gated("storyboard", runStoryboard),
   audioGen: gated("audioGen", runAudioGen),
   videoDub: gated("videoDub", runVideoDub),

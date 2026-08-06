@@ -32,7 +32,7 @@ import { useSettings } from "../../core/stores/settingsStore";
 import { useAssets } from "../../core/stores/assetStore";
 import { assetToDataUrl, assetUrl } from "../../core/services/assetFiles";
 import { videoDuration } from "../../core/videoEdit";
-import { AudioConfigPanel, GenConfigPanel, VideoConfigPanel } from "./GenConfigPanel";
+import { AudioConfigPanel, CharConfigPanel, EcomConfigPanel, GenConfigPanel, VideoConfigPanel } from "./GenConfigPanel";
 import { ComfyConfigPanel } from "./ComfyConfigPanel";
 import { EnhanceConfigPanel, VectorizeConfigPanel } from "./EditPanels";
 import { isVoiceCallActive, startVoiceCall, stopVoiceCall } from "../../core/voiceChat";
@@ -69,6 +69,7 @@ import { AudioGenNode } from "./nodes/AudioGenNode";
 import { VideoDubNode } from "./nodes/VideoDubNode";
 import { EnhanceLocalNode } from "./nodes/EnhanceLocalNode";
 import { VectorizeNode } from "./nodes/VectorizeNode";
+import { EcomImageNode } from "./nodes/EcomImageNode";
 
 /** 一键清空画布：首次点击进入确认态（2.5 秒内再点执行），入撤销历史可 Ctrl+Z 恢复 */
 function ClearAllBtn() {
@@ -118,6 +119,7 @@ const nodeTypes: NodeTypes = {
   storyboard: StoryboardNode,
   enhanceLocal: EnhanceLocalNode,
   vectorize: VectorizeNode,
+  ecomImage: EcomImageNode,
 };
 
 /** 统一走自定义边：端点内伸贴框 + 悬停剪刀 + 选中脉冲 */
@@ -768,6 +770,15 @@ export function SmartCanvas() {
       } else if (hit("runAll")) {
         e.preventDefault();
         void runAllFlows();
+      } else if (hit("runSelected")) {
+        // 焦点不在输入框（顶部已拦截）/按钮上时，回车运行当前选中节点（多选则全部运行）
+        if (el?.tagName !== "BUTTON" && !el?.closest("button")) {
+          const sel = useBoard.getState().nodes.filter((n) => n.selected);
+          if (sel.length) {
+            e.preventDefault();
+            for (const n of sel) void runFlow(n.id);
+          }
+        }
       } else if (hit("fitView")) {
         void fitView({ duration: 300, padding: 0.15, maxZoom: 1 });
       } else if (hit("zoomIn")) {
@@ -1207,6 +1218,8 @@ export function SmartCanvas() {
       {!zen ? <GenConfigPanel /> : null}
       {!zen ? <VideoConfigPanel /> : null}
       {!zen ? <AudioConfigPanel /> : null}
+      {!zen ? <CharConfigPanel /> : null}
+      {!zen ? <EcomConfigPanel /> : null}
       {!zen ? <ComfyConfigPanel /> : null}
       {!zen ? <EnhanceConfigPanel /> : null}
       {!zen ? <VectorizeConfigPanel /> : null}

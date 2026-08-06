@@ -46,22 +46,28 @@ export function ContextMenu({
   }, [x, y]);
 
   useEffect(() => {
-    const close = () => onClose();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    window.addEventListener("keydown", onKey);
-    // 下一次点击/右键Anywhere 都关（mousedown 提前，避免先触发菜单项外的元素）
-    const onDown = (e: MouseEvent) => {
+    // 滚动关闭：只关画布/窗口的滚动；菜单内部滚动（长节点列表）不关，否则一滚就消失
+    const onScroll = (e: Event) => {
+      if (ref.current?.contains(e.target as Node)) return;
+      onClose();
+    };
+    // 点外部关闭：用 pointerdown 捕获阶段（React Flow 用指针事件，mousedown 可能被拦截）+ mousedown 兜底
+    const onDown = (e: PointerEvent | MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onClose);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onDown, true);
     window.addEventListener("mousedown", onDown);
     return () => {
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onClose);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onDown, true);
       window.removeEventListener("mousedown", onDown);
     };
   }, [onClose]);

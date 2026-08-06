@@ -6,6 +6,7 @@ import type { HotkeyAction, NodeKind } from "../../core/types";
 import {
   IcBulb,
   IcDub,
+  IcEcom,
   IcMic,
   IcMusic,
   IcFlow,
@@ -48,6 +49,7 @@ export const NODE_CATALOG: CatalogItem[] = [
   { kind: "combine", label: "拼接文本", desc: "多路上游文本按位置顺序合并输出（逗号/换行/空格）", icon: <IcMerge size={18} />, group: "智能", hotkey: "addCombine", dockHidden: true },
   { kind: "storyboard", label: "分镜", desc: "故事→完善→按风格定调拆分镜（带时间轴），逐镜输出口 + 一键铺生成节点", icon: <IcClapper size={18} />, group: "智能", hotkey: "addStoryboard" },
   { kind: "imageGen", label: "生成图像", desc: "调用绘画模型文生图 / 图生图", icon: <IcSparkles size={18} />, group: "生成", hotkey: "addImageGen" },
+  { kind: "ecomImage", label: "电商长图", desc: "产品拍照图 → 视觉分析提属性/写介绍 → 按比例切分统一风格生成 → 拼接成完整长图（H5 / 详情页）", icon: <IcEcom size={18} />, group: "生成", hotkey: "addEcomImage" },
   { kind: "videoGen", label: "生成视频", desc: "调用视频模型生成短片", icon: <IcVideo size={18} />, group: "生成", hotkey: "addVideoGen" },
   { kind: "comfy", label: "ComfyUI", desc: "运行本地 ComfyUI 工作流模板", icon: <IcFlow size={18} />, group: "生成", hotkey: "addComfy" },
   { kind: "relight", label: "打光", desc: "为上游图片重新打光：方向/亮度/颜色/轮廓光", icon: <IcBulb size={18} />, group: "编辑", hotkey: "addRelight" },

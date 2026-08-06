@@ -4,6 +4,7 @@
  * - PopSelect：通用下拉（触发按钮 = 当前值 + 下拉箭头；弹层列表项 = 图标 + 标题 + 描述 + 选中勾）
  */
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { IcCheck, IcChevronD } from "./icons";
 
 export interface PopOption {
@@ -18,7 +19,9 @@ export interface PopOption {
 /** 当前打开的浮层栈（后开的在末尾）：Esc 只关最上层 */
 const layerStack: RefObject<HTMLDivElement | null>[] = [];
 
-/** 浮层容器：挂在触发器父级（.pop-wrap）内，绝对定位向上/向下弹出 */
+/** 浮层容器：portal 到 document.body + position:fixed，按触发器实测坐标定位，
+ *  绝不被任何父容器（设置面板 overflow、画布 transform 视口）裁剪——弹窗不受界面边界限制。
+ *  点外部 / Esc 关闭；按视口空间自动向上/向下翻转；内容变化/窗口缩放/滚动时重定位。 */
 export function PopLayer({
   anchorRef,
   onClose,
@@ -38,30 +41,38 @@ export function PopLayer({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [flipUp, setFlipUp] = useState(up ?? false);
-  const [alignRight, setAlignRight] = useState(false);
+  // 初始放到屏幕外，useLayoutEffect 在首帧绘制前量好坐标，避免闪烁
+  const [pos, setPos] = useState<{ left: number; top: number; minW: number }>({ left: -9999, top: -9999, minW: 200 });
 
-  // 翻转/收边按实测尺寸算，并在内容变化（弹层换视图）与窗口缩放时重算
+  // 翻转 + 视口坐标定位，按实测尺寸算；内容变化/缩放/滚动时重算
   useLayoutEffect(() => {
     const measure = () => {
       const r = anchorRef.current?.getBoundingClientRect();
       const el = ref.current;
       if (!r || !el) return;
-      if (up === undefined) {
-        const below = window.innerHeight - r.bottom;
-        setFlipUp(below < el.offsetHeight + 16 && r.top > below);
-      } else {
-        setFlipUp(up);
-      }
       const lw = el.offsetWidth;
-      if (lw) setAlignRight(r.left + lw > window.innerWidth - 12 && r.right - lw > 0);
+      const lh = el.offsetHeight;
+      const below = window.innerHeight - r.bottom;
+      const flip = up ?? (below < lh + 16 && r.top > below);
+      setFlipUp(flip);
+      // 横向：默认与触发器左对齐；右边溢出则右对齐；最后整体收进视口
+      let left = r.left + lw > window.innerWidth - 12 && r.right - lw > 0 ? r.right - lw : r.left;
+      left = Math.max(8, Math.min(left, window.innerWidth - lw - 8));
+      // 纵向：向下优先，下方不够则向上翻；整体收进视口
+      let top = flip ? r.top - lh - 6 : r.bottom + 6;
+      top = Math.max(8, Math.min(top, window.innerHeight - lh - 8));
+      // 最小宽度：至少与触发器同宽（兜底 180），替代原先 max(100%,200px)（fixed 下 100%=视口，会撑满）
+      setPos({ left, top, minW: Math.max(r.width, 180) });
     };
     measure();
     const ro = new ResizeObserver(measure);
     if (ref.current) ro.observe(ref.current);
     window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
     };
   }, [up, anchorRef]);
 
@@ -90,10 +101,15 @@ export function PopLayer({
     };
   }, [onClose, anchorRef]);
 
-  return (
-    <div ref={ref} className={`pop-layer nodrag nowheel ${flipUp ? "up" : "down"} ${alignRight ? "align-right" : ""} ${className ?? ""}`} style={style}>
+  return createPortal(
+    <div
+      ref={ref}
+      className={`pop-layer nodrag nowheel ${flipUp ? "up" : "down"} ${className ?? ""}`}
+      style={{ position: "fixed", left: pos.left, top: pos.top, right: "auto", bottom: "auto", minWidth: pos.minW, ...style }}
+    >
       {children}
-    </div>
+    </div>,
+    document.body,
   );
 }
 

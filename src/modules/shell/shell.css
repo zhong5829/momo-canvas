@@ -338,7 +338,7 @@
   display: flex;
   gap: 0;
   margin: -20px;
-  min-height: 580px;
+  height: 78vh; /* 固定高度：所有设置页统一（内容在 .settings-content 内滚动），宽度仍由 Modal 1180px 定 */
 }
 .settings-nav {
   width: 172px;
@@ -372,7 +372,7 @@
   flex: 1;
   padding: 20px 22px;
   overflow-y: auto;
-  max-height: 78vh;
+  min-height: 0; /* flex 子项正确收缩 + 内部滚动 */
 }
 .settings-content h3 {
   font-size: var(--fs-lg);
@@ -389,6 +389,16 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+/* 右侧尾部：把「预设入口」等 extra 与「?」一起推到最右 */
+.sec-h-tail {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.sec-h-tail .sec-help {
+  margin-left: 0;
 }
 .sec-help {
   position: relative;
@@ -563,6 +573,22 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.pcard .pc-logo {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  object-fit: contain;
+  flex: none;
+}
+.pcard .pc-logo.txt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--grad-brand);
+  color: #fff;
+  font-weight: 800;
+  font-size: 13px;
+}
 .pcard .pc-host {
   font-size: 11.5px;
   color: var(--text-3);
@@ -614,6 +640,14 @@
 }
 .pcard.add:hover {
   color: var(--accent);
+}
+/* 拖拽调序反馈 */
+.pcard.dragging {
+  opacity: 0.4;
+}
+.pcard.drag-over {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 /* 浮在设置窗口右侧的服务商编辑面板（portal 到 body，盖在遮罩之上） */
 /* 服务商编辑浮层：主窗口 .modal.shifted 会整体左移让位，
@@ -1765,6 +1799,113 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
   gap: 8px;
+}
+/* ---------- 推荐中转站预设卡片（模型配置主界面） ---------- */
+.preset-section {
+  margin-top: 18px;
+}
+.preset-sec-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: var(--fs-base);
+  font-weight: 700;
+}
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(188px, 1fr));
+  gap: 10px;
+}
+.preset-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 12px;
+  border-radius: var(--r-lg);
+  border: 1.5px solid var(--panel-border);
+  background: var(--input-bg);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), transform var(--t-fast);
+}
+.preset-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.preset-card .psc-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.preset-card .psc-logo {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  object-fit: contain;
+  flex: none;
+  filter: grayscale(1);
+  opacity: 0.78;
+}
+.preset-card .psc-logo.txt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--text-1);
+  color: var(--panel-solid);
+  font-weight: 800;
+  font-size: 12px;
+}
+.preset-card .psc-name {
+  font-size: var(--fs-base);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 评分配色档：high(≥9 绿) / mid(7-8 蓝) / low(<7 灰)，作稳定性·可信度参考 */
+.preset-card .psc-rating {
+  flex: none;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+.preset-card.high .psc-rating {
+  background: var(--ok);
+}
+.preset-card.mid .psc-rating {
+  background: var(--accent);
+}
+.preset-card.low .psc-rating {
+  background: var(--text-3);
+}
+.preset-card .psc-host,
+.preset-card .psc-price {
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.preset-card .psc-acts {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.preset-card .psc-acts .btn {
+  flex: 1;
+}
+.preset-card .psc-acts .icon-btn {
+  flex: none;
+  width: 30px;
+  height: 30px;
 }
 .preset-row {
   display: flex;

@@ -144,6 +144,17 @@ export const IcImage = (p: IconProps) => (
   </I>
 );
 
+/* 电商长图：竖版长图 + 分段（详情页切片拼接） */
+export const IcEcom = (p: IconProps) => (
+  <I {...p}>
+    <rect x="6" y="2.5" width="12" height="19" rx="2.5" />
+    <path d="M9 6.5h6" />
+    <path d="M9 10.5h6" />
+    <path d="M9 14.5h6" />
+    <path d="M9 18h4" />
+  </I>
+);
+
 export const IcText = (p: IconProps) => (
   <I {...p}>
     <path d="M5 6.5V5h14v1.5" />

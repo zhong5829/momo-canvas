@@ -604,7 +604,7 @@ button {
 .pop-layer {
   position: absolute;
   left: 0;
-  min-width: max(100%, 200px);
+  /* min-width 由 PopLayer 用 JS 按触发器宽度算（position:fixed 下 100%=视口，不能用 max(100%,200)） */
   z-index: 640;
   background: var(--panel-solid);
   border: 1px solid var(--panel-border);

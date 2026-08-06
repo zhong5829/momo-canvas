@@ -134,7 +134,7 @@ export function Thumb({
     };
   }, [src]);
   if (!t) return <div className={`${className ?? ""} thumb-ph`} style={style} title={title} />;
-  const img = <img className={className} style={style} src={t} alt={alt} onClick={onClick} title={title} loading="lazy" />;
+  const img = <img className={className} style={style} src={t} alt={alt} onClick={onClick} title={title} loading="lazy" draggable={false} />;
   if (!res) return img;
   return (
     <span className="thumb-wrap">

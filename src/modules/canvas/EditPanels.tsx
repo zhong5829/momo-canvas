@@ -3,7 +3,7 @@
  * 参数全部收进面板（节点本体只留预览/进度/空态）；选项图标用文字徽章 / 手绘图标，不再用彩色圆点。
  * 超清放大：目标 / 质量 / 格式 + 高级（内容模式·细节强度·Tile）；智能矢量：类型 + 参数弹卡 + 导出/入库。
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useBoard } from "../../core/stores/boardStore";
 import { useAssets } from "../../core/stores/assetStore";
@@ -13,12 +13,12 @@ import { estimateEnhanceResources } from "../../core/enhanceEstimate";
 import { nodeMainImage } from "../../core/nodeEdit";
 import { useImageDims } from "../../core/imageInfo";
 import { useSettings } from "../../core/stores/settingsStore";
-import { PopLayer, PopSelect } from "../../ui/PopSelect";
+import { PopSelect } from "../../ui/PopSelect";
+import { NodeParamsPop } from "../../ui/NodeParamsPop";
 import { NumInput, Switch, TxBadge } from "../../ui/kit";
 import {
   IcBrush,
   IcCheck,
-  IcChevronD,
   IcClose,
   IcContrast,
   IcDiamond,
@@ -49,23 +49,12 @@ function useSelId(kind: "enhanceLocal" | "vectorize"): string | null {
   });
 }
 
-/** 参数弹卡 chip（与 GenConfigPanel 的 ParamsPop 同款交互：触发按钮 + 向上弹出的圆角参数卡） */
+/** 参数弹卡 chip（统一复用 NodeParamsPop）：触发按钮 + 向上弹出的圆角参数卡 */
 function ParamsPop({ icon, label, title, children }: { icon?: ReactNode; label: string; title: string; children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
   return (
-    <div ref={wrapRef} className="pop-wrap">
-      <button className={`gd-chip ${open ? "open" : ""}`} title={title} onClick={() => setOpen((v) => !v)}>
-        {icon}
-        <span className="gd-chip-lab">{label}</span>
-        <IcChevronD size={12} className="chev" />
-      </button>
-      {open ? (
-        <PopLayer anchorRef={wrapRef} onClose={() => setOpen(false)} up className="gd-param-pop">
-          {children}
-        </PopLayer>
-      ) : null}
-    </div>
+    <NodeParamsPop icon={icon} label={label} title={title} up>
+      {children}
+    </NodeParamsPop>
   );
 }
 

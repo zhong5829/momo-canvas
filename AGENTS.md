@@ -73,10 +73,12 @@ src-tauri/              Rust 壳，仅插件配置（dialog/fs/http/store/opener
 
 - **报错**：service 层抛带中文信息的 `Error`；runner 捕获后走 `pushError(source, msg)`（uiStore）→ 报错中心（标题栏铃铛）+ 可点击 toast。不要裸 `toast(..., "err")` 报运行类错误。
 - **节点内大图必须用 `<Thumb>`**（`src/ui/Thumb.tsx`）而非 `<img>`：图片全程是 dataURL，原图直塞 img 会让画布拖动掉帧；原图仅用于灯箱预览/保存/传模型。
+- **参数浮层与底部栏样式必须隔离**：`NodeParamsPop` Portal 到 `document.body`，只能使用 `.gd-param-pop/.gp-scope` 作为参数内容作用域，禁止给浮层附加 `.gen-panel`（该类含底部绝对定位，会导致浮层二次偏移、留白和裁切）。浮层宽度应由内容类控制，并保留 `max-width: calc(100vw - …)` 的视口兜底。
 - React Flow 节点内的可交互元素加 `nodrag` class，否则拖不了输入框选不了文本。
 - 持久化走 `persist.ts` 的 `loadJSON/saveJSON`：Tauri 下是 tauri-plugin-store（AppData JSON），纯浏览器预览退回 localStorage。`isTauri` 判定环境——所有功能需兼容浏览器预览模式（降级即可，不能白屏）。
 - 网络请求用 `services/http.ts` 的 `xfetch`（Tauri plugin-http 绕 CORS，浏览器退回 fetch）。
 - 中转站返回格式五花八门：imageGen 的 `normalizeResults` 做了大量兼容解析，改动时保持宽容。
+- **资产多结果必须成组收录**：同一次生成返回 2 张及以上时，为 `AssetItem` 写同一个 `groupId`，并用稳定的 `groupSlot` 标识组内位置；电商长图的切片与最终长图共用一组，最终图设 `groupCover`，单片重生沿用原 `groupSlot` 以替换旧资产。资产库列表只渲染一张叠卡，点击后在灰色聚焦层临时展开组成员。
 - 画布载入时 `sanitizeNodes(nodes)` 会把上次退出时 `running` 的节点标成中断错误（`INTERRUPTED_MSG`），不能静默重置；**切换画布**走 `sanitizeNodes(nodes, false)`——本会话仍在跑的任务不能标中断，`updateData` 会把结果写回它所属的那张画布。
 - `persist()` 的落盘带**序号守卫**（`saveSeq`）：externalize 是异步深走，慢的旧快照不能覆盖新快照。
 - 拖动吸附：`onNodesChange` 里算出的偏移要缓存到 `lastSnap`，松手那次 `dragging:false` 的 position 变更必须补上同样的偏移，否则节点弹回未吸附坐标。

@@ -1822,22 +1822,22 @@
 .gd-more-pop .btn {
   justify-content: center;
 }
-.gen-panel .gp-hint,
+:is(.gen-panel, .gp-scope) .gp-hint,
 .ne-pop .gp-hint {
   font-size: 10.5px;
   color: var(--text-3);
   font-weight: 500;
 }
-.gen-panel .gp-grid {
+:is(.gen-panel, .gp-scope) .gp-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
   gap: 4px;
 }
 /* GPT 比例格子一行 7 个：13 档 + auto 正好两行 */
-.gen-panel .gp-grid.ratios {
+:is(.gen-panel, .gp-scope) .gp-grid.ratios {
   grid-template-columns: repeat(7, 1fr);
 }
-.gen-panel .gp-cell {
+:is(.gen-panel, .gp-scope) .gp-cell {
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -1854,20 +1854,20 @@
   position: relative;
   transition: border-color var(--t-fast), background var(--t-fast), color var(--t-fast), transform var(--t-fast);
 }
-.gen-panel .gp-cell:hover {
+:is(.gen-panel, .gp-scope) .gp-cell:hover {
   border-color: var(--accent);
   color: var(--text-1);
   transform: translateY(-1px);
 }
-.gen-panel .gp-cell:active {
+:is(.gen-panel, .gp-scope) .gp-cell:active {
   transform: scale(0.93);
 }
-.gen-panel .gp-cell.on {
+:is(.gen-panel, .gp-scope) .gp-cell.on {
   border-color: var(--accent);
   background: var(--grad-brand-soft);
   color: var(--accent);
 }
-.gen-panel .gp-cell em {
+:is(.gen-panel, .gp-scope) .gp-cell em {
   position: absolute;
   top: 2px;
   right: 3px;
@@ -1892,16 +1892,16 @@
 .gp-cell.on .ar-ic {
   color: var(--accent);
 }
-.gen-panel .gp-seg,
+:is(.gen-panel, .gp-scope) .gp-seg,
 .ne-pop .gp-seg {
   display: flex;
   gap: 5px;
 }
-.gen-panel .gp-seg.col,
+:is(.gen-panel, .gp-scope) .gp-seg.col,
 .ne-pop .gp-seg.col {
   flex-direction: column;
 }
-.gen-panel .gp-seg button,
+:is(.gen-panel, .gp-scope) .gp-seg button,
 .ne-pop .gp-seg button {
   flex: 1;
   min-height: 26px;
@@ -1913,16 +1913,16 @@
   color: var(--text-2);
   transition: border-color var(--t-fast), background var(--t-fast), color var(--t-fast), transform var(--t-fast);
 }
-.gen-panel .gp-seg button:hover,
+:is(.gen-panel, .gp-scope) .gp-seg button:hover,
 .ne-pop .gp-seg button:hover {
   border-color: var(--accent);
   transform: translateY(-1px);
 }
-.gen-panel .gp-seg button:active,
+:is(.gen-panel, .gp-scope) .gp-seg button:active,
 .ne-pop .gp-seg button:active {
   transform: scale(0.94);
 }
-.gen-panel .gp-seg button.on,
+:is(.gen-panel, .gp-scope) .gp-seg button.on,
 .ne-pop .gp-seg button.on {
   border-color: var(--accent);
   background: var(--grad-brand-soft);
@@ -2694,6 +2694,506 @@
 .cc-deliv-imgs img:hover {
   transform: scale(1.04);
   box-shadow: var(--node-shadow-hover);
+}
+/* --- 电商长图节点 --- */
+.cc-ecom-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.cc-ecom-result .cc-ecom-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: center;
+}
+.cc-ecom-slide-prompt {
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.45;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  border: 1px dashed var(--input-border);
+  background: var(--input-bg);
+  max-height: 64px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.cc-ecom-copy {
+  font-size: 11.5px;
+  color: var(--text-2);
+  line-height: 1.45;
+  margin-top: 4px;
+  padding: 4px 6px;
+  border-radius: var(--r-sm);
+  background: var(--grad-brand-soft);
+}
+/* 底部参数栏里「素材勾选」网格 */
+.cc-check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+.cc-check-cell {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-align: left;
+  transition: border-color var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+.cc-check-cell:hover {
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+.cc-check-cell.on {
+  border-color: var(--accent);
+  background: var(--grad-brand-soft);
+  color: var(--accent);
+}
+.cc-check-cell .cc-check {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+}
+.cc-check-cell.on .cc-check {
+  background: var(--grad-brand);
+  border-color: transparent;
+  color: #fff;
+}
+/* 电商参数栏：种子输入行 */
+.ecom-seed-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.ecom-seed-row .input {
+  flex: 1;
+}
+/* 节点上的模式标签 */
+.ecom-mode-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--grad-brand-soft);
+  padding: 3px 9px;
+  border-radius: 999px;
+  margin-bottom: 8px;
+}
+/* 切片工作台：左右分栏（左操作 + 长图预览 / 右切片网格），两栏各自纵向滚动 */
+.ecom-ws {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+}
+.ecom-ws-side {
+  width: 250px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  max-height: calc(88vh - 172px); /* 弹窗 max-height 减去标题栏 / footer / 内边距 */
+  padding-right: 4px;
+}
+.ecom-ws-side .btn {
+  justify-content: center;
+}
+.ecom-ws-progress {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+/* 左栏最终长图预览（窄栏配窄高长图） */
+.ecom-ws-final {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.ecom-ws-final-thumb {
+  max-height: 56vh;
+  max-width: 100%;
+  width: auto;
+  border-radius: var(--r-md);
+  cursor: zoom-in;
+}
+.ecom-ws-main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  max-height: calc(88vh - 172px);
+}
+/* 工具栏：左说明 + 右「每行展示 / 反向查看」 */
+.ecom-ws-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.ecom-ws-note {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-2);
+}
+.ecom-ws-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.ecom-ws-tool-label {
+  font-size: 12px;
+  color: var(--text-3);
+}
+/* 工作台顶部参考图 chips：点一下把 @引用插到当前切片提示词 */
+.ecom-ws-refchips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 7px 9px;
+  border-radius: var(--r-md);
+  border: 1px dashed var(--input-border);
+  background: var(--panel-2);
+  flex-wrap: wrap;
+}
+.ecom-ws-refhint {
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.ecom-ws-reflist {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ecom-ws-refchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 2px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.ecom-ws-refchip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.ecom-ws-refchip img {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+/* 切片网格：列数由内联 grid-template-columns 控制；running 时降透明 + 禁指针 */
+.ecom-grid {
+  display: grid;
+  gap: 14px;
+}
+.ecom-grid.busy {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.ecom-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--panel-border);
+  background: var(--input-bg);
+}
+/* 图区 3:4：缩略铺满或「待生成」占位，右上角浮序号胶囊 */
+.ecom-card-img {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--panel-2);
+}
+.ecom-card-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  cursor: zoom-in;
+}
+.ecom-card-empty {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--text-3);
+  border: 1px dashed var(--input-border);
+  border-radius: var(--r-sm);
+}
+.ecom-card-no {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--panel-solid);
+  border: 1px solid var(--panel-border);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+.ecom-card-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ecom-card-prompt {
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  resize: vertical;
+}
+.ecom-card-copy {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* 卡底操作行：左 ‹ › 调序，右重新生成；贴底对齐拉齐各卡 */
+.ecom-card-acts {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ecom-arrows {
+  display: inline-flex;
+  gap: 2px;
+}
+.ecom-arrows button {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text-2);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.ecom-arrows button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.ecom-arrows button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+/* —— 工作台左栏一站式设置区 —— */
+.ecom-set-title {
+  margin-top: 6px;
+}
+.ecom-set {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.ecom-set-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+.ecom-set-row.col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+}
+.ecom-set-row > label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  flex: none;
+  width: 64px;
+  white-space: nowrap;
+}
+.ecom-set-row.col > label {
+  width: auto;
+}
+.ecom-set-row .hint {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+/* 切片数：快捷按钮 + 自定义数字输入 */
+.ecom-slice-count {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+.gp-seg-btn {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 4px;
+  border-radius: 6px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.gp-seg-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.gp-seg-btn.on {
+  background: var(--grad-brand-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.ecom-slice-custom {
+  width: 56px;
+  min-width: 0;
+  padding: 0 4px;
+  text-align: center;
+}
+/* 种子行：input + 清空 */
+.ecom-seed-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+.ecom-seed-row .input {
+  flex: 1;
+  min-width: 0;
+}
+/* 参考图多图选图器 */
+.ecom-refs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+  gap: 6px;
+}
+.ecom-ref-item {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+}
+.ecom-ref-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  cursor: zoom-in;
+}
+.ecom-ref-del {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--panel-solid);
+  border: 1px solid var(--panel-border);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.ecom-ref-del:hover {
+  background: var(--danger, #e05555);
+  color: #fff;
+  border-color: transparent;
+}
+.ecom-ref-add {
+  aspect-ratio: 1;
+  border-radius: 6px;
+  border: 1px dashed var(--input-border);
+  background: transparent;
+  color: var(--text-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.ecom-ref-add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* 切片卡底：左参考图缩略，右纯图标重生成 */
+.ecom-card-refs {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 26px;
+}
+.ecom-card-ref {
+  width: 26px;
+  height: 26px;
+  border-radius: 5px;
+  object-fit: cover;
+  cursor: zoom-in;
+  border: 1px solid var(--panel-border);
+}
+.ecom-card-refs-none {
+  font-size: 11px;
+  color: var(--text-3);
+}
+/* 拖拽排序反馈 */
+.ecom-card.dragging {
+  opacity: 0.4;
+}
+.ecom-card.drag-over {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.ecom-status {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+.ecom-status b {
+  color: var(--accent);
 }
 .cc-prompts {
   border-radius: var(--r-sm);

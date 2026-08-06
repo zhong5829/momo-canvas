@@ -28,12 +28,15 @@ import {
 } from "../../core/modelMeta";
 import { ModelPicker } from "../../ui/ModelPicker";
 import { PopLayer, PopSelect } from "../../ui/PopSelect";
-import { IcArrowL, IcArrowR, IcChevronD, IcCheck, IcGlobe, IcImage, IcLayers, IcRows, IcText, IcVideo } from "../../ui/icons";
+import { NodeParamsPop } from "../../ui/NodeParamsPop";
+import { AspectSelector, ArIcon } from "../../ui/AspectSelector";
+import { CARD_STYLES, CHAR_DELIVERABLES } from "../../core/charPresets";
+import { IcArrowL, IcArrowR, IcChevronD, IcCheck, IcEcom, IcGlobe, IcIdCard, IcImage, IcLayers, IcRows, IcText, IcVideo } from "../../ui/icons";
 import { GenPromptBar } from "./GenPromptBar";
 import { useGenPref, type GenTierPreset } from "../../core/stores/genPrefStore";
 import { Thumb } from "../../ui/Thumb";
 import { imageTierToParams, TIER_DESC, TIER_LABEL, videoTierToParams } from "../../core/tierMap";
-import type { AudioGenData, GenHistoryEntry, ImageGenData, VideoGenData } from "../../core/types";
+import type { AudioGenData, CharCardData, EcomImageData, GenHistoryEntry, ImageGenData, VideoGenData } from "../../core/types";
 import { videoFamily, videoMeta, type VideoFamily } from "../../core/videoMeta";
 
 /** 创意度档位说明 */
@@ -45,23 +48,12 @@ function creativityLabel(v: number): string {
   return "大胆重构";
 }
 
-/** 参数弹卡 chip：触发按钮（示意 + 摘要 + 箭头）+ 向上弹出的圆角参数卡 */
+/** 参数弹卡 chip（统一复用 NodeParamsPop）：触发按钮 + 向上弹出的圆角参数卡 */
 function ParamsPop({ icon, label, children }: { icon?: ReactNode; label: string; children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
   return (
-    <div ref={wrapRef} className="pop-wrap">
-      <button className={`gd-chip ${open ? "open" : ""}`} title="生成参数" onClick={() => setOpen((v) => !v)}>
-        {icon}
-        <span className="gd-chip-lab">{label}</span>
-        <IcChevronD size={12} className="chev" />
-      </button>
-      {open ? (
-        <PopLayer anchorRef={wrapRef} onClose={() => setOpen(false)} up className="gd-param-pop">
-          {children}
-        </PopLayer>
-      ) : null}
-    </div>
+    <NodeParamsPop icon={icon} label={label} title="生成参数" up>
+      {children}
+    </NodeParamsPop>
   );
 }
 
@@ -438,20 +430,6 @@ function RatioPair({ current, onApply }: { current?: string; onApply: (r: string
 function ratioSizeTitle(ratio: string, tier: string): string {
   const s = gptSize(ratio, tier);
   return s ? `${ratio} @ ${tier} → ${s.w} × ${s.h}` : ratio;
-}
-
-/** 宽高比示意小图标 */
-function ArIcon({ ratio }: { ratio: string }) {
-  if (ratio === "auto") return <span className="ar-ic">A</span>;
-  const [w, h] = ratio.split(":").map(Number);
-  const r = w / h;
-  const bw = r >= 1 ? 15 : Math.max(15 * r, 6);
-  const bh = r >= 1 ? Math.max(15 / r, 6) : 15;
-  return (
-    <span className="ar-ic">
-      <i style={{ width: bw, height: bh }} />
-    </span>
-  );
 }
 
 /** 比例 chip 上的小示意图标（触发按钮用，尺寸略小） */
@@ -978,6 +956,248 @@ export function AudioConfigPanel() {
           </>
         }
       />
+    </div>
+  );
+}
+
+/** 角色卡参数栏 — 选中「角色卡」节点时出现在画布下方（与生图节点同款底部生成栏）。
+ *  角色卡的设置类（分析/绘画模型、比例、设定卡风格、提示词语言）全收这里；节点本体只留档案 + 素材勾选 + 生成。 */
+export function CharConfigPanel() {
+  const selId = useBoard((s) => {
+    const sel = s.nodes.filter((n) => n.selected);
+    return sel.length === 1 && sel[0].type === "charCard" ? sel[0].id : null;
+  });
+  const node = useBoard((s) => (selId ? s.nodes.find((n) => n.id === selId) : undefined));
+  const upd = useBoard((s) => s.updateData);
+  const suppressed = useUi((s) => s.genPanelSuppressed);
+  const models = useSettings((s) => s.settings.models);
+  const d = node?.data as CharCardData | undefined;
+  const family = useMemo<ImageFamily>(() => {
+    if (!d) return "generic";
+    try {
+      return imageFamily(resolveModelCard("image", d.imageModelId));
+    } catch {
+      return "generic";
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [d, models]);
+
+  if (!selId || !d || suppressed) return null;
+  const patch = (p: Partial<CharCardData>) => upd(selId, p);
+  const mode = d.outMode ?? (d.genImages === false ? "prompt" : "image");
+  const aspectLabel = d.aspect && d.aspect !== "auto" ? d.aspect : "比例";
+  const styleLabel = CARD_STYLES.find((s) => s.value === d.style)?.label ?? "风格";
+  const hasPrompts = Object.values(d.prompts).some((t) => (t ?? "").trim());
+  const toggleDeliv = (v: CharCardData["deliverables"][number]) => {
+    const has = d.deliverables.includes(v);
+    patch({ deliverables: has ? d.deliverables.filter((x) => x !== v) : [...d.deliverables, v] });
+  };
+
+  return (
+    <div className="gen-panel">
+      <div className="ed-main glass nowheel">
+        <div className="gd-toolbar">
+          <span className="ed-title">
+            <IcIdCard size={15} /> 角色卡
+          </span>
+          <ModelPicker role="chat" value={d.chatModelId} onChange={(v) => patch({ chatModelId: v })} up />
+          {mode === "image" ? (
+            <>
+              <ModelPicker role="image" value={d.imageModelId} onChange={(v) => patch({ imageModelId: v })} up />
+              <NodeParamsPop
+                icon={<ArIcon ratio={d.aspect && d.aspect !== "auto" ? d.aspect : "auto"} />}
+                label={aspectLabel}
+                title="图片比例 / 分辨率"
+                up
+              >
+                <AspectSelector family={family} aspect={d.aspect} resolution={d.resolution} quality={d.quality} patch={patch} />
+              </NodeParamsPop>
+            </>
+          ) : null}
+          <NodeParamsPop icon={<IcImage size={14} />} label={styleLabel} title="设定卡排版风格" up>
+            <div className="gp-sec-title">设定卡排版风格</div>
+            <div className="opt-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+              {CARD_STYLES.map((s) => (
+                <button
+                  key={s.value}
+                  title={s.desc}
+                  className={`opt-cell ${d.style === s.value ? "on" : ""}`}
+                  onClick={() => patch({ style: s.value })}
+                >
+                  <span className="oc-lab">{s.label}</span>
+                </button>
+              ))}
+            </div>
+          </NodeParamsPop>
+          <NodeParamsPop
+            icon={<IcLayers size={14} />}
+            label={`素材 ${d.deliverables.length}`}
+            title="产出素材（勾选要生成的种类）"
+            up
+          >
+            <div className="gp-sec-title">产出素材（勾选 · 逐张生成，「补一张」自动换组）</div>
+            <div className="cc-check-grid">
+              {CHAR_DELIVERABLES.map((dv) => {
+                const on = d.deliverables.includes(dv.value);
+                return (
+                  <button
+                    key={dv.value}
+                    className={`cc-check-cell ${on ? "on" : ""}`}
+                    title={dv.desc}
+                    onClick={() => toggleDeliv(dv.value)}
+                  >
+                    <span className="cc-check">{on ? <IcCheck size={12} /> : null}</span>
+                    <span>{dv.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </NodeParamsPop>
+          {hasPrompts ? (
+            <NodeParamsPop icon={<IcText size={14} />} label="提示词" title="各素材提示词（可手动修改）" up>
+              <div className="gp-sec-title">各素材提示词（可手动修改）</div>
+              {CHAR_DELIVERABLES.filter((dv) => (d.prompts[dv.value] ?? "").trim()).map((dv) => (
+                <div key={dv.value} className="cc-prompt-item">
+                  <span className="cc-lab">{dv.label}</span>
+                  <textarea
+                    className="textarea nodrag nowheel"
+                    rows={3}
+                    value={d.prompts[dv.value]}
+                    onChange={(e) => patch({ prompts: { ...d.prompts, [dv.value]: e.target.value } })}
+                  />
+                </div>
+              ))}
+            </NodeParamsPop>
+          ) : null}
+          <LangChip lang={d.lang} onChange={(l) => patch({ lang: l })} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 电商长图参数栏 — 选中「电商长图」节点时出现在画布下方（与生图节点同款底部生成栏）。
+ *  设置类（视觉/绘画模型、比例、切片数、风格基调）全收这里；节点本体只留产品描述 + 切片预览 + 长图结果。 */
+export function EcomConfigPanel() {
+  const selId = useBoard((s) => {
+    const sel = s.nodes.filter((n) => n.selected);
+    return sel.length === 1 && sel[0].type === "ecomImage" ? sel[0].id : null;
+  });
+  const node = useBoard((s) => (selId ? s.nodes.find((n) => n.id === selId) : undefined));
+  const upd = useBoard((s) => s.updateData);
+  const suppressed = useUi((s) => s.genPanelSuppressed);
+  const models = useSettings((s) => s.settings.models);
+  const d = node?.data as EcomImageData | undefined;
+  const family = useMemo<ImageFamily>(() => {
+    if (!d) return "generic";
+    try {
+      return imageFamily(resolveModelCard("image", d.imageModelId));
+    } catch {
+      return "generic";
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [d, models]);
+
+  if (!selId || !d || suppressed) return null;
+  const patch = (p: Partial<EcomImageData>) => upd(selId, p);
+  const mode = d.outMode ?? "image";
+  const aspectLabel = d.aspect && d.aspect !== "auto" ? d.aspect : "比例";
+  const workMode = d.mode ?? "product";
+  const tone = workMode === "h5" ? (d.h5StyleTone ?? "") : (d.styleTone ?? "");
+  const n = d.sliceCount ?? 6;
+
+  return (
+    <div className="gen-panel">
+      <div className="ed-main glass nowheel">
+        <div className="gd-toolbar">
+          <span className="ed-title">
+            <IcEcom size={15} /> 电商长图
+          </span>
+          <PopSelect
+            up
+            className="gd-lang"
+            title="工作模式"
+            value={workMode}
+            options={[
+              { value: "product", label: "产品图", desc: "分析产品图 → 营销切片", icon: <IcImage size={15} /> },
+              { value: "h5", label: "H5 长文", desc: "长文案 → 按内容切片 → 每段配图", icon: <IcRows size={15} /> },
+            ]}
+            onChange={(v) => patch({ mode: v as "product" | "h5" })}
+          />
+          <ModelPicker role="chat" value={d.chatModelId} onChange={(v) => patch({ chatModelId: v })} up />
+          {mode === "image" ? (
+            <>
+              <ModelPicker role="image" value={d.imageModelId} onChange={(v) => patch({ imageModelId: v })} up />
+              <NodeParamsPop
+                icon={<ArIcon ratio={d.aspect && d.aspect !== "auto" ? d.aspect : "auto"} />}
+                label={aspectLabel}
+                title="切片比例 / 分辨率"
+                up
+              >
+                <AspectSelector family={family} aspect={d.aspect} resolution={d.resolution} quality={d.quality} patch={patch} />
+              </NodeParamsPop>
+            </>
+          ) : null}
+          <NodeParamsPop icon={<IcRows size={14} />} label={`${n} 片`} title="切片数（上下拼接成一张长图）" up>
+            <div className="gp-sec-title">切片数（上下拼接成一张长图）</div>
+            <div className="gp-seg">
+              {[4, 5, 6, 7, 8].map((x) => (
+                <button key={x} className={n === x ? "on" : ""} onClick={() => patch({ sliceCount: x })}>
+                  {x}
+                </button>
+              ))}
+            </div>
+            <span className="gp-hint">改切片数/比例/风格后，点节点上的「重置」清掉旧分析才会重新规划。</span>
+          </NodeParamsPop>
+          <NodeParamsPop icon={<IcImage size={14} />} label="风格" title={workMode === "h5" ? "H5 默认切片风格" : "风格基调（统一调性）"} up>
+            <div className="gp-sec-title">{workMode === "h5" ? "H5 默认切片风格（各切片保持统一调性，留空由模型定）" : "风格基调（各切片保持统一调性，留空由模型定）"}</div>
+            <textarea
+              className="textarea nodrag nowheel"
+              rows={3}
+              placeholder={workMode === "h5" ? "例：清新插画 / 杂志拼贴" : "例：高级简约白底大片 / 活泼拼贴风 / 国潮喜庆"}
+              value={tone}
+              onChange={(e) => patch(workMode === "h5" ? { h5StyleTone: e.target.value } : { styleTone: e.target.value })}
+            />
+          </NodeParamsPop>
+          <NodeParamsPop icon={<IcLayers size={14} />} label={d.seed != null ? String(d.seed) : "种子"} title="随机种子" up>
+            <div className="gp-sec-title">
+              随机种子<span className="gp-hint">全片同一 seed → 色调/笔触基底一致（seedream/flux/qwen 有效）</span>
+            </div>
+            <div className="ecom-seed-row">
+              <input
+                className="input nodrag"
+                type="number"
+                min={0}
+                placeholder="留空 = 随机"
+                value={d.seed ?? ""}
+                onChange={(e) => patch({ seed: e.target.value === "" ? undefined : Number(e.target.value) })}
+              />
+              <button className="btn sm" title="清空（随机生成）" onClick={() => patch({ seed: undefined })}>
+                清空
+              </button>
+            </div>
+          </NodeParamsPop>
+          <NodeParamsPop
+            icon={<IcText size={14} />}
+            label="文案"
+            title={workMode === "h5" ? "H5 长文案（按内容切片）" : "产品描述 / 卖点 / 适用人群"}
+            up
+          >
+            <div className="gp-sec-title">
+              {workMode === "h5"
+                ? "H5 长文案（会按段落/主题自动切片，每段配一张图；也可连接上游文本节点）"
+                : "产品描述 / 卖点 / 适用人群（留空也可只用产品图；连了上游文本会自动并入）"}
+            </div>
+            <textarea
+              className="textarea nodrag nowheel"
+              rows={workMode === "h5" ? 8 : 4}
+              placeholder={workMode === "h5" ? "把整篇 H5 文案粘贴在这里…" : "例：便携式蓝牙音箱，IPX7 防水，20 小时续航，适合户外 / 运动人群"}
+              value={d.productDesc ?? ""}
+              onChange={(e) => patch({ productDesc: e.target.value })}
+            />
+          </NodeParamsPop>
+        </div>
+      </div>
     </div>
   );
 }

@@ -22,7 +22,8 @@ export type NodeKind =
   | "charCard"
   | "storyboard"
   | "enhanceLocal"
-  | "vectorize";
+  | "vectorize"
+  | "ecomImage";
 
 export type RunStatus = "idle" | "running" | "done" | "error";
 
@@ -482,10 +483,10 @@ export type CharProfile = {
   artStyle?: string;
 };
 
-/** 设定卡整版的排版风格；auto = 模型按角色画风/气质自动匹配版面 */
-export type CharCardStyle = "auto" | "clean" | "magazine" | "letter" | "dossier";
+/** 设定卡整版的排版风格；auto = 按提示词描述的风格倾向自动匹配版面，其余为预设版式 */
+export type CharCardStyle = "auto" | "clean" | "magazine" | "letter" | "dossier" | "guofeng" | "illustration" | "other";
 /** 角色卡可产出的素材种类（每张内容不堆砌：格子少、区域大，同主题可用「补一张」自动换组追加） */
-export type CharDeliverable = "turnaround" | "closeup" | "expressions" | "poses" | "outfits" | "portrait" | "sheet";
+export type CharDeliverable = "turnaround" | "closeup" | "expressions" | "poses" | "outfits" | "breakdown" | "portrait" | "sheet";
 
 export type CharCardData = {
   status: RunStatus;
@@ -510,6 +511,86 @@ export type CharCardData = {
   presetName?: string;
   chatModelId?: string;
   imageModelId?: string;
+  /** 绘画参数（按所选绘画模型家族折算；undefined = 跟随参考图/服务端默认） */
+  aspect?: string;
+  resolution?: string;
+  quality?: string;
+};
+
+/* ---------------- 电商长图设计 ---------------- */
+/** 长图的一个切片（视觉分析产出，含生图提示词；生成后回填 img） */
+export type EcomSlide = {
+  /** 切片标题（如「主图」「卖点」「细节」「规格」「场景」） */
+  title: string;
+  /** 该切片的生图提示词（视觉分析产出，可手动编辑） */
+  prompt: string;
+  /** 配套文案（产品介绍 / 卖点 / 适用人群等，展示用） */
+  copy?: string;
+  /** 生成后的切片图（dataURL/assetUrl） */
+  img?: string;
+  /** 本片实际喂给模型的参考图缩略（生成时落盘，工作台左下展示用；历史切片为空） */
+  refs?: string[];
+};
+
+/** 视觉分析 JSON 产物：产品属性 + 切片规划 */
+export type EcomAnalysis = {
+  product: {
+    name: string;
+    category?: string;
+    material?: string;
+    color?: string;
+    /** 产品特征 */
+    features?: string[];
+    /** 卖点 */
+    sellingPoints?: string[];
+    /** 适用人群 */
+    audience?: string;
+    /** 风格/调性概述（各切片保持统一） */
+    styleTone?: string;
+  };
+  /** 切片规划（长度即切片数，建议 4-8） */
+  slides: EcomSlide[];
+};
+
+/** 电商长图节点：产品拍照图 → 视觉分析提属性/写介绍 → 按切片数与比例拆提示词 →
+ *  统一风格逐片生成 → 纵向拼接成完整长图（H5 / 详情页长图） */
+export type EcomImageData = {
+  status: RunStatus;
+  error?: string;
+  progress?: string;
+  /** 输出模式：image = 全流程出图；prompt = 只分析+规划切片脚本，不调绘画模型（先审再出图，省钱） */
+  outMode?: OutMode;
+  /** 工作模式：product = 产品图驱动（分析产品→营销切片）；h5 = 长文案驱动（按内容切片→每段配图） */
+  mode?: "product" | "h5";
+  /** 固定随机种子：全片用同一 seed 生成，锁色调/笔触基底（seedream/flux/qwen 有效） */
+  seed?: number;
+  /** 视觉分析模型（分析产品图、产出属性与切片提示词） */
+  chatModelId?: string;
+  /** 绘画模型（逐片生成） */
+  imageModelId?: string;
+  /** 期望切片数（作为分析的提示，实际以模型返回为准）；默认 6 */
+  sliceCount?: number;
+  /** 切片比例（如 "3:4" / "9:16" / "1:1"）；也作为生成 aspect */
+  aspect?: string;
+  resolution?: string;
+  quality?: string;
+  /** 风格基调（喂给分析与生成，统一调性；product 模式用此） */
+  styleTone?: string;
+  /** H5 模式默认切片风格（h5 模式下读这个，与 product 的 styleTone 分开存） */
+  h5StyleTone?: string;
+  /** 用户文字描述（产品介绍/卖点/适用人群；也可从上游文本接入） */
+  productDesc?: string;
+  /** Step1 中间态（视觉分析产物；改绘画模型重跑不必重新分析） */
+  analysis?: EcomAnalysis;
+  /** 各切片（含生成图） */
+  slides?: EcomSlide[];
+  /** 用户在工作台上传/指定的参考图（dataURL[]，优先级最高，与上游风格参考图合并去重） */
+  userRefs?: string[];
+  /** Step3 最终长图（dataURL/assetUrl） */
+  result?: string;
+  /** 当前一轮切片与最终长图在资产库中的组 id；重生切片按槽位替换 */
+  assetGroupId?: string;
+  picked?: number;
 };
 
 /* ---------------- 图片直接编辑（局部重绘 / 扩图 / 增强 / 尺寸 / 裁剪 → 作用于节点自身，见 core/nodeEdit.ts） ---------------- */
@@ -582,6 +663,8 @@ export type ProviderCard = {
   baseUrl: string;
   apiKey: string;
   models: Partial<Record<ModelRole, RoleSlot>>;
+  /** logo：URL / dataURL / 单字符文字徽标（预设导入时携带，可空） */
+  logo?: string;
 };
 
 /** 运行期扁平化的模型配置（由服务商卡片 + 角色解析而来，服务层直接消费） */
@@ -670,6 +753,7 @@ export type HotkeyAction =
   | "duplicate"
   | "delete"
   | "runAll"
+  | "runSelected"
   | "zoomIn"
   | "zoomOut"
   | "assets"
@@ -706,7 +790,8 @@ export type HotkeyAction =
   | "addCharCard"
   | "addStoryboard"
   | "addEnhanceLocal"
-  | "addVectorize";
+  | "addVectorize"
+  | "addEcomImage";
 
 export const HOTKEY_LABEL: Record<HotkeyAction, string> = {
   moveTool: "移动工具（激活/取消）",
@@ -735,6 +820,7 @@ export const HOTKEY_LABEL: Record<HotkeyAction, string> = {
   duplicate: "创建副本",
   delete: "删除所选（请绑定单键）",
   runAll: "运行全部工作流",
+  runSelected: "运行选中节点（焦点不在输入框时）",
   addImage: "添加节点：图片",
   addVideo: "添加节点：视频",
   addAudio: "添加节点：音频",
@@ -752,6 +838,7 @@ export const HOTKEY_LABEL: Record<HotkeyAction, string> = {
   addRelight: "添加节点：打光",
   addMultiAngle: "添加节点：多角度",
   addCharCard: "添加节点：角色卡",
+  addEcomImage: "添加节点：电商长图",
   addStoryboard: "添加节点：分镜",
   addEnhanceLocal: "添加节点：超清放大",
   addVectorize: "添加节点：智能矢量",
@@ -770,6 +857,7 @@ export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   duplicate: "ctrl+d",
   delete: "Delete",
   runAll: "ctrl+Enter",
+  runSelected: "enter",
   zoomIn: "=",
   zoomOut: "-",
   assets: "b",
@@ -804,6 +892,7 @@ export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   addRelight: "alt+2",
   addMultiAngle: "alt+3",
   addCharCard: "alt+4",
+  addEcomImage: "",
   addStoryboard: "",
   addEnhanceLocal: "",
   addVectorize: "",
@@ -1093,6 +1182,16 @@ export type AssetItem = {
   gen?: AssetGenMeta;
   /** 该资产来自哪个画布生成节点（资产卡「定位到画布节点」用；老资产无此字段） */
   nodeId?: string;
+  /** 同一次生成的多个结果共用；资产库据此折叠成一张组卡片 */
+  groupId?: string;
+  /** 组卡片标题；同组成员保持一致 */
+  groupLabel?: string;
+  /** 普通多图生成 / 电商长图切片组 */
+  groupKind?: "generation" | "ecom";
+  /** 组内稳定槽位；电商切片重生时替换原槽位，避免同组堆积旧版本 */
+  groupSlot?: string;
+  /** 组卡封面优先级：电商最终长图为 true */
+  groupCover?: boolean;
   createdAt: number;
 };
 

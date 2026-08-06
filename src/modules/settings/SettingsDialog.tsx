@@ -48,6 +48,7 @@ import { EnhanceModelsTab } from "./EnhanceModelsTab";
 import { IcLogo } from "../../ui/icons";
 import { checkUpdate, currentVersion, isPortable, GH_REPO, type UpdateInfo } from "../../core/services/updater";
 import { PROTO_PRESETS, applyProtoPreset } from "../../core/protoPresets";
+import { PROVIDER_PRESETS, buildPresetProvider, type ProviderPreset } from "../../core/providerPresets";
 import { SEARCH_PROVIDERS } from "../../core/services/webSearch";
 import { openExternal } from "../../core/external";
 import { playDone, playError } from "../../core/sound";
@@ -226,12 +227,17 @@ function SecHelp({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** 带说明按钮的分区标题 */
-function SecTitle({ title, children }: { title: string; children?: React.ReactNode }) {
+/** 带说明按钮的分区标题；extra 渲染在「?」左侧（用于「模型预设」等入口） */
+function SecTitle({ title, extra, children }: { title: string; extra?: React.ReactNode; children?: React.ReactNode }) {
   return (
     <h3 className="sec-h">
       {title}
-      {children ? <SecHelp>{children}</SecHelp> : null}
+      {extra || children ? (
+        <span className="sec-h-tail">
+          {extra ?? null}
+          {children ? <SecHelp>{children}</SecHelp> : null}
+        </span>
+      ) : null}
     </h3>
   );
 }
@@ -271,6 +277,7 @@ type ProviderDraft = {
   name: string;
   baseUrl: string;
   apiKey: string;
+  logo?: string;
   slots: Record<ModelRole, RoleSlot>;
 };
 
@@ -286,6 +293,7 @@ function toDraft(p?: ProviderCard): ProviderDraft {
     name: p?.name ?? "",
     baseUrl: p?.baseUrl ?? "",
     apiKey: p?.apiKey ?? "",
+    logo: p?.logo,
     slots: { chat: slot("chat"), image: slot("image"), video: slot("video"), audio: slot("audio"), asr: slot("asr") },
   };
 }
@@ -297,7 +305,59 @@ function fromDraft(d: ProviderDraft): ProviderCard {
     if (s.models.length) models[role] = { protocol: s.protocol, models: [...s.models] };
   }
   const fallback = d.baseUrl.replace(/^https?:\/\//, "").split("/")[0] || "未命名服务商";
-  return { id: d.id, name: d.name.trim() || fallback, baseUrl: d.baseUrl, apiKey: d.apiKey, models };
+  return { id: d.id, name: d.name.trim() || fallback, baseUrl: d.baseUrl, apiKey: d.apiKey, logo: d.logo, models };
+}
+
+/** 推荐中转站预设卡片：logo / 评分 / 价格 / 官网跳转 / 一键导入（点「选项」生成草稿，弹编辑浮层补 Key） */
+function PresetCard({ p, onPick }: { p: ProviderPreset; onPick: (p: ProviderPreset) => void }) {
+  const host = p.baseUrl.replace(/^https?:\/\//, "").split("/")[0] || p.baseUrl;
+  // 评分配色档：≥9 高（绿）/ 7-8 中（蓝）/ <7 低（灰）；作稳定性 · 可信度参考
+  const level = p.rating == null ? "" : p.rating >= 9 ? "high" : p.rating >= 7 ? "mid" : "low";
+  return (
+    <div className={`preset-card ${level}`} title={`${p.label}\n\n${p.note}\n${p.baseUrl}`}>
+      <div className="psc-top">
+        {p.logo ? (
+          /^https?:|^data:/i.test(p.logo) ? (
+            <img className="psc-logo" src={p.logo} alt="" />
+          ) : (
+            <span className="psc-logo txt">{p.logo.slice(0, 1)}</span>
+          )
+        ) : (
+          <span className="psc-logo txt">{p.label.slice(0, 1)}</span>
+        )}
+        <b className="psc-name">{p.label}</b>
+        {p.rating != null ? (
+          <span className="psc-rating" title="稳定性 / 可信度参考（0-10，越高越稳）">
+            {p.rating}
+          </span>
+        ) : null}
+      </div>
+      <span className="psc-host">{host}</span>
+      {p.price ? (
+        <span className="psc-price" title="大概费用（以下单页为准）">
+          {p.price}
+        </span>
+      ) : null}
+      <div className="psc-acts">
+        {p.site ? (
+          <button
+            className="icon-btn"
+            title={`打开官网：${p.site}`}
+            onClick={() => void openExternal(p.site!)}
+          >
+            <IcGlobe size={14} />
+          </button>
+        ) : null}
+        <button
+          className="btn sm primary"
+          title="导入为服务商卡片（名称 / 地址 / 协议已填好，再补 API Key 与模型即可）"
+          onClick={() => onPick(p)}
+        >
+          选项
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function ModelsTab() {
@@ -305,9 +365,13 @@ function ModelsTab() {
   const upsertProvider = useSettings((s) => s.upsertProvider);
   const removeProvider = useSettings((s) => s.removeProvider);
   const setDefault = useSettings((s) => s.setDefault);
+  const reorderProviders = useSettings((s) => s.reorderProviders);
   const [editing, setEditing] = useState<ProviderDraft | null>(null);
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
+  const [showPresets, setShowPresets] = useState(false);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
   const setSideEditorOpen = useUi((s) => s.setSideEditorOpen);
 
   // 浮出面板打开时，让主设置窗口左移让位（两者整体居中）
@@ -331,6 +395,10 @@ function ModelsTab() {
   };
 
   const saveEditing = (d: ProviderDraft) => {
+    if (!d.apiKey.trim()) {
+      toast("请填写 API Key 后再保存（没有 Key 的服务商不会保存到模型配置）", "err");
+      return;
+    }
     const p = fromDraft(d);
     if (!Object.keys(p.models).length) {
       toast("请至少为一种用途添加一个模型（输入后回车，或「拉取模型」从列表选择）", "err");
@@ -346,7 +414,18 @@ function ModelsTab() {
 
   return (
     <>
-      <SecTitle title="模型配置">
+      <SecTitle
+        title="模型配置"
+        extra={
+          <button
+            className="btn sm"
+            title="展开 / 收起下方推荐中转站预设"
+            onClick={() => setShowPresets((v) => !v)}
+          >
+            <IcSparkles size={14} /> {showPresets ? "收起预设" : "中转站预设"}
+          </button>
+        }
+      >
         一格 = 一个服务商（中转站/官方）：Base URL 与 API Key 只填一次，对话、绘画、视频、音频、语音识别每种用途都可以添加多个模型，
         点击方格会在设置窗口右侧弹出编辑面板。配置存在系统用户数据目录并自动备份，也可手动导出保管。
       </SecTitle>
@@ -412,8 +491,45 @@ function ModelsTab() {
           <IcPlus size={22} />
           <span>添加服务商</span>
         </button>
-        {models.providers.map((p) => (
-          <button key={p.id} className={`pcard ${editing?.id === p.id ? "on" : ""}`} onClick={() => setEditing(toDraft(p))}>
+        {models.providers.map((p, i) => (
+          <button
+            key={p.id}
+            className={`pcard ${editing?.id === p.id ? "on" : ""} ${dragIdx === i ? "dragging" : ""} ${overIdx === i ? "drag-over" : ""}`}
+            title="点击编辑；按住可拖动调整顺序"
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData("text/plain", String(i));
+              e.dataTransfer.effectAllowed = "move";
+              setDragIdx(i);
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setOverIdx(i);
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setOverIdx((v) => (v === i ? null : v));
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (dragIdx != null && dragIdx !== i) reorderProviders(dragIdx, i);
+              setDragIdx(null);
+              setOverIdx(null);
+            }}
+            onDragEnd={() => {
+              setDragIdx(null);
+              setOverIdx(null);
+            }}
+            onClick={() => setEditing(toDraft(p))}
+          >
+            {p.logo ? (
+              /^https?:|^data:/i.test(p.logo) ? (
+                <img className="pc-logo" src={p.logo} alt="" />
+              ) : (
+                <span className="pc-logo txt">{p.logo.slice(0, 1)}</span>
+              )
+            ) : null}
             <b>{p.name}</b>
             <span className="pc-host">{p.baseUrl.replace(/^https?:\/\//, "") || "未填地址"}</span>
             <span className="pc-roles">
@@ -439,6 +555,20 @@ function ModelsTab() {
         卡片上的五个图标：对话 / 绘画 / 视频 / 音频 / 语音识别。图标点亮 = 该服务商配置了这类模型；
         <b>绿点 = 这类模型的当前默认来源</b>（在顶部「默认模型」里切换）。
       </div>
+
+      {showPresets ? (
+        <div className="preset-section">
+          <div className="preset-sec-title">
+            推荐中转站预设
+            <span className="hint">· 一键导入常用中转站（名称 / 地址 / 协议已填好，补 API Key 即可）</span>
+          </div>
+          <div className="preset-grid">
+            {PROVIDER_PRESETS.map((p) => (
+              <PresetCard key={p.key} p={p} onPick={(pp) => setEditing(toDraft(buildPresetProvider(pp)))} />
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {editing
         ? createPortal(
@@ -1799,7 +1929,7 @@ const HOTKEY_GROUPS: { title: string; actions: HotkeyAction[] }[] = [
     actions: ["moveTool", "group", "ignore", "align", "duplicate", "delete", "undo", "redo", "popLock"],
   },
   { title: "视图", actions: ["fitView", "zoomIn", "zoomOut", "zen", "search", "spotlight"] },
-  { title: "运行", actions: ["runAll"] },
+  { title: "运行", actions: ["runAll", "runSelected"] },
   {
     title: "面板与窗口",
     actions: ["agent", "voiceCall", "assets", "gallery", "charLib", "errCenter", "runLog", "settings", "theme", "newBoard"],

@@ -19,7 +19,7 @@ import { generateImage } from "./services/imageGen";
 import { generateVideo } from "./services/videoGen";
 import { runFlow } from "./runner";
 import { assetUrl } from "./services/assetFiles";
-import { clamp, errMsg, isTauri, parseJsonLoose } from "./utils";
+import { clamp, errMsg, isTauri, parseJsonLoose, uid } from "./utils";
 import { beginTask, endTask, isAbortError } from "./runControl";
 import { chatCaps, familyPresets, gptSize, imageFamily, nearestAspect, parseRatio, scalePresetToTier } from "./modelMeta";
 
@@ -211,9 +211,18 @@ function lastUserImages(): string[] | undefined {
 
 /** 收录成果：资产库 + 生成记录（与画布节点生成同等待遇） */
 function collectResults(results: AgentResult[]) {
-  for (const r of results) {
+  const group = results.length > 1
+    ? { groupId: `gen-${uid(12)}`, groupLabel: results[0]?.prompt || "Agent 批量生成", groupKind: "generation" as const }
+    : undefined;
+  for (const [index, r] of results.entries()) {
     if (r.kind === "image") useUi.getState().addGallery({ kind: "image", src: r.src, prompt: r.prompt });
-    void useAssets.getState().collect({ src: r.src, kind: r.kind, prompt: r.prompt, name: r.prompt });
+    void useAssets.getState().collect({
+      src: r.src,
+      kind: r.kind,
+      prompt: r.prompt,
+      name: r.prompt,
+      group: group ? { ...group, groupSlot: `result:${index}` } : undefined,
+    });
   }
 }
 

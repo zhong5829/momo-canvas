@@ -14,6 +14,7 @@ export const CHAR_DELIVERABLES: { value: CharDeliverable; label: string; desc: s
   { value: "expressions", label: "表情集", desc: "2×2 四种表情（补一张自动换下一组）" },
   { value: "poses", label: "动作姿态", desc: "2×2 四种全身动作（补一张自动换下一组）" },
   { value: "outfits", label: "服装造型", desc: "三套不同服装造型（补一张自动换下一组）" },
+  { value: "breakdown", label: "拆解图", desc: "左：上身立面 + 下身服装姿态分解放大标注；右：正/反/侧三视图" },
   { value: "portrait", label: "角色立绘", desc: "单张全身立绘" },
   { value: "sheet", label: "角色设定卡", desc: "整版设定卡排版（档案/色卡/服装拆解）" },
 ];
@@ -29,6 +30,8 @@ const DELIV_SPEC: Record<CharDeliverable, string> = {
   expressions: "2×2 网格排列四种表情：平静、微笑、生气、惊讶，同一角色头部特写，每格区域充足、五官细节清晰，纯白背景，格与格之间留白分隔",
   poses: "2×2 网格排列同一角色四种全身动作姿态：自然站立、行走、回头、坐姿，每格区域充足、全身完整入镜，纯白背景",
   outfits: "同一角色的三套服装造型全身站立一字排开：日常便服、正式礼服、符合角色气质的主题戏服，每套占画面三分之一，发型与外貌保持一致，纯白背景",
+  breakdown:
+    "角色设定拆解图：画面分左右两部分。左侧把人物上下半身拆开放大——上半身人物立面（头面部、发型、上衣）与下半身（裤裙、鞋靴、姿态）分别特写，并用标注线/引线注明面料、配色、结构线与配饰等细节；右侧为同一角色的正/背/侧三视图全身。整体为设计拆解版式，纯白背景，标注清晰可读，角色外貌与其它素材完全一致",
   portrait: "单张全身立绘，自然站姿、放松微笑，纯白背景，影棚均匀柔光",
   sheet:
     "一整张角色设定卡排版设计，版块包含：角色名大标题（中英文）、基本信息栏（年龄/身高/生日/星座/职业）、外貌特征列表、气质关键词、全身三视图、表情格、服装单品拆解、配饰展示、色卡（附 hex 色号）、角色简介与手写签名，文字排版清晰可读",
@@ -55,6 +58,9 @@ export const CARD_STYLES: { value: CharCardStyle; label: string; desc: string }[
   { value: "magazine", label: "时尚杂志", desc: "时尚杂志大片排版，大幅人物图配文字栏，现代无衬线字体，黑白灰高对比配色" },
   { value: "letter", label: "信纸手账", desc: "米色信纸质感底、花朵与花边点缀、圆角卡片版块、温柔的手账风排版" },
   { value: "dossier", label: "机密档案", desc: "牛皮纸/做旧纸张拼贴、胶带与回形针元素、CONFIDENTIAL 印章、档案袋风格排版" },
+  { value: "guofeng", label: "古风", desc: "水墨工笔古风版式：宣纸纹理底、大量留白、毛笔体大标题、祥云花鸟等古典纹样点缀，配色取自角色色卡" },
+  { value: "illustration", label: "插画手绘", desc: "手绘插画版式：水彩/彩铅笔触质感、可爱的手绘装饰元素、圆润字体、活泼明快的拼贴排版" },
+  { value: "other", label: "其他", desc: "不限定具体版式，由模型根据角色的画风、气质与色卡自由设计最贴合的设定卡版面" },
 ];
 
 /* ---------------- 视觉分析系统提示词 ---------------- */
@@ -62,7 +68,7 @@ export function charAnalysisSystem(style: CharCardStyle, lang: "zh" | "en"): str
   const st = CARD_STYLES.find((s) => s.value === style) ?? CARD_STYLES[0];
   const sheetStyle =
     style === "auto"
-      ? "请先判断角色的整体画风与气质，再自动设计最贴合的版面风格（例如：古风华服→水墨宣纸卷轴版式；赛博未来→霓虹 HUD 科技版式；甜美日常→奶油色手账版式；职场干练→高级极简杂志版式），并把选定的版面风格具体写进 sheet 提示词里"
+      ? "自动模式：请优先参考用户提示词与角色文字描述中体现的风格倾向（画风、时代、题材、氛围），据此自动设计最贴合的版面风格（例如：古风华服→水墨宣纸卷轴版式；赛博未来→霓虹 HUD 科技版式；甜美日常→奶油色手账版式；职场干练→高级极简杂志版式），并把选定的版面风格具体写进 sheet 提示词里"
       : st.desc;
   const langLine =
     lang === "en"
@@ -73,7 +79,7 @@ export function charAnalysisSystem(style: CharCardStyle, lang: "zh" | "en"): str
 1. 提炼（或根据文字描述设定）这个角色的完整档案（外貌、服饰、配色、气质），并为角色起一个契合气质的名字；
 2. 为下列每种角色素材各写一段可直接用于 AI 绘画的高质量提示词。
 
-所有提示词必须：以同一角色为主体，把发型发色、脸部特征、体型、服装、配饰等外貌锚点完整重复写进每一段（保证多张图角色一致）；画风与原图/描述一致（写实照片保持写实摄影质感，插画保持同风格插画；文字描述未指明画风时默认写实摄影）；${langLine}。
+所有提示词必须：以同一角色为主体，把发型发色、脸部特征、体型、服装、配饰等外貌锚点完整重复写进每一段（保证多张图角色一致）；用户文字描述里提到的每个设定细节（发色、服装、配饰、特征等）都必须逐字体现进每段提示词，不得遗漏；三视图（turnaround）与角色立绘（portrait）必须是完整全身画面（若参考图仅为半身，提示词里要明确要求扩展补全全身）；画风与原图/描述一致（写实照片保持写实摄影质感，插画保持同风格插画；文字描述未指明画风时默认写实摄影）；${langLine}。
 
 素材版式要求：
 ${specs}
@@ -81,7 +87,7 @@ ${specs}
 sheet 设定卡的版面风格：${sheetStyle}。
 
 严格只输出以下 JSON（不要 markdown 代码块、不要任何解释）：
-{"profile":{"name":"中文名","nameEn":"英文名","age":"22","occupation":"职业","intro":"80字以内角色简介","appearance":["外貌特征"],"outfit":["服装单品"],"accessories":["配饰"],"palette":["#RRGGBB"],"keywords":["气质关键词"],"artStyle":"画风概述"},"prompts":{"turnaround":"…","closeup":"…","expressions":"…","poses":"…","outfits":"…","portrait":"…","sheet":"…"}}`;
+{"profile":{"name":"中文名","nameEn":"英文名","age":"22","occupation":"职业","intro":"80字以内角色简介","appearance":["外貌特征"],"outfit":["服装单品"],"accessories":["配饰"],"palette":["#RRGGBB"],"keywords":["气质关键词"],"artStyle":"画风概述"},"prompts":{"turnaround":"…","closeup":"…","expressions":"…","poses":"…","outfits":"…","breakdown":"…","portrait":"…","sheet":"…"}}`;
 }
 
 /* ---------------- 角色库内置预设 ---------------- */
@@ -103,6 +109,7 @@ function presetPrompts(anchor: string, styleTail: string): Record<CharDeliverabl
     expressions: `角色表情集参考：${mk(DELIV_SPEC.expressions)}`,
     poses: `角色动作姿态参考：${mk(DELIV_SPEC.poses)}`,
     outfits: `角色服装造型设定：${mk(DELIV_SPEC.outfits)}`,
+    breakdown: `角色设定拆解图：${mk(DELIV_SPEC.breakdown)}`,
     portrait: `角色全身立绘：${mk(DELIV_SPEC.portrait)}`,
     sheet: `角色设定卡：${mk(DELIV_SPEC.sheet)}`,
   };

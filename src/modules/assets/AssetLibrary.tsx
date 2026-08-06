@@ -74,6 +74,7 @@ import {
   IcGallery,
   IcImage,
   IcLibrary,
+  IcLayers,
   IcMusic,
   IcSearch,
   IcTag,
@@ -95,6 +96,21 @@ const KIND_TABS: { key: AssetKind | "all"; label: string; icon: React.ReactNode 
 ];
 
 const KIND_BADGE: Record<AssetKind, string> = { image: "", video: "视频", audio: "音频", pdf: "PDF", vector: "SVG", other: "文件" };
+
+function AssetThumb({ item }: { item: AssetItem }) {
+  if (item.thumb) return <img src={assetUrl(item.thumb)} alt="" loading="lazy" />;
+  if (item.kind === "image") return <img src={assetUrl(item.path)} alt="" loading="lazy" />;
+  if (item.kind === "vector") return <img className="svg-bg" src={assetUrl(item.path)} alt="" loading="lazy" />;
+  if (item.kind === "audio") return <IcMusic size={40} />;
+  if (item.kind === "video") return <IcVideo size={40} />;
+  return <IcFile size={40} />;
+}
+
+function groupMemberOrder(item: AssetItem) {
+  if (item.groupSlot === "final") return 10_000;
+  const n = Number(item.groupSlot?.split(":")[1]);
+  return Number.isFinite(n) ? n : 9_000;
+}
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -127,6 +143,7 @@ export function AssetLibrary() {
   const [keyword, setKeyword] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [previewIdx, setPreviewIdx] = useState<number | null>(null);
+  const [focusedGroupId, setFocusedGroupId] = useState<string | null>(null);
   const [confirmDel, setConfirmDel] = useState(false);
   const [editingFolder, setEditingFolder] = useState<string | null>(null);
   const [batchTag, setBatchTag] = useState("");
@@ -168,6 +185,30 @@ export function AssetLibrary() {
     });
   }, [items, kind, folderId, tagFilter, keyword]);
 
+  /** 同一次生成的多份资产在网格中只占一张组卡；展开后仍操作真实资产项。 */
+  const entries = useMemo(() => {
+    const out: { key: string; items: AssetItem[] }[] = [];
+    const groupAt = new Map<string, number>();
+    for (const item of filtered) {
+      if (!item.groupId) {
+        out.push({ key: item.id, items: [item] });
+        continue;
+      }
+      const at = groupAt.get(item.groupId);
+      if (at == null) {
+        groupAt.set(item.groupId, out.length);
+        out.push({ key: item.groupId, items: [item] });
+      } else {
+        out[at].items.push(item);
+      }
+    }
+    return out;
+  }, [filtered]);
+
+  const focusedGroup = focusedGroupId
+    ? entries.find((entry) => entry.key === focusedGroupId && entry.items.length > 1)
+    : undefined;
+
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: items.length };
     for (const i of items) c[i.kind] = (c[i.kind] ?? 0) + 1;
@@ -192,6 +233,7 @@ export function AssetLibrary() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (previewIdx !== null) setPreviewIdx(null);
+        else if (focusedGroupId) setFocusedGroupId(null);
         else setOpen(false);
       }
       if (previewIdx !== null && e.key === "ArrowLeft") setPreviewIdx((i) => (i !== null && i > 0 ? i - 1 : i));
@@ -200,7 +242,11 @@ export function AssetLibrary() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, previewIdx, filtered.length, setOpen]);
+  }, [open, previewIdx, focusedGroupId, filtered.length, setOpen]);
+
+  useEffect(() => {
+    if (focusedGroupId && !focusedGroup) setFocusedGroupId(null);
+  }, [focusedGroupId, focusedGroup]);
 
   useEffect(() => setConfirmDel(false), [selected.size]);
 
@@ -364,7 +410,9 @@ export function AssetLibrary() {
                 </button>
               ) : null}
             </div>
-            <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-3)" }}>{filtered.length} 项</span>
+            <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-3)" }}>
+              {entries.length === filtered.length ? `${filtered.length} 项` : `${entries.length} 张卡片 · ${filtered.length} 项`}
+            </span>
             <span style={{ flex: 1 }} />
             <button
               className="btn sm"
@@ -409,7 +457,50 @@ export function AssetLibrary() {
                 )}
               </div>
             ) : (
-              filtered.map((it, idx) => (
+              entries.map((entry) => {
+                const members = [...entry.items].sort((a, b) => groupMemberOrder(a) - groupMemberOrder(b));
+                const grouped = members.length > 1;
+                const it = members.find((x) => x.groupCover) ?? members[0];
+                const idx = filtered.findIndex((x) => x.id === it.id);
+                if (grouped) {
+                  const allSelected = members.every((x) => selected.has(x.id));
+                  return (
+                    <div key={entry.key} className="a-group-stack">
+                      <div
+                        className={`a-card a-group-card ${allSelected ? "sel" : ""}`}
+                        title={`${it.groupLabel || it.prompt || it.name}\n${members.length} 个生成结果 · 点击展开`}
+                        onClick={() => {
+                          if (selected.size) {
+                            const next = new Set(selected);
+                            if (allSelected) members.forEach((x) => next.delete(x.id));
+                            else members.forEach((x) => next.add(x.id));
+                            setSelected(next);
+                          } else {
+                            setFocusedGroupId(entry.key);
+                          }
+                        }}
+                      >
+                        <div className="a-thumb"><AssetThumb item={it} /></div>
+                        <span className="a-group-count"><IcLayers size={12} /> {members.length}</span>
+                        <button
+                          className="a-check"
+                          aria-label={allSelected ? "取消选择整组" : "选择整组"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const next = new Set(selected);
+                            if (allSelected) members.forEach((x) => next.delete(x.id));
+                            else members.forEach((x) => next.add(x.id));
+                            setSelected(next);
+                          }}
+                        >
+                          {allSelected ? <IcCheck size={14} /> : null}
+                        </button>
+                        <div className="a-name">{it.groupLabel || it.name}</div>
+                      </div>
+                    </div>
+                  );
+                }
+                return (
                 <div
                   key={it.id}
                   className={`a-card ${selected.has(it.id) ? "sel" : ""}`}
@@ -448,19 +539,7 @@ export function AssetLibrary() {
                   }}
                 >
                   <div className="a-thumb">
-                    {it.thumb ? (
-                      <img src={assetUrl(it.thumb)} alt="" loading="lazy" />
-                    ) : it.kind === "image" ? (
-                      <img src={assetUrl(it.path)} alt="" loading="lazy" />
-                    ) : it.kind === "vector" ? (
-                      <img className="svg-bg" src={assetUrl(it.path)} alt="" loading="lazy" />
-                    ) : it.kind === "audio" ? (
-                      <IcMusic size={40} />
-                    ) : it.kind === "video" ? (
-                      <IcVideo size={40} />
-                    ) : (
-                      <IcFile size={40} />
-                    )}
+                    <AssetThumb item={it} />
                   </div>
                   {KIND_BADGE[it.kind] ? <span className="a-badge">{KIND_BADGE[it.kind]}</span> : null}
                   <button
@@ -474,7 +553,8 @@ export function AssetLibrary() {
                   </button>
                   <div className="a-name">{it.name}</div>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
 
@@ -531,6 +611,43 @@ export function AssetLibrary() {
           ) : null}
         </div>
         <ShortcutBar />
+        {focusedGroup ? (
+          <div className="a-group-focus" onMouseDown={(e) => e.target === e.currentTarget && setFocusedGroupId(null)}>
+            <section className="a-group-panel" role="dialog" aria-modal="true" aria-label="生成结果组">
+              <header>
+                <span><IcLayers size={17} /></span>
+                <div>
+                  <b>{focusedGroup.items[0].groupLabel || "生成结果组"}</b>
+                  <small>{focusedGroup.items.length} 个资产 · 点击任一项查看大图</small>
+                </div>
+                <button className="icon-btn" aria-label="关闭生成结果组" onClick={() => setFocusedGroupId(null)}>
+                  <IcClose size={18} />
+                </button>
+              </header>
+              <div className="a-group-grid">
+                {[...focusedGroup.items].sort((a, b) => groupMemberOrder(a) - groupMemberOrder(b)).map((member) => (
+                  <button
+                    key={member.id}
+                    className="a-group-member"
+                    onClick={() => {
+                      const memberIndex = filtered.findIndex((x) => x.id === member.id);
+                      if (memberIndex >= 0) setPreviewIdx(memberIndex);
+                      setFocusedGroupId(null);
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setCardMenu({ x: e.clientX, y: e.clientY, id: member.id });
+                    }}
+                  >
+                    <span className="a-thumb"><AssetThumb item={member} /></span>
+                    <span className="a-group-member-name">{member.groupSlot === "final" ? "最终长图" : member.name}</span>
+                    {member.groupSlot === "final" ? <span className="a-group-final">最终</span> : null}
+                  </button>
+                ))}
+              </div>
+            </section>
+          </div>
+        ) : null}
       </div>
 
       {cardMenu

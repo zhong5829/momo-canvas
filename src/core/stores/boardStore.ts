@@ -70,6 +70,19 @@ export function defaultData(kind: NodeKind): Record<string, unknown> {
         prompts: {},
         results: {},
       };
+    case "ecomImage":
+      return {
+        status: "idle",
+        outMode: "image",
+        mode: "product",
+        sliceCount: 6,
+        aspect: "3:4",
+        styleTone: "",
+        h5StyleTone: "",
+        productDesc: "",
+        userRefs: [],
+        slides: [],
+      };
   }
 }
 
@@ -92,6 +105,7 @@ export function outPortType(kind: NodeKind, data?: Record<string, unknown>): Por
     case "relight":
     case "multiAngle":
     case "charCard":
+    case "ecomImage":
       return data?.outMode === "prompt" ? "text" : "image";
     case "prompt":
     case "chat":
@@ -133,6 +147,7 @@ export const NODE_INPUTS: Record<NodeKind, { text?: boolean; image?: boolean; vi
   relight: { text: true, image: true },
   multiAngle: { text: true, image: true },
   charCard: { text: true, image: true },
+  ecomImage: { text: true, image: true },
   storyboard: { text: true, image: true },
   enhanceLocal: { image: true },
   vectorize: { image: true },
@@ -155,6 +170,7 @@ const KIND_RANK: Record<NodeKind, number> = {
   enhanceLocal: 8.5,
   vectorize: 8.6,
   charCard: 10,
+  ecomImage: 10.5,
   videoGen: 11,
   audioGen: 11.5,
   videoDub: 11.6,
@@ -185,6 +201,7 @@ export const NODE_LABEL: Record<NodeKind, string> = {
   relight: "打光",
   multiAngle: "多角度",
   charCard: "角色卡",
+  ecomImage: "电商长图",
   storyboard: "分镜",
   enhanceLocal: "超清放大",
   vectorize: "智能矢量",

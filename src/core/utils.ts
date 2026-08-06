@@ -195,9 +195,12 @@ export function errMsg(e: unknown): string {
   return String(e);
 }
 
-/** 宽容解析模型返回的 JSON：剥掉代码块围栏，截取首个 { 到最后一个 } */
+/** 宽容解析模型返回的 JSON：先剥掉推理模型的 <think> 思考块（里面的 { 会让 JSON 提取错位），
+ *  再去代码块围栏，截取首个 { 到最后一个 }。失败返回 null。 */
 export function parseJsonLoose<T>(text: string): T | null {
-  const cleaned = text.replace(/```(?:json)?/g, "").trim();
+  // 去掉推理模型常见的 <think>/<reasoning>/<思考> 等思考块（成对标签）
+  const noThink = text.replace(/<(think|thinking|reason|reasoning|reflection|思考|分析)[\s\S]*?<\/\1\s*>/gi, "");
+  const cleaned = noThink.replace(/```(?:json)?/g, "").trim();
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start < 0 || end <= start) return null;

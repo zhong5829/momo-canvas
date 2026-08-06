@@ -3,18 +3,20 @@
  *  素材逐张生成、每张内容不堆砌（格子少区域大）；「补一张」自动换下一组内容追加，逐张补全设定。
  *  输出统一单口：出图模式下勾选素材的首图全部传给下游（整套参考，角色一致性更稳）。
  *  也可从「角色库」应用预设（档案与提示词已就绪，直接生成）
+ *
+ *  节点本体只展示「结果」：档案 + 各素材图墙（带重新生成/补一张）。所有参数（模型/比例/风格/语言、
+ *  素材勾选、提示词编辑）全在画布下方「角色卡参数栏」（选中本节点出现，与生图节点同款底部生成栏）。
  */
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { NodeShell, OutModeToggle, PortIn, PortOut } from "../NodeShell";
-import { IcCheck, IcCopy, IcIdCard, IcLoading, IcPlus, IcRefresh, IcSparkles } from "../../../ui/icons";
-import { ModelPicker } from "../../../ui/ModelPicker";
+import { IcCopy, IcIdCard, IcLoading, IcPlus, IcRefresh, IcSparkles } from "../../../ui/icons";
 import { useBoard } from "../../../core/stores/boardStore";
 import { toast, useUi } from "../../../core/stores/uiStore";
 import { regenCharDeliverable, runFlow } from "../../../core/runner";
-import { CARD_STYLES, CHAR_DELIVERABLES, DELIV_VARIATIONS } from "../../../core/charPresets";
+import { CHAR_DELIVERABLES, DELIV_VARIATIONS } from "../../../core/charPresets";
 import { Thumb } from "../../../ui/Thumb";
-import type { CharCardData, CharDeliverable } from "../../../core/types";
+import type { CharCardData } from "../../../core/types";
 
 export const CharCardNode = memo(function CharCardNode({ id, data, selected }: NodeProps) {
   const d = data as CharCardData;
@@ -24,20 +26,19 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
   const p = d.profile;
   const hasPrompts = Object.values(d.prompts).some((t) => (t ?? "").trim());
   const mode = d.outMode ?? (d.genImages === false ? "prompt" : "image");
+  // 节点只展示「已生成出图」的素材（勾选与提示词编辑都在底部参数栏）
+  const resultRows = CHAR_DELIVERABLES.filter(
+    (dv) => d.deliverables.includes(dv.value) && (d.results[dv.value]?.length ?? 0) > 0,
+  );
 
-  const toggleDeliv = (k: CharDeliverable) => {
-    const has = d.deliverables.includes(k);
-    upd(id, { deliverables: has ? d.deliverables.filter((x) => x !== k) : [...d.deliverables, k] });
-  };
-
-  const copyPrompt = async (k: CharDeliverable) => {
+  const copyPrompt = async (k: (typeof CHAR_DELIVERABLES)[number]["value"]) => {
     const t = (d.prompts[k] ?? "").trim();
     if (!t) return;
     try {
       await navigator.clipboard.writeText(t);
       toast("提示词已复制", "ok");
     } catch {
-      toast("复制失败：请从下方「查看/编辑提示词」里手动复制", "err");
+      toast("复制失败：请从底部参数栏的「提示词」里手动复制", "err");
     }
   };
 
@@ -97,136 +98,67 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
         ) : (
           <div className="gen-sum">
             <IcIdCard size={13} />
-            <span>连接一张人物图片或一段角色文字描述后运行：模型提炼角色档案并产出整套素材；也可从「角色库」应用预设</span>
+            <span>连接一张人物图片或一段角色文字描述后运行：模型提炼角色档案并产出整套素材；模型/比例/风格、素材勾选与提示词都在下方参数栏设置，也可从「角色库」应用预设</span>
           </div>
         )}
 
-        {!p ? (
-          <>
-            <div className="cc-lab">设定卡排版风格</div>
-            <div className="opt-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
-              {CARD_STYLES.map((s) => (
-                <button
-                  key={s.value}
-                  title={s.desc}
-                  className={`opt-cell ${d.style === s.value ? "on" : ""}`}
-                  onClick={() => upd(id, { style: s.value })}
-                >
-                  <span className="oc-lab">{s.label}</span>
-                </button>
-              ))}
-            </div>
-            <div className="ctl-row" title="生图提示词的语言：多数绘画模型英文效果更好">
-              <span className="cc-lab" style={{ margin: 0 }}>提示词语言</span>
-              <span style={{ flex: 1 }} />
-              <span className="lang-seg">
-                <button className={d.lang === "zh" ? "on" : ""} onClick={() => upd(id, { lang: "zh" })}>
-                  中
-                </button>
-                <button className={d.lang === "en" ? "on" : ""} onClick={() => upd(id, { lang: "en" })}>
-                  EN
-                </button>
-              </span>
-            </div>
-          </>
-        ) : null}
-
-        <div className="cc-lab">产出素材（勾选 · 逐张生成，「补一张」自动换组）</div>
-        <div className="cc-delivs nodrag">
-          {CHAR_DELIVERABLES.map((dv) => {
-            const on = d.deliverables.includes(dv.value);
-            const imgs = d.results[dv.value] ?? [];
-            const hasP = !!(d.prompts[dv.value] ?? "").trim();
-            const canVary = !!DELIV_VARIATIONS[dv.value]?.length;
-            return (
-              <div key={dv.value} className={`cc-deliv ${on ? "" : "off"}`}>
-                <div className="cc-deliv-head">
-                  <button className={`cc-check ${on ? "on" : ""}`} title={dv.desc} onClick={() => toggleDeliv(dv.value)}>
-                    {on ? <IcCheck size={12} /> : null}
-                  </button>
-                  <span className="cc-deliv-name" title={dv.desc}>
-                    {dv.label}
-                  </span>
-                  <span style={{ flex: 1 }} />
-                  {hasP ? (
-                    <>
-                      <button className="icon-btn" title="复制该素材的提示词" onClick={() => void copyPrompt(dv.value)}>
-                        <IcCopy size={14} />
-                      </button>
-                      {mode === "image" ? (
-                        <>
-                          <button
-                            className="icon-btn"
-                            title="重新生成该素材（替换现有图）"
-                            disabled={running}
-                            onClick={() => void regenCharDeliverable(id, dv.value)}
-                          >
-                            <IcRefresh size={14} />
-                          </button>
-                          <button
-                            className="icon-btn"
-                            title={
-                              canVary
-                                ? `补一张：${dv.label}自动换成下一组内容后追加（逐张补全设定）`
-                                : "补一张：按同一提示词再生成一张并追加"
-                            }
-                            disabled={running}
-                            onClick={() => void regenCharDeliverable(id, dv.value, { append: true })}
-                          >
-                            <IcPlus size={14} />
-                          </button>
-                        </>
-                      ) : null}
-                    </>
-                  ) : null}
-                </div>
-                {imgs.length ? (
+        {resultRows.length ? (
+          <div className="cc-delivs nodrag">
+            {resultRows.map((dv) => {
+              const imgs = d.results[dv.value] ?? [];
+              const canVary = !!DELIV_VARIATIONS[dv.value]?.length;
+              return (
+                <div key={dv.value} className="cc-deliv">
+                  <div className="cc-deliv-head">
+                    <span className="cc-deliv-name" title={dv.desc}>
+                      {dv.label}
+                    </span>
+                    <span style={{ flex: 1 }} />
+                    <button className="icon-btn" title="复制该素材的提示词" onClick={() => void copyPrompt(dv.value)}>
+                      <IcCopy size={14} />
+                    </button>
+                    {mode === "image" ? (
+                      <>
+                        <button
+                          className="icon-btn"
+                          title="重新生成该素材（替换现有图）"
+                          disabled={running}
+                          onClick={() => void regenCharDeliverable(id, dv.value)}
+                        >
+                          <IcRefresh size={14} />
+                        </button>
+                        <button
+                          className="icon-btn"
+                          title={
+                            canVary
+                              ? `补一张：${dv.label}自动换成下一组内容后追加（逐张补全设定）`
+                              : "补一张：按同一提示词再生成一张并追加"
+                          }
+                          disabled={running}
+                          onClick={() => void regenCharDeliverable(id, dv.value, { append: true })}
+                        >
+                          <IcPlus size={14} />
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
                   <div className="cc-deliv-imgs">
                     {imgs.map((s, i) => (
                       <Thumb key={i} src={s} alt="" onClick={() => setLightbox(s)} />
                     ))}
                   </div>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-
-        {hasPrompts ? (
-          <details className="cc-prompts nodrag">
-            <summary>查看 / 编辑提示词</summary>
-            {CHAR_DELIVERABLES.filter((dv) => (d.prompts[dv.value] ?? "").trim()).map((dv) => (
-              <div key={dv.value} className="cc-prompt-item">
-                <span className="cc-lab">{dv.label}</span>
-                <textarea
-                  className="textarea nodrag nowheel"
-                  rows={3}
-                  value={d.prompts[dv.value]}
-                  onChange={(e) => upd(id, { prompts: { ...d.prompts, [dv.value]: e.target.value } })}
-                />
-              </div>
-            ))}
-          </details>
+                </div>
+              );
+            })}
+          </div>
         ) : null}
 
-        <div className="cc-models nodrag">
-          <label title="分析人物图片/描述用的视觉对话模型">
-            <span>分析</span>
-            <ModelPicker role="chat" value={d.chatModelId} onChange={(v) => upd(id, { chatModelId: v })} />
-          </label>
-          {mode === "image" ? (
-            <label title="生成素材图片用的绘画模型">
-              <span>绘画</span>
-              <ModelPicker role="image" value={d.imageModelId} onChange={(v) => upd(id, { imageModelId: v })} />
-            </label>
-          ) : null}
-        </div>
         <button
           className="btn primary nodrag"
           disabled={running || (!!p && mode === "prompt" && hasPrompts)}
           title={
             p && mode === "prompt" && hasPrompts
-              ? "提示词已就绪：在上方逐条复制，或从输出端口接给下游节点；切到「出图」可直接生成图片"
+              ? "提示词已就绪：在底部参数栏的「提示词」里查看，或从输出端口接给下游节点；切到「出图」可直接生成图片"
               : undefined
           }
           onClick={() => void runFlow(id)}
