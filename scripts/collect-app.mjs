@@ -56,8 +56,11 @@ for (const { src, rel } of bundleFiles) {
 }
 
 // ② 便携版：release 顶层主 exe（前端资源已内嵌，单文件免安装）
+//    target/release 下可能有多个 [[bin]] 产物（如 quality_gate_audit），只取与 Cargo 包名同名的主程序 exe
+const cargoPkg = (readFileSync(join(rootDir, 'src-tauri', 'Cargo.toml'), 'utf8').match(/^\s*name\s*=\s*"([^"]+)"/m) || [])[1] || productName
+const mainExeName = `${cargoPkg.toLowerCase()}.exe`
 const portableExes = readdirSync(releaseDir)
-  .filter(n => n.toLowerCase().endsWith('.exe'))
+  .filter(n => n.toLowerCase() === mainExeName)
   .map(n => join(releaseDir, n))
   .filter(p => statSync(p).isFile())
 
