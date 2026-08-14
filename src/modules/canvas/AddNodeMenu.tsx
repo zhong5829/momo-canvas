@@ -4,6 +4,7 @@
 import { NODE_INPUTS, useBoard } from "../../core/stores/boardStore";
 import { useTemplates } from "../../core/stores/templateStore";
 import { useUi } from "../../core/stores/uiStore";
+import { useSettings } from "../../core/stores/settingsStore";
 import { NODE_CATALOG } from "./nodeCatalog";
 import { IcLayers } from "../../ui/icons";
 
@@ -14,6 +15,8 @@ export function AddNodeMenu() {
   const connectNodes = useBoard((s) => s.connectNodes);
   const templates = useTemplates((s) => s.templates);
   const allTemplates = useTemplates((s) => s.all);
+  // 每项右侧展示其快捷键（可设置），方便逐步记住
+  const hotkeys = useSettings((s) => s.settings.hotkeys);
   void templates; // 订阅模板增删以刷新菜单
 
   if (!menu) return null;
@@ -50,6 +53,7 @@ export function AddNodeMenu() {
                   <b>{i.label}</b>
                   <span>{i.desc}</span>
                 </span>
+                {hotkeys[i.hotkey] ? <kbd className="am-hk">{hotkeys[i.hotkey].split("+").join(" + ").toUpperCase()}</kbd> : null}
               </button>
             </div>
           );

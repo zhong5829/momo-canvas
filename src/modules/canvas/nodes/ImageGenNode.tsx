@@ -6,7 +6,7 @@ import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { mediaNodeWidth, NodeShell, PortIn, PortOut } from "../NodeShell";
 import { EditSurface } from "../EditSurface";
-import { IcDownload, IcImage, IcLoading, IcScan, IcSparkles } from "../../../ui/icons";
+import { IcDownload, IcImage, IcLoading, IcRows, IcScan, IcSparkles } from "../../../ui/icons";
 import { useBoard } from "../../../core/stores/boardStore";
 import { resolveModelCard, useSettings } from "../../../core/stores/settingsStore";
 import { toast, useUi } from "../../../core/stores/uiStore";
@@ -93,6 +93,14 @@ export const ImageGenNode = memo(function ImageGenNode({ id, data, selected }: N
                     alt=""
                   />
                 ))}
+                <button
+                  className="icon-btn"
+                  title={`对比视图：${d.results.length} 张并排挑图`}
+                  aria-label="对比视图"
+                  onClick={() => useUi.getState().setLightboxList(d.results)}
+                >
+                  <IcRows size={13} />
+                </button>
               </div>
             ) : null}
           </div>

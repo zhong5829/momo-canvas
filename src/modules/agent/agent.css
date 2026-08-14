@@ -187,6 +187,9 @@
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
+  /* 全局 base.css 禁用了文字选择，消息气泡单独放开：框选后右键可建节点 */
+  user-select: text;
+  cursor: text;
 }
 .ag-msg.user .ag-bubble {
   background: var(--grad-brand);

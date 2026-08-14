@@ -5,6 +5,7 @@
  */
 import { memo, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { useShallow } from "zustand/react/shallow";
 import { NodeShell, PortIn, PortOut } from "../NodeShell";
 import { IcClapper, IcImage, IcLoading, IcSparkles, IcVideo } from "../../../ui/icons";
 import { ModelPicker } from "../../../ui/ModelPicker";
@@ -19,7 +20,9 @@ export const StoryboardNode = memo(function StoryboardNode({ id, data, selected 
   const d = data as StoryboardData;
   const upd = useBoard((s) => s.updateData);
   // 上游已接入文本 → 故事框隐藏（运行时自动取上游；已手写的优先级更高，保留显示）
-  const hasUpText = useBoard(() => collectUpstream(id).texts.length > 0);
+  // 扁平指纹 + 浅比较（同 NodeShell 的 UpstreamTool）：避免每次 board 变更都因新数组引用重渲染
+  const upTexts = useBoard(useShallow(() => collectUpstream(id).texts));
+  const hasUpText = upTexts.length > 0;
   const running = d.status === "running";
   const [showRefined, setShowRefined] = useState(true);
 
@@ -50,7 +53,18 @@ export const StoryboardNode = memo(function StoryboardNode({ id, data, selected 
         </div>
         {d.refined ? (
           <div className="sb-refined nodrag">
-            <div className="sb-cap" onClick={() => setShowRefined(!showRefined)}>
+            <div
+              className="sb-cap nodrag"
+              role="button"
+              tabIndex={0}
+              onClick={() => setShowRefined(!showRefined)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setShowRefined(!showRefined);
+                }
+              }}
+            >
               完善后的故事（可编辑，拆分镜用这版） {showRefined ? "▾" : "▸"}
             </div>
             {showRefined ? (
@@ -110,8 +124,14 @@ export const StoryboardNode = memo(function StoryboardNode({ id, data, selected 
         </div>
         <button className="btn primary nodrag" disabled={running} onClick={() => void runFlow(id)}>
           {running && !d.progress?.includes("完善") ? <IcLoading size={17} /> : <IcClapper size={16} />}
-          {running ? d.progress ?? "处理中…" : `生成 ${d.count} 个分镜`}
+          {running ? "处理中…" : `生成 ${d.count} 个分镜`}
         </button>
+        {running && d.progress ? (
+          <div className="progress-line">
+            <IcLoading size={14} />
+            {d.progress}
+          </div>
+        ) : null}
 
         {d.shots.length ? (
           <>

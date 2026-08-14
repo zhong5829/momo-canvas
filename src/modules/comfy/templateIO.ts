@@ -4,7 +4,7 @@
  *  - 原始工作流可自动暴露常用参数直接成模板（批量导入用）
  *  - 导出走 Tauri 保存对话框，浏览器预览退回 a[download]
  */
-import type { ComfyExposedParam, ComfyTemplate, ComfyWfNode } from "../../core/types";
+import type { ComfyExposedParam, ComfyTemplate, ComfyVariant, ComfyWfNode } from "../../core/types";
 import { guessOutputNode, isApiWorkflow, listWorkflowInputs, type WfInputInfo } from "../../core/services/comfy";
 import { useComfy } from "../../core/stores/comfyStore";
 import { errMsg, isTauri, uid } from "../../core/utils";
@@ -84,14 +84,16 @@ export function templatesFromJson(json: unknown): ComfyTemplate[] | null {
       params: Array.isArray(t.params) ? (t.params as ComfyExposedParam[]) : [],
       outputNodeId: typeof t.outputNodeId === "string" ? t.outputNodeId : undefined,
       createdAt: typeof t.createdAt === "number" ? t.createdAt : Date.now(),
+      // v2 新增：保留 variants（导入后由 comfyStore.init 的 normalizeTemplate 兜底补 default 分支）
+      variants: Array.isArray(t.variants) ? (t.variants as ComfyVariant[]) : undefined,
     });
   }
   return out.length ? out : null;
 }
 
-/** 模板列表 → 可再导入的模板包 JSON 文本 */
+/** 模板列表 → 可再导入的模板包 JSON 文本（v2：含子工作流分支） */
 export function packTemplates(tpls: ComfyTemplate[]): string {
-  return JSON.stringify({ momoComfyTemplates: 1, exportedAt: new Date().toISOString(), templates: tpls }, null, 2);
+  return JSON.stringify({ momoComfyTemplates: 2, exportedAt: new Date().toISOString(), templates: tpls }, null, 2);
 }
 
 /**
@@ -121,18 +123,34 @@ export async function importTemplateFilesAuto(files: Iterable<File>): Promise<{ 
   return { saved, errs };
 }
 
+/** 按文件扩展名推断保存对话框过滤器名 + MIME */
+function fileFilter(filename: string): { filterName: string; ext: string; mime: string } {
+  const ext = filename.match(/\.(\w+)$/)?.[1]?.toLowerCase() ?? "json";
+  const map: Record<string, { filterName: string; mime: string }> = {
+    json: { filterName: "JSON", mime: "application/json" },
+    xml: { filterName: "XML", mime: "application/xml" },
+    srt: { filterName: "SRT 字幕", mime: "application/x-subrip" },
+    csv: { filterName: "CSV 表格", mime: "text/csv" },
+    md: { filterName: "Markdown", mime: "text/markdown" },
+    txt: { filterName: "文本", mime: "text/plain" },
+  };
+  const m = map[ext] ?? { filterName: "文本", mime: "text/plain" };
+  return { filterName: m.filterName, ext, mime: m.mime };
+}
+
 /** 保存文本到本地文件（Tauri 保存对话框 / 浏览器下载） */
 export async function saveTextFile(filename: string, text: string): Promise<boolean> {
+  const { filterName, ext, mime } = fileFilter(filename);
   if (isTauri) {
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const path = await save({ defaultPath: filename, filters: [{ name: "JSON", extensions: ["json"] }] });
+    const path = await save({ defaultPath: filename, filters: [{ name: filterName, extensions: [ext] }] });
     if (!path) return false;
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     await writeTextFile(path, text);
     return true;
   }
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+  a.href = URL.createObjectURL(new Blob([text], { type: mime }));
   a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);

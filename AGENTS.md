@@ -9,7 +9,7 @@ MOMO 智能画布：Tauri 2 (Rust 壳) + React 19 + TypeScript + React Flow (@xy
 ## 常用命令
 
 ```bash
-pnpm tauri dev      # 开发运行（Vite 固定端口 1420，被占用会直接失败）
+pnpm tauri dev      # 开发运行（Vite 固定端口 1430，被占用会直接失败；弹宠项目占用 1420）
 npx tsc --noEmit    # 类型检查（最常用的验证手段；本项目无测试、无 lint 配置）
 pnpm build          # tsc && vite build，仅前端产物，可作完整验证
 pnpm tauri build    # 打包发行版 —— 仅在用户明确要求时执行

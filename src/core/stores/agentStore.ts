@@ -10,13 +10,15 @@ type AgentPrefs = {
   videoModelId?: string;
   mode?: "chat" | "agent";
   webSearch?: boolean;
+  /** 思考模式（仅创作助手生效；Ollama / 本地 GGUF 等支持思考的模型） */
+  thinkingOn?: boolean;
 };
 const PREF_FILE = "agent-prefs.json";
 
-/** 写回选择（模型/模式/联网开关），对话内容不落盘 */
+/** 写回选择（模型/模式/联网开关/思考开关），对话内容不落盘 */
 function savePrefs(get: () => AgentState) {
-  const { modelId, imageModelId, videoModelId, mode, webSearch } = get();
-  void saveJSON(PREF_FILE, "v1", { modelId, imageModelId, videoModelId, mode, webSearch } satisfies AgentPrefs);
+  const { modelId, imageModelId, videoModelId, mode, webSearch, thinkingOn } = get();
+  void saveJSON(PREF_FILE, "v1", { modelId, imageModelId, videoModelId, mode, webSearch, thinkingOn } satisfies AgentPrefs);
 }
 
 type AgentState = {
@@ -35,6 +37,8 @@ type AgentState = {
   mode: "chat" | "agent";
   /** 聊天模式：发送前先联网搜索 */
   webSearch: boolean;
+  /** 思考模式开关（仅创作助手生效；关闭时给支持思考的模型下发禁用思考指令） */
+  thinkingOn: boolean;
   /** 聊天上下文压缩：旧消息摘要（超出窗口的较早对话由模型自行压缩，保证多轮讨论不断片） */
   summary: string;
   /** 摘要已覆盖到的消息下标（不含）：压缩增量推进 */
@@ -54,6 +58,7 @@ type AgentState = {
   initPrefs: () => Promise<void>;
   setMode: (m: "chat" | "agent") => void;
   toggleWebSearch: () => void;
+  toggleThinking: () => void;
   setSummary: (s: string, upto: number) => void;
   clear: () => void;
 
@@ -79,6 +84,7 @@ export const useAgent = create<AgentState>((set, get) => ({
   videoModelId: undefined,
   mode: "chat",
   webSearch: false,
+  thinkingOn: true,
   summary: "",
   summaryUpto: 0,
   epoch: 0,
@@ -109,6 +115,7 @@ export const useAgent = create<AgentState>((set, get) => ({
       videoModelId: p.videoModelId,
       mode: p.mode ?? "chat",
       webSearch: !!p.webSearch,
+      thinkingOn: p.thinkingOn ?? true,
     });
   },
   setMode: (m) => {
@@ -117,6 +124,10 @@ export const useAgent = create<AgentState>((set, get) => ({
   },
   toggleWebSearch: () => {
     set((s) => ({ webSearch: !s.webSearch }));
+    savePrefs(get);
+  },
+  toggleThinking: () => {
+    set((s) => ({ thinkingOn: !s.thinkingOn }));
     savePrefs(get);
   },
   setSummary: (summary, upto) => set({ summary, summaryUpto: upto }),

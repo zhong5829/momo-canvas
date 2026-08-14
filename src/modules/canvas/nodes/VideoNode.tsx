@@ -84,8 +84,25 @@ export const VideoNode = memo(function VideoNode({ id, data, selected }: NodePro
       <div className="mnode-body">
         {d.src ? (
           <VideoThumb className="img-main" src={d.src} />
+        ) : d.status === "running" ? (
+          /* 导入中：status 已 running 但 src 未写入，不能继续显示「点击导入视频」空态 */
+          <div className="skeleton">
+            <span>正在导入视频…</span>
+          </div>
         ) : (
-          <div className="img-empty" onClick={() => fileRef.current?.click()}>
+          <div
+            className="img-empty"
+            role="button"
+            tabIndex={0}
+            // 不加 nodrag：空态占满节点体，加了会导致节点无处下手拖动；点击不位移时 onClick 照常触发
+            onClick={() => fileRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                fileRef.current?.click();
+              }
+            }}
+          >
             <IcVideo size={26} />
             <span>
               点击导入视频

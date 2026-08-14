@@ -27,7 +27,10 @@ export function thumbSync(src: string): string | null {
   return cache.get(src) ?? null;
 }
 
-/** 生成降采样缩略图（长边 ≤ max），结果缓存复用 */
+/** 长图保护：按长边缩到 max 后，短边低于此值则改用短边锚定（短边即横向显示宽度，太细会被节点拉伸糊掉） */
+const SHORT_SIDE_MIN = 280;
+
+/** 生成降采样缩略图（长边 ≤ max；极端宽高比的长图保证短边 ≥ 280），结果缓存复用 */
 export function makeThumb(src: string, max = 512): Promise<string> {
   if (src.length < SMALL_ENOUGH || !src.startsWith("data:image")) return Promise.resolve(src);
   const hit = cache.get(src);
@@ -40,7 +43,11 @@ export function makeThumb(src: string, max = 512): Promise<string> {
       // createImageBitmap：解码 + 缩放大部分在主线程之外完成，大图拖入不再冻结画布
       const blob = await (await fetch(src)).blob();
       const probe = await createImageBitmap(blob);
-      const scale = Math.min(1, max / Math.max(probe.width, probe.height));
+      // 长图盲区修复：只按长边缩（512/8193）会让短边只剩几十 px，节点里横向拉大 2 倍 → 糊。
+      // 取「长边 ≤ max」与「短边 ≥ 280」两者较大系数：正常方图行为不变，长图短边够撑节点宽度。
+      const longSide = Math.max(probe.width, probe.height);
+      const shortSide = Math.min(probe.width, probe.height);
+      const scale = Math.min(1, Math.max(max / longSide, SHORT_SIDE_MIN / shortSide));
       if (scale >= 1) {
         probe.close();
         remember(src, src);

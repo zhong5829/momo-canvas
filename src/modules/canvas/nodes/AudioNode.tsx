@@ -60,11 +60,11 @@ export const AudioNode = memo(function AudioNode({ id, data, selected }: NodePro
       width={260}
       headExtra={
         d.src ? (
-          <span className="acts nodrag" style={{ opacity: 1 }}>
-            <button className="icon-btn" title="替换音频" onClick={() => fileRef.current?.click()}>
+          <span className="acts nodrag">
+            <button className="icon-btn" title="替换音频" aria-label="替换音频" onClick={() => fileRef.current?.click()}>
               <IcUpload size={17} />
             </button>
-            <button className="icon-btn" title="保存到本地" onClick={save}>
+            <button className="icon-btn" title="保存到本地" aria-label="保存到本地" onClick={save}>
               <IcDownload size={17} />
             </button>
           </span>
@@ -75,7 +75,19 @@ export const AudioNode = memo(function AudioNode({ id, data, selected }: NodePro
         {d.src ? (
           <audio className="audio-main nodrag" src={d.src} controls preload="none" />
         ) : (
-          <div className="img-empty" onClick={() => fileRef.current?.click()}>
+          <div
+            className="img-empty"
+            role="button"
+            tabIndex={0}
+            // 不加 nodrag：空态占满节点体，加了会导致节点无处下手拖动；点击不位移时 onClick 照常触发
+            onClick={() => fileRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                fileRef.current?.click();
+              }
+            }}
+          >
             <IcMusic size={26} />
             <span>
               点击导入音频

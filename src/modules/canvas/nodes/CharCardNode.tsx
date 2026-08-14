@@ -56,10 +56,10 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
       selected={selected}
       width={380}
       headExtra={
-        <span className="acts nodrag" style={{ opacity: 1, display: "flex", alignItems: "center", gap: 5 }}>
+        <span className="acts nodrag">
           <OutModeToggle id={id} mode={mode} />
           {p ? (
-            <button className="icon-btn" title="清空档案与产出，重新分析" onClick={reset}>
+            <button className="icon-btn" title="清空档案与产出，重新分析" aria-label="清空档案与产出，重新分析" onClick={reset}>
               <IcRefresh size={15} />
             </button>
           ) : null}
@@ -96,9 +96,8 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
             {p.intro ? <div className="cc-intro">{p.intro}</div> : null}
           </div>
         ) : (
-          <div className="gen-sum">
-            <IcIdCard size={13} />
-            <span>连接一张人物图片或一段角色文字描述后运行：模型提炼角色档案并产出整套素材；模型/比例/风格、素材勾选与提示词都在下方参数栏设置，也可从「角色库」应用预设</span>
+          <div className="node-hint">
+            连接一张人物图片或一段角色文字描述后运行：模型提炼角色档案并产出整套素材；模型/比例/风格、素材勾选与提示词都在下方参数栏设置，也可从「角色库」应用预设
           </div>
         )}
 
@@ -114,7 +113,7 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
                       {dv.label}
                     </span>
                     <span style={{ flex: 1 }} />
-                    <button className="icon-btn" title="复制该素材的提示词" onClick={() => void copyPrompt(dv.value)}>
+                    <button className="icon-btn" title="复制该素材的提示词" aria-label="复制该素材的提示词" onClick={() => void copyPrompt(dv.value)}>
                       <IcCopy size={14} />
                     </button>
                     {mode === "image" ? (
@@ -122,6 +121,7 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
                         <button
                           className="icon-btn"
                           title="重新生成该素材（替换现有图）"
+                          aria-label="重新生成该素材（替换现有图）"
                           disabled={running}
                           onClick={() => void regenCharDeliverable(id, dv.value)}
                         >
@@ -134,6 +134,7 @@ export const CharCardNode = memo(function CharCardNode({ id, data, selected }: N
                               ? `补一张：${dv.label}自动换成下一组内容后追加（逐张补全设定）`
                               : "补一张：按同一提示词再生成一张并追加"
                           }
+                          aria-label="补一张（追加生成）"
                           disabled={running}
                           onClick={() => void regenCharDeliverable(id, dv.value, { append: true })}
                         >

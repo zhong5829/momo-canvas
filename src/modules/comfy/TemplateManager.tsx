@@ -7,15 +7,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, Field, Row, Switch } from "../../ui/kit";
 import { PopSelect } from "../../ui/PopSelect";
 import { useComfy } from "../../core/stores/comfyStore";
+import { useSettings } from "../../core/stores/settingsStore";
 import { toast, useUi } from "../../core/stores/uiStore";
 import {
   analyzeCaps,
+  analyzeCapsV3,
   canDisable,
+  comboOptionsFor,
+  fetchObjectInfo,
   guessOutputNode,
   isApiWorkflow,
   listWorkflowInputs,
 } from "../../core/services/comfy";
-import { layoutWorkflow, zhInput, zhNode, WFG_H, WFG_W } from "./wfGraph";
+import { layoutWorkflow, zhInput, zhNode, WFG_H, WFG_W, connectedComponents } from "./wfGraph";
 import { errMsg, uid } from "../../core/utils";
 import { IcDownload, IcEdit, IcFlow, IcTrash, IcUpload } from "../../ui/icons";
 import {
@@ -27,7 +31,7 @@ import {
   templatesFromJson,
   type ExposeMap,
 } from "./templateIO";
-import type { ComfyParamKind, ComfyTemplate, ComfyWfNode } from "../../core/types";
+import type { ComfyParamKind, ComfySemanticSlot, ComfyTemplate, ComfyVariant, ComfyVariantColor, ComfyWfNode } from "../../core/types";
 
 type Draft = {
   id: string;
@@ -36,6 +40,8 @@ type Draft = {
   outputNodeId?: string;
   expose: ExposeMap;
   disabledNodes: string[];
+  /** 子工作流分支（手动编辑用；保存时直接写入模板） */
+  variants?: ComfyVariant[];
 };
 
 function draftFromTemplate(t: ComfyTemplate): Draft {
@@ -48,7 +54,82 @@ function draftFromTemplate(t: ComfyTemplate): Draft {
     outputNodeId: t.outputNodeId,
     expose,
     disabledNodes: t.disabledNodes ?? [],
+    variants: t.variants,
   };
+}
+
+/** 分支配色循环（语义色名，样式通过主题 token + color-mix 生成，不硬编码 rgba） */
+const VARIANT_COLORS: ComfyVariantColor[] = ["blue", "green", "orange", "purple", "cyan", "pink"];
+
+/**
+ * 按连通分量自动生成子工作流分支：工作流里完全断开的处理链各自成为一个分支。
+ * 单连通分量（绝大多数工作流）→ 返回 undefined，保持 v1 单分支行为不变。
+ * 多连通分量 → 每个分量生成一个 variant（nodeIds/outputNodeIds/params 按分量隔离）。
+ * 分支名按内容自动命名（出图/出视频/图输入/放大/控制…），不再是「分支 1/2/3」这种认不出的名字。
+ */
+function autoVariantsFromWorkflow(
+  wf: Record<string, ComfyWfNode>,
+  params: ComfyTemplate["params"],
+  outputNodeId?: string,
+): ComfyVariant[] | undefined {
+  const comps = connectedComponents(wf);
+  if (comps.length <= 1) return undefined;
+  // 输出节点集合：用户指定的 outputNodeId 或 analyzeCaps 自动识别的输出类节点
+  const outSet = new Set<string>();
+  if (outputNodeId) outSet.add(outputNodeId);
+  for (const id of Object.keys(wf)) {
+    if (/saveimage|previewimage|save|preview/i.test(wf[id].class_type)) outSet.add(id);
+  }
+  // 用 analyzeCapsV3 自动识别语义槽（首帧/尾帧/参考图/视频/音频/提示词）
+  const capsV3 = analyzeCapsV3(wf);
+  const usedNames = new Set<string>();
+  return comps.map((comp, i) => {
+    const compSet = new Set(comp);
+    const outputs = comp.filter((id) => outSet.has(id));
+    const compParams = params.filter((p) => compSet.has(p.nodeId));
+    // 过滤出属于本分支的语义槽
+    const slots: ComfySemanticSlot[] = (capsV3.autoSlots ?? [])
+      .filter((s) => compSet.has(s.nodeId))
+      .map((s, idx) => ({
+        id: `slot_${idx}`,
+        label: s.label,
+        semantic: s.semantic as ComfySemanticSlot["semantic"],
+        media: s.media as ComfySemanticSlot["media"],
+        required: s.required,
+        bindings: [{ nodeId: s.nodeId, input: s.input }],
+      }));
+    // 自动命名 + 重名去重（同结构的分支加 (2)/(3)）
+    const baseName = autoVariantName(comp, wf);
+    let name = baseName;
+    for (let k = 2; usedNames.has(name); k++) name = `${baseName} (${k})`;
+    usedNames.add(name);
+    return {
+      id: i === 0 ? "default" : `branch_${i}`,
+      name,
+      color: VARIANT_COLORS[i % VARIANT_COLORS.length],
+      nodeIds: comp,
+      outputNodeIds: outputs,
+      params: compParams,
+      slots,
+    };
+  });
+}
+
+/** 按分支内的节点类型自动起中文名：输出类型 → 输入特征 → 特殊处理（放大/控制/视频） */
+function autoVariantName(comp: string[], wf: Record<string, ComfyWfNode>): string {
+  const cts = comp.map((id) => wf[id]?.class_type ?? "");
+  const has = (re: RegExp) => cts.some((c) => re.test(c));
+  const parts: string[] = [];
+  if (has(/saveimage|previewimage/i)) parts.push("出图");
+  else if (has(/vhs_videocombine|savevideo|videocombine/i)) parts.push("出视频");
+  else if (has(/showtext|savetext/i)) parts.push("出文本");
+  if (has(/loadimage/i) && has(/cliptextencode/i)) parts.push("图+文");
+  else if (has(/loadimage/i)) parts.push("图生");
+  else if (has(/cliptextencode/i)) parts.push("文生");
+  if (has(/upscale|hiresfix/i)) parts.push("放大");
+  else if (has(/controlnet|hed|canny|depth|openpose|lineart|dwpreprocessor/i)) parts.push("控制");
+  else if (has(/loadvideo|vhs_/i)) parts.push("视频");
+  return parts.length ? parts.join("·") : "未识别";
 }
 
 export function TemplateManager() {
@@ -62,6 +143,19 @@ export function TemplateManager() {
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  // combo 下拉选项：编辑器里同样从 ComfyUI 服务端 /object_info 拉取（缓存；离线退化为文本框）
+  const comfyHost = useSettings((s) => s.settings.comfy.host);
+  const [objectInfo, setObjectInfo] = useState<Record<string, any> | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let on = true;
+    void fetchObjectInfo(comfyHost).then((info) => {
+      if (on) setObjectInfo(info);
+    });
+    return () => {
+      on = false;
+    };
+  }, [open, comfyHost]);
 
   /* 设置页模板卡片点「编辑」→ 打开管理器直接进入对应模板 */
   useEffect(() => {
@@ -156,6 +250,10 @@ export function TemplateManager() {
       return;
     }
     const params = paramsFromExpose(draft.workflow, draft.expose);
+    // 分支优先级：draft 手动编辑过的 variants > 自动检测连通分量
+    const variants = draft.variants?.length
+      ? draft.variants
+      : autoVariantsFromWorkflow(draft.workflow, params, draft.outputNodeId);
     upsert({
       id: draft.id,
       name: draft.name.trim(),
@@ -163,9 +261,11 @@ export function TemplateManager() {
       params,
       outputNodeId: draft.outputNodeId,
       disabledNodes: draft.disabledNodes.length ? draft.disabledNodes : undefined,
+      variants,
       createdAt: Date.now(),
     });
-    toast(`模板「${draft.name.trim()}」已保存（${params.length} 个参数）`, "ok");
+    const branchNote = variants && variants.length > 1 ? ` · ${variants.length} 个分支` : "";
+    toast(`模板「${draft.name.trim()}」已保存（${params.length} 个参数${branchNote}）`, "ok");
     setDraft(null);
   };
 
@@ -271,7 +371,7 @@ export function TemplateManager() {
                 <button
                   className={`icon-btn danger`}
                   title={confirmDel === t.id ? "再点一次确认删除" : "删除模板"}
-                  style={confirmDel === t.id ? { color: "var(--danger)", background: "rgba(242,79,106,.12)" } : undefined}
+                  style={confirmDel === t.id ? { color: "var(--danger)", background: "color-mix(in srgb, var(--danger) 12%, transparent)" } : undefined}
                   onClick={() => {
                     if (confirmDel === t.id) {
                       remove(t.id);
@@ -286,19 +386,27 @@ export function TemplateManager() {
           )}
         </div>
       ) : (
-        <TemplateEditor draft={draft} setDraft={setDraft} />
+        <TemplateEditor draft={draft} setDraft={setDraft} objectInfo={objectInfo} />
       )}
     </Modal>
   );
 }
 
-function TemplateEditor({ draft, setDraft }: { draft: Draft; setDraft: (d: Draft) => void }) {
+function TemplateEditor({ draft, setDraft, objectInfo }: { draft: Draft; setDraft: (d: Draft) => void; objectInfo: Record<string, any> | null }) {
   const layout = useMemo(() => layoutWorkflow(draft.workflow), [draft.workflow]);
   const caps = useMemo(() => analyzeCaps(draft.workflow), [draft.workflow]);
   const [sel, setSel] = useState<string | null>(() => caps.imageEntries[0] ?? Object.keys(draft.workflow)[0] ?? null);
+  // 示意图视图：空白处按住拖动平移 + 滚轮缩放（抓手工具）
+  const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
+  const panRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const off = new Set(draft.disabledNodes);
   const exposedCount = Object.keys(draft.expose).length;
   const positives = caps.textEntries.filter((t) => !t.negative);
+  // 节点 → 所属分支颜色（用于示意图节点边框着色，直观显示分支归属）
+  const nodeVariantColor = new Map<string, ComfyVariantColor>();
+  for (const v of draft.variants ?? []) {
+    for (const nid of v.nodeIds) if (!nodeVariantColor.has(nid)) nodeVariantColor.set(nid, v.color);
+  }
 
   const toggleDisable = (nodeId: string) => {
     if (off.has(nodeId)) {
@@ -342,8 +450,41 @@ function TemplateEditor({ draft, setDraft }: { draft: Draft; setDraft: (d: Draft
         </div>
       </Row>
       <div className="wfge">
-        <div className="wfge-graph">
-          <div className="wfge-canvas" style={{ width: layout.width, height: layout.height }}>
+        <div
+          className="wfge-graph"
+          onWheel={(e) => {
+            // 滚轮缩放（以指针为中心，0.4~3 倍）
+            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            const ns = Math.min(3, Math.max(0.4, view.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+            const px = e.clientX - r.left;
+            const py = e.clientY - r.top;
+            setView((v) => ({ scale: ns, x: px - ((px - v.x) / v.scale) * ns, y: py - ((py - v.y) / v.scale) * ns }));
+          }}
+          onPointerDown={(e) => {
+            // 空白处按住拖动 = 抓手平移；点在节点上不触发（节点负责自己的点击）
+            if (e.button !== 0) return;
+            if ((e.target as HTMLElement).closest(".wfge-node")) return;
+            panRef.current = { x: e.clientX, y: e.clientY, tx: view.x, ty: view.y };
+            (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            const d = panRef.current;
+            if (!d) return;
+            setView((v) => ({ ...v, x: d.tx + e.clientX - d.x, y: d.ty + e.clientY - d.y }));
+          }}
+          onPointerUp={() => {
+            panRef.current = null;
+          }}
+        >
+          <div
+            className="wfge-canvas"
+            style={{
+              width: layout.width,
+              height: layout.height,
+              transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
+              transformOrigin: "0 0",
+            }}
+          >
             <svg className="wfge-edges" width={layout.width} height={layout.height}>
               {layout.edges.map((e, i) => {
                 const a = layout.pos[e.from];
@@ -377,6 +518,7 @@ function TemplateEditor({ draft, setDraft }: { draft: Draft; setDraft: (d: Draft
                     sel === id ? "sel" : "",
                     off.has(id) ? "off" : "",
                     draft.outputNodeId === id ? "isout" : "",
+                    nodeVariantColor.has(id) ? `vcolor-${nodeVariantColor.get(id)}` : "",
                   ].join(" ")}
                   style={{ left: p.x, top: p.y, width: WFG_W, height: WFG_H }}
                   onClick={() => setSel(id)}
@@ -398,12 +540,152 @@ function TemplateEditor({ draft, setDraft }: { draft: Draft; setDraft: (d: Draft
             })}
           </div>
         </div>
-        <NodeDetail draft={draft} setDraft={setDraft} sel={sel} off={off} onToggleDisable={toggleDisable} />
+        <NodeDetail draft={draft} setDraft={setDraft} sel={sel} off={off} onToggleDisable={toggleDisable} objectInfo={objectInfo} />
       </div>
+      <VariantPanel draft={draft} setDraft={setDraft} />
       <p className="sec-desc" style={{ marginTop: 10 }}>
         点击示意图中的节点查看/编辑：勾选参数会显示在画布节点上；「图」=图片入口（自动接收上游图片）、「文」=提示词入口（自动接收上游文本）、「出」=取图位置。
       </p>
     </>
+  );
+}
+
+/** 分支管理面板：显示/编辑子工作流分支（改名/改色/指定输出/添加节点/删除） */
+function VariantPanel({ draft, setDraft }: { draft: Draft; setDraft: (d: Draft) => void }) {
+  const variants = draft.variants ?? [];
+  const wf = draft.workflow;
+  const allNodeIds = Object.keys(wf);
+
+  /** 确保有 variants：如果工作流有多个连通分量但 draft.variants 为空，自动生成 */
+  const ensureVariants = (): ComfyVariant[] => {
+    if (variants.length) return variants;
+    const params = paramsFromExpose(wf, draft.expose);
+    const auto = autoVariantsFromWorkflow(wf, params, draft.outputNodeId);
+    if (auto) {
+      setDraft({ ...draft, variants: auto });
+      return auto;
+    }
+    return [];
+  };
+
+  const updateVariant = (id: string, patch: Partial<ComfyVariant>) => {
+    const next = variants.map((v) => (v.id === id ? { ...v, ...patch } : v));
+    setDraft({ ...draft, variants: next });
+  };
+
+  const addVariant = () => {
+    const idx = variants.length;
+    const v: ComfyVariant = {
+      id: `branch_${Date.now().toString(36)}`,
+      name: `分支 ${idx + 1}`,
+      color: VARIANT_COLORS[idx % VARIANT_COLORS.length],
+      nodeIds: [],
+      outputNodeIds: [],
+      params: [],
+      slots: [],
+    };
+    setDraft({ ...draft, variants: [...variants, v] });
+  };
+
+  const removeVariant = (id: string) => {
+    if (!confirm("删除这个分支定义？（不会删除工作流节点，相关 Comfy 画布节点回退为「请选择子工作流」）")) return;
+    setDraft({ ...draft, variants: variants.filter((v) => v.id !== id) });
+  };
+
+  const toggleNodeInVariant = (vid: string, nodeId: string) => {
+    const v = variants.find((x) => x.id === vid);
+    if (!v) return;
+    const has = v.nodeIds.includes(nodeId);
+    updateVariant(vid, { nodeIds: has ? v.nodeIds.filter((x) => x !== nodeId) : [...v.nodeIds, nodeId] });
+  };
+
+  return (
+    <div className="wfge-variants">
+      <div className="wfge-vars-head">
+        <span className="wfge-vars-title">子工作流分支</span>
+        <button className="btn sm" onClick={addVariant}>新增分支</button>
+        {!variants.length ? (
+          <button className="btn sm" onClick={ensureVariants}>自动检测分支</button>
+        ) : null}
+      </div>
+      <div className="sec-desc" style={{ marginBottom: 8, fontSize: 11.5 }}>
+        多分支工作流（如 SeedVR2 图像+视频放大）会在此显示。每个分支可命名、着色、指定输出，运行时只提交该分支的节点。
+        {!variants.length ? " 当前是单分支模板（整个工作流）。" : ""}
+      </div>
+      <div className="wfge-vars-list">
+        {variants.map((v) => (
+          <div key={v.id} className={`wfge-var color-${v.color}`}>
+            <div className="wfge-var-head">
+              <span className={`wfge-var-dot dot-${v.color}`} />
+              <input
+                className="input sm wfge-var-name nodrag"
+                value={v.name}
+                onChange={(e) => updateVariant(v.id, { name: e.target.value })}
+              />
+              <select
+                className="input sm wfge-var-color-pick nodrag"
+                value={v.color}
+                onChange={(e) => updateVariant(v.id, { color: e.target.value as ComfyVariantColor })}
+                title="分支颜色"
+              >
+                {VARIANT_COLORS.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+              <button className="icon-btn danger" title="删除分支" onClick={() => removeVariant(v.id)}>✕</button>
+            </div>
+            <div className="wfge-var-body">
+              {/* 输出节点选择 */}
+              <label className="wfge-var-field">
+                <span className="sec-desc">输出节点</span>
+                <select
+                  className="input sm nodrag"
+                  value={v.outputNodeIds[0] ?? ""}
+                  onChange={(e) => updateVariant(v.id, { outputNodeIds: e.target.value ? [e.target.value] : [] })}
+                >
+                  <option value="">（未指定）</option>
+                  {allNodeIds.map((nid) => (
+                    <option key={nid} value={nid}>#{nid} {zhNode(wf[nid])}</option>
+                  ))}
+                </select>
+              </label>
+              {/* 归属节点（多选 chip） */}
+              <div className="wfge-var-nodes">
+                <span className="sec-desc">归属节点（{v.nodeIds.length}）</span>
+                <div className="wfge-var-node-chips">
+                  {allNodeIds.map((nid) => {
+                    const on = v.nodeIds.includes(nid);
+                    return (
+                      <button
+                        key={nid}
+                        className={`wfge-node-chip ${on ? "on" : ""}`}
+                        title={`#${nid} ${zhNode(wf[nid])}`}
+                        onClick={() => toggleNodeInVariant(v.id, nid)}
+                      >
+                        #{nid}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              {/* 自动识别的语义槽（首帧/尾帧/参考图/视频/音频/提示词） */}
+              {v.slots?.length ? (
+                <div className="wfge-var-slots">
+                  <span className="sec-desc">语义槽（{v.slots.length}）</span>
+                  <div className="wfge-var-slot-list">
+                    {v.slots.map((slot) => (
+                      <span key={slot.id} className="wfge-var-slot" title={`${slot.label}：#${slot.bindings[0]?.nodeId}.${slot.bindings[0]?.input}`}>
+                        {slot.label}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -414,12 +696,14 @@ function NodeDetail({
   sel,
   off,
   onToggleDisable,
+  objectInfo,
 }: {
   draft: Draft;
   setDraft: (d: Draft) => void;
   sel: string | null;
   off: Set<string>;
   onToggleDisable: (id: string) => void;
+  objectInfo: Record<string, any> | null;
 }) {
   const node: ComfyWfNode | undefined = sel ? draft.workflow[sel] : undefined;
   if (!sel || !node) {
@@ -514,7 +798,7 @@ function NodeDetail({
                     <span className="k">{zhInput(input)}</span>
                     {zhInput(input) !== input ? <span className="raw">{input}</span> : null}
                   </label>
-                  <WidgetValue value={value} onChange={(v) => setVal(input, v)} />
+                  <WidgetValue value={value} options={comboOptionsFor(objectInfo, node.class_type, input)} onChange={(v) => setVal(input, v)} />
                 </div>
                 {ex ? (
                   <div className="wfge-wrow sub">
@@ -558,7 +842,7 @@ function NodeDetail({
 }
 
 /** 按值类型渲染默认值编辑控件（改的是模板里的默认值） */
-function WidgetValue({ value, onChange }: { value: unknown; onChange: (v: unknown) => void }) {
+function WidgetValue({ value, onChange, options }: { value: unknown; onChange: (v: unknown) => void; options?: string[] }) {
   if (typeof value === "boolean") return <Switch on={value} onChange={(b) => onChange(b)} />;
   if (typeof value === "number") {
     return (
@@ -571,6 +855,23 @@ function WidgetValue({ value, onChange }: { value: unknown; onChange: (v: unknow
     );
   }
   const s = String(value ?? "");
+  // combo 类型：有可选项 → 渲染下拉（选项来自 ComfyUI /object_info），否则文本框
+  if (options?.length) {
+    return (
+      <select
+        className="input"
+        title="下拉选项来自 ComfyUI 节点定义（object_info）"
+        value={options.includes(s) ? s : options[0]}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    );
+  }
   if (s.length > 42 || s.includes("\n")) {
     return <textarea className="textarea" rows={2} value={s} onChange={(e) => onChange(e.target.value)} />;
   }

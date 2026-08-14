@@ -49,7 +49,7 @@ export const GroupNode = memo(function GroupNode({ id, selected }: NodeProps) {
                 if (e.key === "Escape") setNaming(false);
               }}
             />
-            <button className="icon-btn" title="保存模板" onClick={save}>
+            <button className="icon-btn" title="保存模板" aria-label="保存模板" onClick={save}>
               <IcCheck size={15} />
             </button>
           </span>
@@ -57,6 +57,7 @@ export const GroupNode = memo(function GroupNode({ id, selected }: NodeProps) {
           <button
             className="icon-btn nodrag"
             title="把整组（节点配置 + 内部连线）存为画布模板，之后 Ctrl+K / 双击画布可反复插入"
+            aria-label="把整组存为画布模板"
             onClick={() => setNaming(true)}
           >
             <IcLayers size={15} />
@@ -65,6 +66,7 @@ export const GroupNode = memo(function GroupNode({ id, selected }: NodeProps) {
         <button
           className="icon-btn danger nodrag"
           title="解散组（成员保留在画布上）"
+          aria-label="解散组（成员保留在画布上）"
           onClick={() => removeNode(id)}
         >
           <IcTrash size={15} />

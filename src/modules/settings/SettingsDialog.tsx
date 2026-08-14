@@ -1,7 +1,7 @@
 /**
  * 设置面板 — 模型配置（多套卡片） / 联网搜索 / 图片保存 / ComfyUI / 外观
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Modal, Field, Switch, Row } from "../../ui/kit";
 import { PopSelect } from "../../ui/PopSelect";
@@ -46,9 +46,12 @@ import {
 } from "../../ui/icons";
 import { EnhanceModelsTab } from "./EnhanceModelsTab";
 import { IcLogo } from "../../ui/icons";
+import { IcWand } from "../../ui/icons";
 import { checkUpdate, currentVersion, isPortable, GH_REPO, type UpdateInfo } from "../../core/services/updater";
 import { PROTO_PRESETS, applyProtoPreset } from "../../core/protoPresets";
-import { PROVIDER_PRESETS, buildPresetProvider, type ProviderPreset } from "../../core/providerPresets";
+import { OLLAMA_PRESET, PROVIDER_PRESETS, buildPresetProvider, type ProviderPreset } from "../../core/providerPresets";
+import { useLocalGguf } from "../../core/stores/localGgufStore";
+import { GgufManageDialog } from "./GgufImportDialog";
 import { SEARCH_PROVIDERS } from "../../core/services/webSearch";
 import { openExternal } from "../../core/external";
 import { playDone, playError } from "../../core/sound";
@@ -320,10 +323,11 @@ function PresetCard({ p, onPick }: { p: ProviderPreset; onPick: (p: ProviderPres
           /^https?:|^data:/i.test(p.logo) ? (
             <img className="psc-logo" src={p.logo} alt="" />
           ) : (
-            <span className="psc-logo txt">{p.logo.slice(0, 1)}</span>
+            // [...str][0] 按码点取首字符：emoji（如 🦙）是代理对，slice(0,1) 会切成乱码
+            <span className="psc-logo txt">{[...p.logo][0]}</span>
           )
         ) : (
-          <span className="psc-logo txt">{p.label.slice(0, 1)}</span>
+          <span className="psc-logo txt">{[...p.label][0]}</span>
         )}
         <b className="psc-name">{p.label}</b>
         {p.rating != null ? (
@@ -372,7 +376,11 @@ function ModelsTab() {
   const [showPresets, setShowPresets] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
+  const [ggufMgrOpen, setGgufMgrOpen] = useState(false);
   const setSideEditorOpen = useUi((s) => s.setSideEditorOpen);
+  const localModels = useLocalGguf((s) => s.models);
+  // 已配置的 Ollama 卡（chat 槽走原生协议）：固定卡点击直接编辑它，没有则建一张新草稿
+  const ollamaCard = models.providers.find((p) => p.models.chat?.protocol === "ollama");
 
   // 浮出面板打开时，让主设置窗口左移让位（两者整体居中）
   useEffect(() => {
@@ -395,7 +403,9 @@ function ModelsTab() {
   };
 
   const saveEditing = (d: ProviderDraft) => {
-    if (!d.apiKey.trim()) {
+    // Ollama 本地协议无需 API Key（其余协议仍要求 Key 非空）
+    const isOllama = d.slots.chat.protocol === "ollama" || Object.values(d.slots).some((s) => s.protocol === "ollama");
+    if (!d.apiKey.trim() && !isOllama) {
       toast("请填写 API Key 后再保存（没有 Key 的服务商不会保存到模型配置）", "err");
       return;
     }
@@ -417,13 +427,36 @@ function ModelsTab() {
       <SecTitle
         title="模型配置"
         extra={
-          <button
-            className="btn sm"
-            title="展开 / 收起下方推荐中转站预设"
-            onClick={() => setShowPresets((v) => !v)}
-          >
-            <IcSparkles size={14} /> {showPresets ? "收起预设" : "中转站预设"}
-          </button>
+          <>
+            <button
+              className="btn sm"
+              title="管理 Skill 创作规则包（导入 SKILL.md / .momoskill）"
+              onClick={() => useUi.getState().setSkillMgrOpen(true)}
+            >
+              <IcWand size={14} /> Skill 管理
+            </button>
+            <button
+              className="btn sm"
+              title="添加本地 GGUF 模型（一键启动，直接对话）"
+              onClick={() => useUi.getState().setGgufImportOpen(true)}
+            >
+              🧠 添加本地 GGUF
+            </button>
+            <button
+              className="btn sm"
+              title="配置本地模型引擎（llama-server 路径）"
+              onClick={() => useUi.getState().setLocalLlmSetupOpen(true)}
+            >
+              🔧 本地引擎
+            </button>
+            <button
+              className="btn sm"
+              title="展开 / 收起下方推荐中转站预设"
+              onClick={() => setShowPresets((v) => !v)}
+            >
+              <IcSparkles size={14} /> {showPresets ? "收起预设" : "中转站预设"}
+            </button>
+          </>
         }
       >
         一格 = 一个服务商（中转站/官方）：Base URL 与 API Key 只填一次，对话、绘画、视频、音频、语音识别每种用途都可以添加多个模型，
@@ -491,6 +524,32 @@ function ModelsTab() {
           <IcPlus size={22} />
           <span>添加服务商</span>
         </button>
+        {/* Ollama 固定卡：未配置时作为创建入口；已配置后让位给服务商卡片（避免出现两张内容相同的卡） */}
+        {!ollamaCard ? (
+          <button
+            className="pcard fixed"
+            title="本地 Ollama 服务，无需 API Key。点击创建配置（默认 http://127.0.0.1:11434）"
+            onClick={() => setEditing(toDraft(buildPresetProvider(OLLAMA_PRESET)))}
+          >
+            <span className="pc-logo txt">🦙</span>
+            <b>Ollama 本地</b>
+            <span className="pc-host">本地模型 · 无需 API Key</span>
+          </button>
+        ) : null}
+        {/* 本地 GGUF 固定卡：导入后生成专属卡片，点击打开管理弹窗 */}
+        <button
+          className="pcard fixed"
+          title={
+            localModels.length
+              ? `已导入：${localModels.map((m) => m.name).join("、")}`
+              : "导入本地 .gguf 模型（一键注册并启动 llama-server）"
+          }
+          onClick={() => (localModels.length ? setGgufMgrOpen(true) : useUi.getState().setGgufImportOpen(true))}
+        >
+          <span className="pc-logo txt">🧠</span>
+          <b>本地 GGUF 模型</b>
+          <span className="pc-host">{localModels.length ? `已导入 ${localModels.length} 个模型` : "点击添加 .gguf 文件"}</span>
+        </button>
         {models.providers.map((p, i) => (
           <button
             key={p.id}
@@ -527,7 +586,8 @@ function ModelsTab() {
               /^https?:|^data:/i.test(p.logo) ? (
                 <img className="pc-logo" src={p.logo} alt="" />
               ) : (
-                <span className="pc-logo txt">{p.logo.slice(0, 1)}</span>
+                // 按码点取首字符：emoji（如 🦙）是代理对，slice(0,1) 会切成乱码
+                <span className="pc-logo txt">{[...p.logo][0]}</span>
               )
             ) : null}
             <b>{p.name}</b>
@@ -569,6 +629,8 @@ function ModelsTab() {
           </div>
         </div>
       ) : null}
+
+      <GgufManageDialog open={ggufMgrOpen} onClose={() => setGgufMgrOpen(false)} />
 
       {editing
         ? createPortal(
@@ -616,7 +678,7 @@ function ModelsTab() {
                     <button
                       className="icon-btn danger"
                       title={confirmDel === savedEditing.id ? "再点一次确认删除" : "删除该服务商"}
-                      style={confirmDel === savedEditing.id ? { color: "var(--danger)", background: "rgba(242,79,106,.12)" } : undefined}
+                      style={confirmDel === savedEditing.id ? { color: "var(--danger)", background: "color-mix(in srgb, var(--danger) 12%, transparent)" } : undefined}
                       onClick={() => {
                         if (confirmDel === savedEditing.id) {
                           removeProvider(savedEditing.id);
@@ -1729,6 +1791,15 @@ function SaveTab() {
               onChange={(v) => patch({ format: v as Settings["save"]["format"] })}
             />
           </Field>
+          <Field
+            label="PNG 元信息"
+            hint="保存 PNG 时把提示词 / 模型 / seed / 生成时间嵌入文件（iTXt 文本块，不重编码图像、画质零损失，所有看图软件兼容）"
+          >
+            <Row gap={12} style={{ alignItems: "center" }}>
+              <Switch on={settings.save.embedMeta} onChange={(v) => patch({ embedMeta: v })} />
+              <span className="sec-desc">写入提示词 / 模型 / seed / 时间（仅 PNG）</span>
+            </Row>
+          </Field>
         </div>
         <div style={{ flex: 1.6 }}>
           <Field label="命名模板" hint={<PatternPreview pattern={settings.save.pattern} />}>
@@ -1845,7 +1916,7 @@ function ComfyTab() {
             <button
               className="icon-btn danger"
               title={confirmDel === t.id ? "再点一次确认删除" : "删除模板"}
-              style={confirmDel === t.id ? { color: "var(--danger)", background: "rgba(242,79,106,.12)" } : undefined}
+              style={confirmDel === t.id ? { color: "var(--danger)", background: "color-mix(in srgb, var(--danger) 12%, transparent)" } : undefined}
               onClick={() => {
                 if (confirmDel === t.id) {
                   removeTpl(t.id);
@@ -1932,7 +2003,7 @@ const HOTKEY_GROUPS: { title: string; actions: HotkeyAction[] }[] = [
   { title: "运行", actions: ["runAll", "runSelected"] },
   {
     title: "面板与窗口",
-    actions: ["agent", "voiceCall", "assets", "gallery", "charLib", "errCenter", "runLog", "settings", "theme", "newBoard"],
+    actions: ["agent", "voiceCall", "director", "assets", "gallery", "charLib", "errCenter", "runLog", "settings", "theme", "newBoard"],
   },
   {
     title: "添加节点",
@@ -1952,6 +2023,10 @@ const HOTKEY_GROUPS: { title: string; actions: HotkeyAction[] }[] = [
       "addRelight",
       "addMultiAngle",
       "addCharCard",
+      "addEcomImage",
+      "addDirector",
+      "addEnhanceLocal",
+      "addVectorize",
       "addVideoDub",
     ],
   },
@@ -1969,6 +2044,23 @@ function HotkeysTab() {
   const hotkeys = useSettings((s) => s.settings.hotkeys);
   const update = useSettings((s) => s.update);
   const [capturing, setCapturing] = useState<HotkeyAction | null>(null);
+
+  // 实时冲突检测：同一组合键被多个动作绑定 → 双方标红（录制新键时的拦截只能防新增，标红负责暴露存量冲突）
+  const clashOf = useMemo(() => {
+    const byKey = new Map<string, HotkeyAction[]>();
+    for (const [a, k] of Object.entries(hotkeys) as [HotkeyAction, string][]) {
+      if (!k) continue;
+      const key = k.toLowerCase();
+      const list = byKey.get(key) ?? [];
+      list.push(a);
+      byKey.set(key, list);
+    }
+    const out = new Map<HotkeyAction, HotkeyAction>(); // 冲突方 → 冲突对方（互相指认）
+    for (const list of byKey.values()) {
+      if (list.length > 1) list.forEach((a, i) => out.set(a, list[(i + 1) % list.length]));
+    }
+    return out;
+  }, [hotkeys]);
 
   useEffect(() => {
     if (!capturing) return;
@@ -2008,6 +2100,11 @@ function HotkeysTab() {
       <SecTitle title="快捷键">
         点击键帽后按下新按键即可重新绑定（Esc 取消）。按功能分组、两列排布；最下方为固定组合键，仅作速查。
       </SecTitle>
+      {clashOf.size ? (
+        <div className="hint" style={{ color: "var(--danger)", margin: "8px 0 0" }}>
+          ⚠ 检测到 {clashOf.size / 2} 组快捷键冲突：标红的键帽有多个功能共用同一按键，点击键帽重新绑定即可消除
+        </div>
+      ) : null}
       {HOTKEY_GROUPS.map((g) => (
         <div key={g.title} className="hk-group">
           <div className="hk-gtitle">{g.title}</div>
@@ -2018,8 +2115,12 @@ function HotkeysTab() {
                   {HOTKEY_LABEL[action]}
                 </span>
                 <button
-                  className={`keycap ${capturing === action ? "cap" : ""}`}
-                  title="点击后按下新按键"
+                  className={`keycap ${capturing === action ? "cap" : ""} ${clashOf.has(action) ? "clash" : ""}`}
+                  title={
+                    clashOf.has(action)
+                      ? `⚠ 与「${HOTKEY_LABEL[clashOf.get(action)!]}」快捷键冲突——点击后按下新按键重新绑定`
+                      : "点击后按下新按键"
+                  }
                   onClick={() => setCapturing(capturing === action ? null : action)}
                 >
                   {capturing === action ? "按键…" : hotkeys[action] ? comboLabel(hotkeys[action]) : "未绑定"}

@@ -62,7 +62,7 @@ export const PromptNode = memo(function PromptNode({ id, data, selected }: NodeP
               {images.map((im, i) => (
                 <button
                   key={im.label}
-                  className="img-chip"
+                  className="img-chip nodrag"
                   title={`插入引用（如：图${i + 1} 把背景换成夜景）· 发给模型时按「图${i + 1}」编号`}
                   onClick={() => insertAt(im.label)}
                 >

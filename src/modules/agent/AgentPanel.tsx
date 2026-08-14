@@ -21,6 +21,7 @@ import { getNativeDragAsset } from "../assets/dragState";
 import { importVideoFile } from "../canvas/nodes/VideoNode";
 import { ModelPicker } from "../../ui/ModelPicker";
 import { Thumb } from "../../ui/Thumb";
+import { ContextMenu, type CmItem } from "../canvas/ContextMenu";
 import {
   IcBrain,
   IcChat,
@@ -31,9 +32,11 @@ import {
   IcImage,
   IcLoading,
   IcMic,
+  IcNote,
   IcPlus,
   IcSend,
   IcSparkles,
+  IcText,
   IcTrash,
   IcVideo,
 } from "../../ui/icons";
@@ -114,6 +117,59 @@ function ResultCard({ r }: { r: AgentResult }) {
   );
 }
 
+/** 可框选的消息气泡：文字可选中，右键可把选中文字建成提示词/备注节点；acts 为额外的整条操作 */
+function MsgBubble({ text, acts }: { text: string; acts?: CmItem[] }) {
+  const [menu, setMenu] = useState<{ x: number; y: number; sel: string } | null>(null);
+
+  const onCtx = (e: React.MouseEvent) => {
+    e.preventDefault();
+    // 右键时读取当前框选内容（右键本身不会取消框选）
+    const sel = (window.getSelection()?.toString() ?? "").trim();
+    setMenu({ x: e.clientX, y: e.clientY, sel });
+  };
+
+  const createNode = (kind: "prompt" | "note", t: string) => {
+    useBoard.getState().addNode(kind, canvasCenterPos(), { text: t });
+    toast(`已创建${kind === "prompt" ? "提示词" : "备注"}节点（${t.slice(0, 14)}${t.length > 14 ? "…" : ""}）`, "ok");
+  };
+
+  return (
+    <>
+      <div className="ag-bubble" onContextMenu={onCtx}>
+        {text}
+      </div>
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: "把选中文字建成提示词节点",
+              icon: <IcText size={14} />,
+              disabled: !menu.sel,
+              onClick: () => createNode("prompt", menu.sel),
+            },
+            {
+              label: "把选中文字建成备注节点",
+              icon: <IcNote size={14} />,
+              disabled: !menu.sel,
+              onClick: () => createNode("note", menu.sel),
+            },
+            {
+              label: "复制选中文字",
+              icon: <IcCopy size={14} />,
+              disabled: !menu.sel,
+              onClick: () => void navigator.clipboard.writeText(menu.sel).then(() => toast("已复制", "ok")),
+            },
+            ...(acts?.length ? [{ sep: true } as CmItem, ...acts] : []),
+          ]}
+        />
+      ) : null}
+    </>
+  );
+}
+
 /** 聊天模式的助手气泡：流式文本 + 思考折叠 + 在画布生图 / 复制 */
 function ChatAssistantMsg({ m }: { m: AgentMsg }) {
   const [showThink, setShowThink] = useState(false);
@@ -129,7 +185,17 @@ function ChatAssistantMsg({ m }: { m: AgentMsg }) {
       ) : null}
       {m.text ? (
         <>
-          <div className="ag-bubble">{m.text}</div>
+          <MsgBubble
+            text={m.text}
+            acts={[
+              { label: "整条回复在画布生图", icon: <IcImage size={14} />, onClick: () => genImageOnCanvas(m.text) },
+              {
+                label: "复制全文",
+                icon: <IcCopy size={14} />,
+                onClick: () => void navigator.clipboard.writeText(m.text).then(() => toast("已复制", "ok")),
+              },
+            ]}
+          />
           <div className="ag-msg-acts">
             <button className="btn sm" title="以这条回复为提示词，在画布创建生成图像节点并运行" onClick={() => genImageOnCanvas(m.text)}>
               <IcImage size={13} /> 在画布生图
@@ -210,7 +276,7 @@ function AgentAssistantMsg({ m }: { m: AgentMsg }) {
           ))}
         </div>
       ) : null}
-      {m.text ? <div className="ag-bubble">{m.text}</div> : null}
+      {m.text ? <MsgBubble text={m.text} /> : null}
       {!m.text && !m.steps?.length && !m.question ? <div className="ag-bubble dim">思考中…</div> : null}
     </div>
   );
@@ -226,6 +292,8 @@ export function AgentPanel() {
   const videoModelId = useAgent((s) => s.videoModelId);
   const mode = useAgent((s) => s.mode);
   const webSearchOn = useAgent((s) => s.webSearch);
+  const thinkingOn = useAgent((s) => s.thinkingOn);
+  const toggleThinking = useAgent((s) => s.toggleThinking);
   const setDraft = useAgent((s) => s.setDraft);
   const addAttachments = useAgent((s) => s.addAttachments);
   const removeAttachment = useAgent((s) => s.removeAttachment);
@@ -353,6 +421,17 @@ export function AgentPanel() {
         <span style={{ flex: 1 }} />
         <button className={`icon-btn ${webSearchOn ? "on" : ""}`} title={searchTitle} onClick={toggleWebSearch}>
           <IcGlobe size={16} />
+        </button>
+        <button
+          className={`icon-btn ${thinkingOn ? "on" : ""}`}
+          title={
+            thinkingOn
+              ? "思考模式：已开启。点一下关闭——Ollama / 本地 GGUF 等支持思考的模型将跳过思考直接回答（仅创作助手生效，画布其他节点不受影响）"
+              : "思考模式：已关闭。点一下开启——模型会先输出思考过程再回答（仅创作助手生效）"
+          }
+          onClick={toggleThinking}
+        >
+          <IcBrain size={16} />
         </button>
         <button
           className={`icon-btn ${inCall ? "on" : ""}`}

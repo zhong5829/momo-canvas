@@ -295,7 +295,19 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     note: "⚠️仅网站自带生图，无标准 OpenAI 兼容 API，导入后可能不可用",
     roles: { image: { protocol: "openai", models: ["gpt-image-2"] } },
   },
+  {
+    key: "ollama",
+    label: "Ollama 本地",
+    logo: "🦙",
+    baseUrl: "http://127.0.0.1:11434",
+    note: "本地 Ollama，无需 API Key。需先安装 Ollama 并 ollama pull 模型；默认端口 11434。支持 thinking 字段与 keep_alive 显存释放。",
+    site: "https://ollama.com",
+    roles: { chat: { protocol: "ollama" } },
+  },
 ];
+
+/** Ollama 本地预设（设置页固定卡片用；无需 API Key，chat 槽走原生协议） */
+export const OLLAMA_PRESET: ProviderPreset = PROVIDER_PRESETS.find((p) => p.key === "ollama")!;
 
 /** 由预设生成一个待编辑的服务商卡片（apiKey 留空，等用户补；id 新建） */
 export function buildPresetProvider(preset: ProviderPreset): ProviderCard {

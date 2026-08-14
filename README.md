@@ -148,6 +148,55 @@ src-tauri/         Rust 壳（dialog / fs / http / store / opener + asset 协议
 - [x] 矢量几何图元扩展：椭圆/圆角矩形拟合后必须通过最终重渲染质量守卫才接受；EPS 独立导出（渐变降级纯填充，不依赖 AI/CDR）
 - [x] 图片编辑收编：裁剪/重绘/增强/扩图/尺寸收进悬浮「编辑」双列菜单；超清放大/智能矢量参数并入底部编辑面板
 - [x] 超清模型内嵌安装包：公开发行白名单 4 模型（约 125MB，ESRGAN / RealPLKSR / SPAN / DeJPG）随 NSIS/便携 zip 分发，resourceDir 三级解析（AppData > 内嵌 > 下载）；UltraSharp、FaceUpDAT、SCRFD 与生成式人脸模型保持按需下载并显示许可状态
+
+### 导演台与本地创作编排（计划）
+
+产品边界：导演台负责剧情结构、提示词编排、生成调度、版本确认、缺片检查和剪辑交付；不复刻 Premiere/剪映，不内嵌 ComfyUI 节点编辑器，也不做 Blender 替代品。ComfyUI、Ollama、第三方视频模型和剪辑软件均以外部连接器接入。
+
+#### 阶段 0：先稳定底座
+
+- [x] ComfyUI 外部连接器收口：配置本地地址、健康检查、工作流导入、素材上传、任务提交、状态查询与结果回收；工作流修改继续在外部 ComfyUI 完成
+- [x] ComfyUI 模板智能解析 v3：优先读取 APP Mode/子图声明，再结合 `object_info`、节点类型与拓扑自动识别图片、视频、音频、正/负提示词、首尾帧、多参考和主/辅助输出（analyzeCapsV3 + autoSlots 自动绑定到 variant.slots）
+- [x] 模板绑定向导：显示语义槽、目标节点、判断依据和置信度；高置信度自动配置，中低置信度人工确认，低成本试跑后按工作流指纹保存（comfyBindings.ts）
+- [x] ComfyUI 子工作流分支：一个模板拆成可命名、着色和独立运行的分支，节点内以“主模板 → 子菜单”选择；支持 SeedVR2 图片/视频放大等同文件多流程（连通分量自动检测 + extractVariantWorkflow + 二级菜单）
+- [x] Ollama 本地服务商：本地模型发现、聊天/提示词调用、隐私路由、显存释放和与 ComfyUI 大任务的资源冲突提示（原生 /api/chat 协议 + /api/tags 发现 + keep_alive 释放）
+- [x] 本地 GGUF 直跑 llama-server：选文件自动配 mmproj 一键「添加并测试」，Rust 受控子进程（无 shell 拼接、仅 127.0.0.1、健康检查、退出清理），模型直进对话选择器可发图；运行中模型可看日志/停止释放显存（local_llm.rs + localGgufStore + 虚拟服务商注入）
+- [x] 便携版首次启动自动创建桌面快捷方式（COM IShellLink 直写 .lnk，已存在即跳过）
+- [x] MOMO Skill 基础设施：安全导入 `SKILL.md`/`.momoskill`、管理器、变量、适用范围、执行预览、结果快照与冲突检查，不执行上传脚本
+
+#### 阶段 1：提示词与范例系统
+
+- [x] 优秀范例拆解：导入提示词、场景案例、参考图或分镜案例，保留原文并拆成主体、场景、动作、景别、构图、镜头、光线、色彩、风格、连续性和负向规则（directorAnalysis.ts breakdownPrompt + 脚本页拆解区）
+- [x] 提示词配方库：范例拆解结果可修正、命名、分类、评分和复用，并记录适用模型与参考效果；界面不使用含义不清的“Scale”术语（PromptRecipe + applyRecipeToPrompt）
+- [x] 模型无关提示词大纲：按“项目规则 + 场景规则 + 角色设定 + 镜头大纲 + 上一镜结束状态 + 配方 + 负向规则”生成可追溯结构（directorPrompt.ts compileShotStructure）
+- [x] 提示词编译器：将同一结构分别编译为 MiniMax H3、Seedance/中转站、ComfyUI 图片/视频工作流及普通海报等目标格式，支持模块开关、去重和冲突提示（compilePrompt + injectR2VTags）
+
+#### 阶段 2：导演台生成闭环
+
+- [x] 导演台项目节点与独立持久化：画布节点只显示项目摘要和入口，项目数据按“剧集/场景/剧情段/镜头/Take”独立保存
+- [x] 外部剧本导入与确定性切分：支持 `分段1/分段2`、标题、空行或自定义分隔符，保留原文映射并检查超时、漏段和重复段（deterministicSplit）
+- [x] 剧情覆盖与连续性状态：记录每镜进入/结束时人物站位、服装、道具、动作、情绪、光线和机位，提示缺失过渡、剧情跳跃及状态冲突（directorAnalysis.ts checkContinuity）
+- [x] 模型无关生成配方：同一镜头可选择本地 ComfyUI、MiniMax H3、Seedance 2.0 中转站或其他第三方视频模型，切换时显式报告能力不兼容项（DirectorRecipe 类型 + capabilitySnapshot）
+- [x] 批量任务队列：生成所选、生成缺失、生成已修改、失败重试；本地与远程分别限流，跨重启恢复并在提交前汇总可能计费（directorQueue.ts）
+- [x] Take 版本确认：每次生成保留不可变快照，支持采用、锁定、备注、基于某版再生成；只有一个采用版本进入全片顺序（createTake/approveTake）
+- [x] 故事串片预演：按镜头顺序硬切连播，只用于检查缺片、时长、剧情和连续性，不发展为多轨剪辑器（SeqPlayer 接通资产地址解析）
+- [x] 批量质量检查与后处理：把已确认但分辨率、帧率或稳定性不足的镜头送入 ComfyUI 放大、补帧、修复分支并保留派生链（directorAnalysis.ts checkQuality + directorQueue.ts executePostProcess/runBatchPostProcess + 派生 Take derivedFrom 链）
+
+#### 阶段 3：音频与剪辑交付
+
+- [x] 音频导演台：对白、旁白绑定镜头，环境音/音乐绑定场景；支持角色声线、读音词典、情绪语速、多版本、字幕对齐和可选口型任务（DirectorAudioTrack + 剪辑页音频区 + TTS 生成）
+- [x] 对白优先/画面优先两种时长策略：对白先定镜头时长，或在画面锁定后让 TTS 适配时长；默认鼓励视频无字幕、无内嵌背景音乐（directorExport.ts dialogueFirstStrategy/videoFirstStrategy）
+- [x] 标准项目交付包：按稳定镜头 ID 输出已确认视频、对白、旁白、音效、环境音、音乐、SRT、镜头清单、预演片和素材校验清单（剪辑页交付包结构 + 资产收集）
+- [x] Premiere XML 交付：生成可导入的 Final Cut Pro 7 XML，预排 V1 视频与对白/旁白/音效/环境音/音乐轨道，并写入场景、镜头和剧情段标记（directorExport.ts generatePremiereXml）
+- [x] Premiere MOMO Bridge（后续可选）：通过 UXP 插件一键导入素材、创建素材箱/序列/轨道/标记；不把 `.prproj` 私有格式作为首版目标（uxp-bridge/ 独立插件骨架：manifest + 面板 + 读清单建箱/序列/标记）
+- [x] 剪映稳定交付包：编号素材 + SRT + 音频分轨 + 镜头表 + 预演片；私有草稿写入仅作为按版本适配、先备份、可回退的实验功能（SRT/CSV 镜头表/项目清单 JSON 已实现，私有草稿格式不触碰）
+
+#### 阶段 4：轻量 3D 站位参考
+
+- [x] 3D 站位参考器：导入现成 GLB/GLTF/VRM 或低模替身，调整站位、朝向、预设姿势、简单道具、相机、焦段和光源方向（SVG 俯视图实现，Three.js GLB 渲染为后续增强）
+- [x] 3D 控制图导出：输出彩色站位图、轮廓、深度、法线、角色分区和姿势图，并映射到 ComfyUI 的 `layoutGuide`/`poseGuide` 等语义槽（彩色站位图 + 灰度深度参考图 + 语义分区图已实现，基于俯视图零依赖方案）
+- [x] 明确不做建模、骨骼绑定、复杂动画、材质节点、雕刻和专业渲染；高级制作继续交给 Blender
+
 - [ ] 口型同步（等可灵/即梦对口型 API 按家族接入）
 - [ ] SAM2/SAM2.1 内容分区、StarVector Logo 候选、diffvg 可微精修（均需 Python/PyTorch 线路，暂缓；其余文档模型已全部 ONNX 化落地）
 - [ ] macOS 打包分发

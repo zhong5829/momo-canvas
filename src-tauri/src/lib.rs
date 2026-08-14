@@ -3,10 +3,13 @@ mod export;
 mod face;
 mod geom;
 mod layer_export;
+mod local_llm;
 mod model_cache;
 mod sr;
 mod vec;
 mod vec_score;
+mod dpapi;
+mod shortcut;
 
 use tauri::ipc::Channel;
 
@@ -107,7 +110,7 @@ async fn layer_export_tiff(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -127,8 +130,32 @@ pub fn run() {
             vectorize_cancel,
             vector_export_apps,
             vector_export,
-            layer_export_tiff
+            layer_export_tiff,
+            // 本地 GGUF 推理引擎（llama-server）受控子进程管理
+            local_llm::detect_llama_server,
+            local_llm::set_llama_server_path,
+            local_llm::start_local_llm,
+            local_llm::stop_local_llm,
+            local_llm::get_local_llm_status,
+            local_llm::get_local_llm_logs,
+            // API Key 落盘加密（DPAPI，绑定当前 Windows 用户）
+            dpapi::dpapi_encrypt,
+            dpapi::dpapi_decrypt,
+            // 便携版首次启动创建桌面快捷方式
+            shortcut::create_desktop_shortcut
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_app_handle, event| {
+        // 应用退出时停掉所有 MOMO 自己启动的 llama-server（不影响用户外部启动的）
+        // ExitRequested：窗口请求关闭时；Exit：应用真正退出时（含 app.exit / 系统关机）
+        // 两个都处理，确保任何退出路径都清理子进程
+        match event {
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                local_llm::stop_all();
+            }
+            _ => {}
+        }
+    });
 }

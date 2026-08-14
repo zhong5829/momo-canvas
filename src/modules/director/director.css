@@ -1,0 +1,1356 @@
+/**
+ * 导演台全屏工作台样式
+ * 全部使用主题 token（var(--token)），不硬编码 rgba；
+ * 光晕/描边用 color-mix(in srgb, var(--accent) N%, transparent)。
+ */
+
+/* 全屏覆盖画布 */
+.director-studio {
+  position: fixed;
+  inset: 0;
+  z-index: 450;
+  background: var(--bg-app);
+  display: flex;
+  flex-direction: column;
+  animation: dsFadeIn 180ms ease;
+}
+.ds-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  flex: 1;
+  color: var(--text-3);
+  font-size: 14px;
+}
+
+@keyframes dsFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 顶部项目栏：项目名 + 画幅 + 时长 + 进度 + 关闭 */
+.ds-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--panel-border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.ds-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1;
+  min-width: 0;
+}
+.ds-title-input {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  padding: 5px 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+  flex: 0 1 260px;
+  min-width: 120px;
+  transition: border-color 120ms, background 120ms;
+}
+.ds-title-input::placeholder {
+  color: var(--text-3);
+  font-weight: 500;
+}
+.ds-title-input:hover {
+  border-color: var(--panel-border);
+}
+.ds-title-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  outline: none;
+  background: var(--bg-app);
+}
+
+/* 画幅选择：真实比例小矩形 + 比率的段控 */
+.ds-aspect-seg {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  background: var(--bg-app);
+  flex: 0 0 auto;
+}
+.ds-asp {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--r-md) - 2px);
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 120ms, background 120ms;
+}
+.ds-asp-rect {
+  display: block;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+}
+.ds-asp:hover:not(.on) {
+  color: var(--text-1);
+}
+.ds-asp.on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.ds-dur {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--text-3);
+  flex: 0 0 auto;
+}
+.ds-dur .input {
+  width: 64px;
+}
+.ds-close {
+  flex: 0 0 auto;
+}
+
+/* 主体：左侧流程导航 + 内容 */
+.ds-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 左侧流程导航（大图标竖排：剧本→分镜→生成→成片检查→3D 导演台，沿界面高度分布的大按钮） */
+.ds-sidenav {
+  width: 112px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 10px;
+  border-right: 1px solid var(--panel-border);
+  background: var(--panel);
+  overflow-y: auto;
+}
+.ds-nav-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  justify-content: space-evenly;
+  min-height: 0;
+}
+.ds-nav-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 16px 6px;
+  background: transparent;
+  border: 1.5px solid transparent;
+  border-radius: var(--r-lg);
+  color: var(--text-3);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color 120ms, background 120ms, border-color 120ms;
+}
+.ds-nav-idx {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 10.5px;
+  color: var(--text-3);
+  opacity: 0.75;
+}
+.ds-nav-item:hover:not(.disabled):not(.on) {
+  color: var(--text-1);
+  background: var(--hover);
+  border-color: var(--panel-border);
+}
+.ds-nav-item.on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.ds-nav-item.on .ds-nav-idx {
+  color: var(--accent);
+  opacity: 1;
+}
+.ds-nav-item.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ds-soon {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--r-full);
+  background: var(--hover);
+  color: var(--text-3);
+}
+/* 底部资产库入口：竖排大按钮同款，固定在最下面 */
+.ds-nav-assets {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 16px 6px;
+  border: 1.5px dashed var(--panel-border);
+  border-radius: var(--r-lg);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color 120ms, background 120ms, border-color 120ms;
+}
+.ds-nav-assets:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+/* 页签内容区 */
+.ds-content {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 20px 24px;
+}
+
+.ds-page {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.ds-page-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* ---------- 模块卡片体系（方案 §4.5/§6） ---------- */
+.ds-card {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--node-shadow);
+  overflow: hidden;
+}
+.ds-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.ds-card-ic {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--grad-brand-soft);
+  color: var(--accent);
+  flex: none;
+}
+.ds-card-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-1);
+}
+.ds-card-desc {
+  font-size: 12.5px;
+  color: var(--text-3);
+  margin-top: 1px;
+}
+.ds-card-acts {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.ds-card-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ds-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--panel-border);
+}
+.ds-card-foot .spacer {
+  flex: 1;
+}
+
+/* 概览统计卡（方案 §6.5） */
+.ds-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.ds-stat {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ds-stat b {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+.ds-stat span {
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.ds-stat.accent b {
+  color: var(--accent);
+}
+.ds-stat.ok b {
+  color: var(--ok);
+}
+.ds-stat.warn b {
+  color: var(--warn);
+}
+.ds-stat.danger b {
+  color: var(--danger);
+}
+
+/* 主侧双栏（宽屏），窄屏自动堆叠 */
+.ds-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 370px;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .ds-cols {
+    grid-template-columns: 1fr;
+  }
+}
+.ds-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* 项目栏迷你进度 */
+.ds-head-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.ds-hp-bar {
+  width: 96px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--hover);
+  overflow: hidden;
+}
+.ds-hp-bar i {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-full);
+  background: var(--grad-brand);
+  transition: width var(--t-mid);
+}
+.ds-hp-text {
+  font-size: 12.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* 空状态（方案 §5 EmptyState） */
+.ds-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 36px 20px;
+  color: var(--text-3);
+  text-align: center;
+}
+.ds-empty .ds-card-ic {
+  width: 40px;
+  height: 40px;
+}
+.ds-empty-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.ds-empty-desc {
+  font-size: 12.5px;
+  max-width: 420px;
+  line-height: 1.6;
+}
+.ds-script {
+  min-height: 320px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  resize: vertical;
+}
+
+/* 剧本页撑满内容区：输入框随窗口高度自适应 */
+.ds-page.ds-fill {
+  height: 100%;
+}
+.ds-page.ds-fill .ds-cols {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+}
+.ds-page.ds-fill .ds-script-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ds-page.ds-fill .ds-script-card .ds-card-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ds-page.ds-fill .ds-script {
+  flex: 1;
+  min-height: 200px;
+  resize: none;
+}
+.ds-page.ds-fill .ds-side {
+  min-height: 0;
+  overflow-y: auto;
+}
+@media (max-width: 1100px) {
+  /* 窄屏堆叠时取消撑满，恢复自然高度 */
+  .ds-page.ds-fill {
+    height: auto;
+  }
+  .ds-page.ds-fill .ds-script {
+    min-height: 45vh;
+  }
+}
+
+/* 剧本文件拖放 */
+.ds-drop {
+  position: relative;
+}
+.ds-drop-mask {
+  position: absolute;
+  inset: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px dashed var(--accent);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  font-size: 13.5px;
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* 自定义分场/分段标记行 */
+.ds-split-opts {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 16px;
+  border-top: 1px solid var(--panel-border);
+}
+.ds-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.ds-opt .input {
+  width: 110px;
+}
+.ds-opt-hint {
+  font-size: 12px;
+  color: var(--text-3);
+  opacity: 0.85;
+}
+
+/* 参考图卡（生成页）：顺序 + 接入点 + 作用域 —— 卡片横排（一行多个，省空间） */
+.ds-refs {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ds-refs-sect {
+  font-size: 12px;
+  color: var(--text-3);
+  padding-top: 6px;
+  border-top: 1px dashed var(--panel-border);
+  flex-basis: 100%;
+}
+.ds-ref-item {
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  background: var(--bg-app);
+  flex: 0 0 auto;
+}
+.ds-ref-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.ds-ref-row .spacer {
+  flex: 1;
+  min-width: 2px;
+}
+.ds-ref-n {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.ds-ref-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-sm, 6px);
+  object-fit: cover;
+  border: 1px solid var(--panel-border);
+  flex: 0 0 auto;
+}
+.ds-ref-missing {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text-3);
+  background: var(--hover);
+}
+/* 语义下拉：与其他 PopSelect 同风格（触发按钮文字），宽度紧凑 */
+.ds-ref-sem {
+  flex: 0 0 auto;
+}
+.ds-ref-sem .pop-trigger {
+  min-width: 78px;
+  padding: 0 8px;
+}
+.ds-ref-scopebtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  color: var(--text-3);
+}
+.ds-ref-scopebtn.on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.ds-ref-scopecnt {
+  font-size: 11px;
+  font-weight: 600;
+}
+.ds-ref-segpick {
+  border-top: 1px dashed var(--panel-border);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.ds-ref-segitem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  padding: 2px 0;
+}
+.ds-ref-segitem:hover {
+  color: var(--text-1);
+}
+.ds-refs-excluded {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--panel-border);
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+/* 占位页 */
+.ds-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 80px 20px;
+  color: var(--text-3);
+}
+
+/* ---------- 通用小部件 ---------- */
+.ds-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: var(--r-full);
+  background: var(--hover);
+  color: var(--text-3);
+}
+.ds-badge.ok {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+.ds-badge.warn {
+  background: color-mix(in srgb, var(--warn) 20%, transparent);
+  color: var(--warn);
+}
+
+.ds-section {
+  margin-top: 20px;
+}
+.ds-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+
+/* 进度卡 */
+.ds-progress-card {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  color: var(--text-2);
+  margin-bottom: 16px;
+}
+
+/* ---------- 脚本页 ---------- */
+.ds-script-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.ds-chars {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ds-char {
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+}
+.ds-char b {
+  margin-right: 8px;
+}
+.ds-skill-bind {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ds-skill-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ds-skill-item:hover {
+  background: var(--hover);
+}
+.ds-skill-item b {
+  flex-shrink: 0;
+}
+/* 范例拆解 */
+.ds-recipe-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.ds-recipe-bar input {
+  flex: 1;
+}
+.ds-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  margin-bottom: 8px;
+}
+.ds-bd-field {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.ds-saved-recipes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ds-recipe-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12.5px;
+}
+.ds-recipe-card:hover {
+  background: var(--hover);
+}
+
+/* ---------- 分镜页 ---------- */
+.ds-scene {
+  margin-bottom: 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.ds-scene-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: none;
+  cursor: pointer;
+  color: var(--text-1);
+  font-size: 13px;
+}
+.ds-scene-head:hover {
+  background: var(--hover);
+}
+.ds-scene-body {
+  padding: 6px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ds-seg {
+  padding: 10px 12px;
+  background: var(--bg-app);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+}
+.ds-seg.approved {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.ds-seg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.ds-seg-summary {
+  font-size: 13px;
+  color: var(--text-1);
+  margin-bottom: 6px;
+}
+.ds-dialogue {
+  font-size: 12.5px;
+  color: var(--text-2);
+  padding-left: 10px;
+  border-left: 2px solid var(--panel-border);
+  margin-bottom: 6px;
+}
+.ds-dline {
+  padding: 1px 0;
+}
+.ds-shots {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.ds-shot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ds-shot-n {
+  font-weight: 600;
+  color: var(--accent);
+}
+.ds-shot-time {
+  font-family: monospace;
+  color: var(--text-3);
+}
+.ds-shot-size {
+  padding: 0 5px;
+  background: var(--hover);
+  border-radius: var(--r-sm);
+}
+.ds-shot-cam {
+  font-style: italic;
+  color: var(--text-3);
+}
+.ds-shot-act {
+  flex: 1 1 auto;
+  min-width: 60px;
+}
+.ds-shot-audio {
+  flex-basis: 100%;
+  font-size: 12px;
+}
+.ds-cont {
+  font-size: 12.5px;
+  color: var(--text-3);
+  padding: 2px 0;
+}
+.ds-prompt-preview {
+  margin-top: 6px;
+  font-size: 12.5px;
+}
+.ds-prompt-preview pre {
+  white-space: pre-wrap;
+  background: var(--panel);
+  padding: 8px;
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  max-height: 140px;
+  overflow: auto;
+}
+.ds-seg-override {
+  margin-top: 6px;
+  width: 100%;
+}
+
+/* ---------- 生成页 ---------- */
+.ds-gen {
+  display: flex;
+  gap: 16px;
+  height: 100%;
+  min-height: 400px;
+}
+.ds-gen-left {
+  flex: 0 0 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  max-height: calc(100vh - 200px);
+}
+.ds-seg-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 12.5px;
+  text-align: left;
+}
+.ds-seg-pick:hover {
+  background: var(--hover);
+}
+.ds-seg-pick.on {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--text-1);
+}
+.ds-seg-pick-n {
+  font-weight: 600;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.ds-seg-pick-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds-gen-right {
+  flex: 1;
+  min-width: 0;
+}
+.ds-batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--panel-border);
+}
+.ds-takes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ds-take {
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+}
+.ds-take.approved {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.ds-take-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.ds-take-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.ds-take-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ds-recipe {
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  margin-bottom: 4px;
+}
+.ds-recipe-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.ds-recipe-summary::-webkit-details-marker { display: none; }
+.ds-recipe-edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-border);
+}
+.ds-recipe-edit label {
+  flex: 1 1 120px;
+  min-width: 100px;
+}
+
+/* ---------- 剪辑页 ---------- */
+.ds-missing {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ds-miss-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+}
+.ds-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ds-tl-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  background: var(--panel);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+}
+.ds-tl-n {
+  font-weight: 600;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.ds-tl-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds-tl-dur {
+  font-family: monospace;
+  color: var(--text-3);
+}
+.ds-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ds-issue {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  border-left: 3px solid var(--text-3);
+}
+.ds-issue.warning {
+  border-left-color: var(--warn);
+}
+.ds-issue.error {
+  border-left-color: var(--danger);
+}
+/* 音频导演台 */
+.ds-audio-add {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.ds-audio-add select {
+  width: auto;
+  flex: 0 0 auto;
+}
+.ds-audio-add input {
+  flex: 1;
+}
+.ds-audio-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ds-audio-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+}
+.ds-audio-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 3D 站位参考器 */
+.ds-threed {
+  display: flex;
+  gap: 16px;
+}
+.ds-threed-canvas {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ds-threed-svg {
+  width: 100%;
+  aspect-ratio: 1;
+  max-width: 560px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.ds-threed-entity {
+  cursor: pointer;
+}
+.ds-threed-entity.sel circle {
+  stroke-width: 2;
+}
+.ds-threed-hint {
+  font-size: 12px;
+}
+.ds-threed-side {
+  flex: 0 0 240px;
+}
+.ds-threed-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ds-threed-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.ds-threed-field input {
+  width: 100%;
+}
+.ds-threed-exports {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+.ds-edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 20px;
+}
+.ds-deliver-doc {
+  margin-top: 20px;
+}
+.ds-deliver-tree {
+  font-family: monospace;
+  font-size: 12.5px;
+  padding: 12px;
+  background: var(--panel);
+  border-radius: var(--r-md);
+  color: var(--text-3);
+}
+
+/* ---------- 生成页卡片化重构（GenerationPage 专用） ---------- */
+.dsg-cols {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .dsg-cols {
+    grid-template-columns: 1fr;
+  }
+}
+.dsg-seg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  overflow-y: auto;
+  max-height: calc(100vh - 320px);
+}
+.dsg-batch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.dsg-batch-scope {
+  width: auto;
+  flex: 0 0 auto;
+}
+.dsg-batch-progress {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dsg-recipe-badges {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.dsg-file {
+  display: none;
+}
+.dsg-err {
+  color: var(--danger);
+}
+.dsg-star.on svg {
+  fill: var(--accent);
+}
+
+/* ---------- 成片检查页卡片化重构（EditingPage 专用） ---------- */
+.dse-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dse-pre {
+  white-space: pre-wrap;
+}
+.dse-deliver summary {
+  cursor: pointer;
+}
+
+
+/* ---------- 分镜页场景卡（卡片化重构，StoryboardPage 专用） ---------- */
+/* 整行可点的场景卡头：在 .ds-card-head 基础上重置 button 默认样式 */
+.ds-scene-toggle {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--panel-border);
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.ds-scene-toggle:hover {
+  background: var(--hover);
+}
+.ds-scene-toggle.collapsed {
+  border-bottom-color: transparent;
+}
+.ds-scene-toggle-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ds-scene-toggle .ds-chev {
+  color: var(--text-3);
+  transform: rotate(-90deg);
+  transition: transform 150ms;
+  flex: none;
+}
+.ds-scene-toggle.open .ds-chev {
+  transform: rotate(0deg);
+}
+
+/* ---------- 3D 站位页（卡片化重构，ThreeDPage 专用） ---------- */
+.ds-entity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ds-entity-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 12.5px;
+  text-align: left;
+}
+.ds-entity-item:hover {
+  background: var(--hover);
+}
+.ds-entity-item.on {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--text-1);
+}
+.ds-entity-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.ds-entity-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 导出按钮组放进卡片 body 后去掉旧的外边距 */
+.ds-card-body > .ds-threed-exports {
+  margin-top: 0;
+}
+
+/* ---- 生成页：队列进度条 / 片段看板缩略图 ---- */
+.dsg-batch-busy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ds-seg-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex: none;
+  background: var(--hover);
+}
+.ds-seg-thumb.empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+}

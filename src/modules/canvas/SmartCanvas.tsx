@@ -43,10 +43,11 @@ import { FlowEdge } from "./FlowEdge";
 import { AddNodeMenu } from "./AddNodeMenu";
 import { CanvasSearch, Spotlight } from "./CanvasPalette";
 import { AiWirePanel } from "./AiWirePanel";
-import { runAllFlows, runFlow } from "../../core/runner";
+import { RUNNABLE_KINDS, runAllFlows, runFlow } from "../../core/runner";
 import { abortAll, abortNode, useRunTasks } from "../../core/runControl";
 import { ContextMenu, type CmItem } from "./ContextMenu";
-import { IcBulb, IcCursor, IcEyeOff, IcFit, IcGroup, IcLock, IcLogo, IcOrbit, IcPlay, IcPlus, IcMin, IcTrash, IcUndo, IcRedo, IcUpscale, IcVector, IcWand } from "../../ui/icons";
+import { IcBulb, IcClapper, IcCopy, IcCursor, IcEcom, IcEyeOff, IcFit, IcGroup, IcLock, IcLogo, IcOrbit, IcPlay, IcPlus, IcMin, IcTrash, IcUndo, IcRedo, IcUpscale, IcVector, IcWand } from "../../ui/icons";
+import { ErrorBoundary } from "../../ui/ErrorBoundary";
 
 import { ImageNode } from "./nodes/ImageNode";
 import { PromptNode } from "./nodes/PromptNode";
@@ -70,6 +71,7 @@ import { VideoDubNode } from "./nodes/VideoDubNode";
 import { EnhanceLocalNode } from "./nodes/EnhanceLocalNode";
 import { VectorizeNode } from "./nodes/VectorizeNode";
 import { EcomImageNode } from "./nodes/EcomImageNode";
+import { DirectorNode } from "./nodes/DirectorNode";
 
 /** 一键清空画布：首次点击进入确认态（2.5 秒内再点执行），入撤销历史可 Ctrl+Z 恢复 */
 function ClearAllBtn() {
@@ -120,6 +122,7 @@ const nodeTypes: NodeTypes = {
   enhanceLocal: EnhanceLocalNode,
   vectorize: VectorizeNode,
   ecomImage: EcomImageNode,
+  director: DirectorNode,
 };
 
 /** 统一走自定义边：端点内伸贴框 + 悬停剪刀 + 选中脉冲 */
@@ -218,6 +221,9 @@ function snapConnection(
   if (wouldCycle(edges, hit.id, from.id)) return null;
   return { source: hit.id, target: from.id, sourceHandle: "out", targetHandle: "in" };
 }
+
+/** 可运行节点类型集合（模块级常量，来自 runner 的 RUNNABLE_KINDS 单一来源） */
+const RUNNABLE_KINDS_SET = new Set(RUNNABLE_KINDS);
 
 export function SmartCanvas() {
   const nodes = useBoard((s) => s.nodes);
@@ -448,7 +454,8 @@ export function SmartCanvas() {
       const d = (node.data ?? {}) as Record<string, unknown>;
       const runState = String(d.status ?? "");
       const isRunning = runState === "running" || !!useRunTasks.getState().tasks[node.id];
-      const RUNNABLE = new Set(["imageGen", "videoGen", "comfy", "llmText", "storyboard", "charCard", "relight", "multiAngle", "audioGen", "videoDub", "combine", "enhanceLocal", "vectorize"]);
+      // 可运行判断单一来源：RUNNABLE_KINDS 直接取自 runner 的 RUNNERS 表（勿手抄第二张表，两表漂移曾出 bug）
+      const RUNNABLE = RUNNABLE_KINDS_SET;
       const MEDIA = new Set(["image", "video", "audio"]);
       const isIgnored = !!d.ignored;
 
@@ -456,8 +463,48 @@ export function SmartCanvas() {
       if (RUNNABLE.has(kind)) {
         if (isRunning)
           items.push({ group: "运行", label: "停止生成", danger: true, onClick: () => abortNode(node.id) });
-        else
-          items.push({ group: "运行", label: "运行此节点", onClick: () => void runFlow(node.id) });
+        else {
+          const hasOut = Array.isArray(d.results) && d.results.length > 0;
+          items.push({ group: "运行", label: hasOut ? "重新生成" : "运行此节点", onClick: () => void runFlow(node.id) });
+        }
+      }
+      if (!multi && kind === "group") {
+        const members = b.nodes.filter((n) => n.parentId === node.id && !(n.data as Record<string, unknown>).ignored);
+        const runningN = members.filter((m) => useRunTasks.getState().tasks[m.id]).length;
+        if (runningN)
+          items.push({
+            group: "运行",
+            label: `组内全部停止（${runningN} 个在跑）`,
+            danger: true,
+            onClick: () => members.forEach((m) => abortNode(m.id)),
+          });
+        else if (members.length)
+          items.push({
+            group: "运行",
+            label: `组内全部运行（${members.length} 个）`,
+            onClick: () => members.forEach((m) => void runFlow(m.id)),
+          });
+      }
+      if (!multi && kind === "director" && d.projectId) {
+        items.push({
+          group: "运行",
+          label: "打开导演台",
+          icon: <IcClapper size={15} />,
+          onClick: () => {
+            useUi.setState({ directorNodeId: node.id });
+            useUi.getState().setDirectorOpen(true);
+          },
+        });
+      }
+      if (!multi && (kind === "prompt" || kind === "note")) {
+        const t = String(d.text ?? "").trim();
+        if (t)
+          items.push({
+            group: "运行",
+            label: "复制文本",
+            icon: <IcCopy size={15} />,
+            onClick: () => void navigator.clipboard.writeText(t).then(() => toast("已复制", "ok")),
+          });
       }
       if (MEDIA.has(kind) && !multi) {
         const src = String(d.src ?? "");
@@ -475,6 +522,9 @@ export function SmartCanvas() {
         items.push({ group: "编辑处理", label: "超清放大", icon: <IcUpscale size={15} />, onClick: () => b.spawnEdit(node.id, "enhanceLocal") });
         items.push({ group: "编辑处理", label: "智能矢量", icon: <IcVector size={15} />, onClick: () => b.spawnEdit(node.id, "vectorize") });
       }
+      if (!multi && kind === "image") {
+        items.push({ group: "编辑处理", label: "电商长图", icon: <IcEcom size={15} />, onClick: () => b.spawnEdit(node.id, "ecomImage") });
+      }
       items.push({ sep: true });
       items.push({ group: "节点", label: multi ? `复制 ${targets.length} 个` : "复制节点", onClick: () => b.cloneNodes(ids) });
       items.push({ group: "节点", label: multi ? `删除 ${targets.length} 个` : "删除节点", danger: true, onClick: () => ids.forEach((id) => b.removeNode(id)) });
@@ -488,6 +538,23 @@ export function SmartCanvas() {
       setCtxMenu({ x: e.clientX, y: e.clientY, items });
     },
     [fitView],
+  );
+
+  /** 连线右键：删除连线 / 从源头运行到下游（把该链路上游可运行节点跑一遍再跑下游） */
+  const onEdgeContextMenu = useCallback(
+    (e: React.MouseEvent, edge: Edge) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setCtxMenu({
+        x: e.clientX,
+        y: e.clientY,
+        items: [
+          { label: "删除连线", danger: true, onClick: () => useBoard.getState().onEdgesChange([{ id: edge.id, type: "remove" }]) },
+          { label: "沿此线运行", onClick: () => void runFlow(edge.target) },
+        ],
+      });
+    },
+    [],
   );
 
   /* ---- 拖放：图片文件 / 文本 / 坞上的节点；落点贴近已有节点时自动连线 ---- */
@@ -838,6 +905,10 @@ export function SmartCanvas() {
         useUi.getState().setAgentOpen(true);
         if (isVoiceCallActive()) stopVoiceCall();
         else void startVoiceCall();
+      } else if (hit("director")) {
+        e.preventDefault();
+        const u = useUi.getState();
+        u.setDirectorOpen(!u.directorOpen);
       } else {
         // 下方工具坞的「添加节点」快捷键（每个节点类型都可在设置里自定义）
         const item = NODE_CATALOG.find((i) => matchHotkey(e, hk[i.hotkey]));
@@ -1014,6 +1085,7 @@ export function SmartCanvas() {
         onPaneClick={onPaneClick}
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={onNodeContextMenu}
+        onEdgeContextMenu={onEdgeContextMenu}
         onNodeDragStart={(_e, _node) => {
           snapshot();
           // 拖动期间不弹生成设置面板（点击节点后才显示）
@@ -1215,14 +1287,19 @@ export function SmartCanvas() {
         </div>
       ) : null}
 
-      {!zen ? <GenConfigPanel /> : null}
-      {!zen ? <VideoConfigPanel /> : null}
-      {!zen ? <AudioConfigPanel /> : null}
-      {!zen ? <CharConfigPanel /> : null}
-      {!zen ? <EcomConfigPanel /> : null}
-      {!zen ? <ComfyConfigPanel /> : null}
-      {!zen ? <EnhanceConfigPanel /> : null}
-      {!zen ? <VectorizeConfigPanel /> : null}
+      {/* 底部参数栏整体兜在 ErrorBoundary 里：任何面板渲染异常只坏面板本身，不整窗白屏 */}
+      {!zen ? (
+        <ErrorBoundary name="底部参数栏">
+          <GenConfigPanel />
+          <VideoConfigPanel />
+          <AudioConfigPanel />
+          <CharConfigPanel />
+          <EcomConfigPanel />
+          <ComfyConfigPanel />
+          <EnhanceConfigPanel />
+          <VectorizeConfigPanel />
+        </ErrorBoundary>
+      ) : null}
 
       <AddNodeMenu />
       <CanvasSearch />

@@ -2,13 +2,14 @@ import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { NodeShell, PortIn, PortOut } from "../NodeShell";
 import { EditSurface } from "../EditSurface";
-import { IcDice, IcDownload, IcFlow, IcLoading } from "../../../ui/icons";
+import { IcCopy, IcDice, IcDownload, IcFlow, IcLoading, IcRows } from "../../../ui/icons";
 import { Switch } from "../../../ui/kit";
 import { useBoard } from "../../../core/stores/boardStore";
 import { useComfy } from "../../../core/stores/comfyStore";
 import { useSettings } from "../../../core/stores/settingsStore";
 import { toast, useUi } from "../../../core/stores/uiStore";
 import { saveImageAs } from "../../../core/services/imageSaver";
+import { buildImageEntries, COMFY_SLOT_NONE, effectiveParams } from "../../../core/services/comfy";
 import { errMsg } from "../../../core/utils";
 import { Thumb } from "../../../ui/Thumb";
 import { VideoThumb } from "../../../ui/VideoThumb";
@@ -45,8 +46,8 @@ export const ComfyNode = memo(function ComfyNode({ id, data, selected }: NodePro
       hideUpstream
       headExtra={
         main ? (
-          <span className="acts nodrag" style={{ opacity: 1 }}>
-            <button className="icon-btn" title="保存到本地" onClick={save}>
+          <span className="acts nodrag">
+            <button className="icon-btn" title="保存到本地" aria-label="保存到本地" onClick={save}>
               <IcDownload size={17} />
             </button>
           </span>
@@ -55,10 +56,33 @@ export const ComfyNode = memo(function ComfyNode({ id, data, selected }: NodePro
     >
       <div className="mnode-body">
         {tpl ? (
+          <>
           <div className="gen-sum" title="模板与参数在底部设置面板调整（选中本节点即弹出）">
             {tpl.name}
-            {tpl.params.length ? ` · ${Object.keys(d.params ?? {}).length}/${tpl.params.length} 参数已调` : ""}
+            {(() => {
+              const eff = effectiveParams(tpl, d.variantId);
+              const vName = d.variantId ? tpl.variants?.find((v) => v.id === d.variantId)?.name : undefined;
+              const vTag = vName && vName !== "默认" ? ` · ${vName}` : "";
+              const branchParams = (d.variantId ? d.paramsByVariant?.[d.variantId] : undefined) ?? d.params ?? {};
+              return eff.length ? `${vTag} · ${Object.keys(branchParams).length}/${eff.length} 参数已调` : vTag;
+            })()}
           </div>
+          {(() => {
+            // 输入映射徽章：一眼看出哪张图被精确指定到了哪个入口（∅ = 明确不给图）
+            const map = d.imageSlotMap ?? {};
+            const mapped = buildImageEntries(tpl, d.variantId).filter((e) => e.key in map);
+            if (!mapped.length) return null;
+            return (
+              <div className="comfy-slot-badges nodrag" title="输入映射：已精确指定这些入口的图（在底部「输入映射」里调整）">
+                {mapped.map((e) => (
+                  <span key={e.key} className="comfy-slot-badge" title={`入口 ${e.label}（${e.key}）`}>
+                    {e.label.slice(0, 8)} {map[e.key] === COMFY_SLOT_NONE ? "∅" : "✓"}
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
+          </>
         ) : (
           <div className="hint" style={{ fontSize: 12.5, color: "var(--text-3)", lineHeight: 1.6 }}>
             选中本节点，在底部设置面板选择工作流模板并调整参数
@@ -93,11 +117,19 @@ export const ComfyNode = memo(function ComfyNode({ id, data, selected }: NodePro
                     alt=""
                   />
                 ))}
+                <button
+                  className="icon-btn"
+                  title={`对比视图：${d.results.length} 张并排挑图`}
+                  aria-label="对比视图"
+                  onClick={() => useUi.getState().setLightboxList(d.results)}
+                >
+                  <IcRows size={13} />
+                </button>
               </div>
             ) : null}
           </>
         ) : null}
-        {d.videoResults?.length && !running ? (
+        {!main && d.videoResults?.length && !running ? (
           <VideoThumb className="img-main" src={d.videoResults[0]} />
         ) : null}
         {d.textOut && !running ? (
@@ -105,9 +137,14 @@ export const ComfyNode = memo(function ComfyNode({ id, data, selected }: NodePro
             <pre>{d.textOut}</pre>
             <button
               className="btn sm"
-              onClick={() => void navigator.clipboard.writeText(d.textOut!).then(() => toast("已复制文本 ✓", "ok"))}
+              onClick={() =>
+                void navigator.clipboard
+                  .writeText(d.textOut!)
+                  .then(() => toast("已复制文本 ✓", "ok"))
+                  .catch(() => toast("复制失败，请手动选择文本复制", "err"))
+              }
             >
-              复制文本输出
+              <IcCopy size={14} /> 复制文本输出
             </button>
           </div>
         ) : null}
@@ -122,10 +159,13 @@ export function ParamField({
   p,
   value,
   onChange,
+  options,
 }: {
   p: ComfyExposedParam;
   value: string | number | undefined;
   onChange: (v: string | number | boolean) => void;
+  /** combo 参数的可选项（来自 ComfyUI /object_info；有则渲染下拉而非文本框） */
+  options?: string[];
 }) {
   const v = value !== undefined ? value : (p.value as string | number);
   const label = (
@@ -133,6 +173,27 @@ export function ParamField({
   );
   switch (p.kind) {
     case "text":
+      if (options?.length) {
+        const cur = String(v ?? p.options?.[0] ?? options[0]);
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {label}
+            <select
+              className="input nodrag"
+              style={{ minHeight: 34 }}
+              title="下拉选项来自 ComfyUI 节点定义（object_info）"
+              value={options.includes(cur) ? cur : options[0]}
+              onChange={(e) => onChange(e.target.value)}
+            >
+              {options.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
+          </div>
+        );
+      }
       return (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           {label}

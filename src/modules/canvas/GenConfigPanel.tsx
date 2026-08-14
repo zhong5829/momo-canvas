@@ -31,7 +31,10 @@ import { PopLayer, PopSelect } from "../../ui/PopSelect";
 import { NodeParamsPop } from "../../ui/NodeParamsPop";
 import { AspectSelector, ArIcon } from "../../ui/AspectSelector";
 import { CARD_STYLES, CHAR_DELIVERABLES } from "../../core/charPresets";
-import { IcArrowL, IcArrowR, IcChevronD, IcCheck, IcEcom, IcGlobe, IcIdCard, IcImage, IcLayers, IcRows, IcText, IcVideo } from "../../ui/icons";
+import { IcArrowL, IcArrowR, IcChevronD, IcCheck, IcClose, IcEcom, IcGlobe, IcIdCard, IcImage, IcLayers, IcPlus, IcRows, IcText, IcVideo } from "../../ui/icons";
+import { useAssets } from "../../core/stores/assetStore";
+import { assetToDataUrl, assetUrl } from "../../core/services/assetFiles";
+import { errMsg } from "../../core/utils";
 import { GenPromptBar } from "./GenPromptBar";
 import { useGenPref, type GenTierPreset } from "../../core/stores/genPrefStore";
 import { Thumb } from "../../ui/Thumb";
@@ -126,7 +129,7 @@ function TierRow({
       data = { ...p.data };
     }
     useBoard.getState().updateData(selId, data);
-    useGenPref.getState().remember(kind, data);
+    // remember 已由 updateData 统一挂钩（全节点记忆），这里只记录档位选中态
     useGenPref.getState().setActive(kind, p.id);
   };
   return (
@@ -152,6 +155,7 @@ function TierRow({
 /** 「历次」按钮：列出节点最近 10 次生成结果，点一条回退到该次的结果+参数（含 seed） */
 function HistoryButton({ selId }: { selId: string }) {
   const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
   const history = useBoard(
     (s) => (s.nodes.find((n) => n.id === selId)?.data as Record<string, unknown> | undefined)?.history as GenHistoryEntry[] | undefined,
   );
@@ -163,31 +167,29 @@ function HistoryButton({ selId }: { selId: string }) {
     toast(`已回退到 ${new Date(e.ts).toLocaleString()} 的结果与参数`, "ok");
   };
   return (
-    <div style={{ position: "relative" }}>
+    <div ref={wrapRef} className="pop-wrap">
       <button className="gd-chip" title="查看本节点历次生成结果，点一条即回退" onClick={() => setOpen((v) => !v)}>
         历次 {history.length}
       </button>
       {open ? (
-        <>
-          <div className="poplayer-overlay" onClick={() => setOpen(false)} />
-          <div className="hist-pop">
-            <div className="hist-title">历次结果（点一条回退到该次的结果与参数）</div>
-            {history.map((e, i) => (
-              <div key={i} className="hist-row" onClick={() => apply(e)}>
-                <div className="hist-thumbs">
-                  {e.results.slice(0, 3).map((src, j) => (
-                    <Thumb key={j} src={src} className="hist-thumb" />
-                  ))}
-                </div>
-                <div className="hist-meta">
-                  <b>{e.prompt?.slice(0, 40) || "（无提示词）"}</b>
-                  {new Date(e.ts).toLocaleString()} · {e.results.length} 个结果 · {e.modelId?.split("::")[1] ?? ""}
-                  {e.params.seed ? ` · seed ${String(e.params.seed).slice(0, 8)}` : ""}
-                </div>
+        /* 点击外部 / Esc 关闭走 PopLayer 自带机制（旧 .poplayer-overlay 无 CSS 定义，点击外部从未生效） */
+        <PopLayer anchorRef={wrapRef} onClose={() => setOpen(false)} up className="hist-pop">
+          <div className="hist-title">历次结果（点一条回退到该次的结果与参数）</div>
+          {history.map((e, i) => (
+            <div key={i} className="hist-row" onClick={() => apply(e)}>
+              <div className="hist-thumbs">
+                {e.results.slice(0, 3).map((src, j) => (
+                  <Thumb key={j} src={src} className="hist-thumb" />
+                ))}
               </div>
-            ))}
-          </div>
-        </>
+              <div className="hist-meta">
+                <b>{e.prompt?.slice(0, 40) || "（无提示词）"}</b>
+                {new Date(e.ts).toLocaleString()} · {e.results.length} 个结果 · {e.modelId?.split("::")[1] ?? ""}
+                {e.params.seed ? ` · seed ${String(e.params.seed).slice(0, 8)}` : ""}
+              </div>
+            </div>
+          ))}
+        </PopLayer>
       ) : null}
     </div>
   );
@@ -276,7 +278,7 @@ function MorePicker({ nodeId, refCount, currentModel, role }: { nodeId: string; 
 function MoreHead({ title, onBack }: { title: string; onBack: () => void }) {
   return (
     <div className="pop-title gd-more-head">
-      <button className="icon-btn" title="返回" onClick={onBack}>
+      <button className="icon-btn" title="返回" aria-label="返回" onClick={onBack}>
         <IcArrowL size={13} />
       </button>
       {title}
@@ -307,7 +309,8 @@ function BatchView({ nodeId, refCount, onBack, onDone }: { nodeId: string; refCo
       <div className="gd-more-note">
         共用风格/定调：写在本节点提示词框或接一个上游提示词节点，会自动附加到每一条前面；上游参考图各条共用。
       </div>
-      <button className="btn primary" disabled={!lines.length} style={{ opacity: lines.length ? 1 : 0.5 }} onClick={run}>
+      {/* disabled 态 opacity 由 .btn:disabled 统一处理，不再内联 */}
+      <button className="btn primary" disabled={!lines.length} onClick={run}>
         并行生成（{lines.length} 个节点）
       </button>
       {refCount >= 2 ? (
@@ -371,7 +374,7 @@ function CompareView({
           </button>
         ))}
       </div>
-      <button className="btn primary" disabled={!sel.length} style={{ opacity: sel.length ? 1 : 0.5 }} onClick={run}>
+      <button className="btn primary" disabled={!sel.length} onClick={run}>
         生成对比（{sel.length}）
       </button>
     </>
@@ -464,10 +467,8 @@ export function GenConfigPanel() {
   if (!selId || !d || suppressed) return null;
 
   const maxN = familyMaxCount(family);
-  const patch = (p: Partial<ImageGenData>) => {
-    upd(selId, p);
-    useGenPref.getState().remember("imageGen", p as Record<string, unknown>);
-  };
+  // remember 由 updateData 统一挂钩，panel 只负责写节点数据
+  const patch = (p: Partial<ImageGenData>) => upd(selId, p);
   const setWH = (w: number, h: number, ratio?: string) => patch({ width: w, height: h, aspect: ratio, size: "default" });
 
   /* --- GPT Image：比例 × 分辨率档 → 实际宽高 --- */
@@ -781,10 +782,7 @@ export function VideoConfigPanel() {
 
   if (!selId || !d || suppressed) return null;
   const meta = videoMeta(family);
-  const patch = (p: Partial<VideoGenData>) => {
-    upd(selId, p);
-    useGenPref.getState().remember("videoGen", p as Record<string, unknown>);
-  };
+  const patch = (p: Partial<VideoGenData>) => upd(selId, p);
   const dur = d.duration ?? meta.defaultDuration;
   const res = d.resolution ?? meta.defaultResolution;
   const asp = d.aspect ?? meta.aspects[0];
@@ -907,7 +905,7 @@ export function VideoConfigPanel() {
               <div className="gp-foot">
                 {d.refMode === "reference" && (meta.maxRef ?? 0) > 0
                   ? `参考图：${refCount} 路全部作为角色/主体参考（最多 ${meta.maxRef} 张）`
-                  : `参考图：${refCount} 路（第 1 路 = 首帧${meta.tail ? " · 第 2 路 = 尾帧" : ""}）· 绿口参考视频 · 橙口参考音频`}
+                  : `参考图：${refCount} 路（第 1 路 = 首帧${meta.tail ? " · 第 2 路 = 尾帧" : ""}）· 参考视频 / 音频接入左侧输入口`}
                 {meta.note ? ` · ${meta.note}` : ""}
               </div>
             </ParamsPop>
@@ -934,10 +932,7 @@ export function AudioConfigPanel() {
   const suppressed = useUi((s) => s.genPanelSuppressed);
   const d = node?.data as AudioGenData | undefined;
   if (!selId || !d || suppressed) return null;
-  const patch = (p: Partial<AudioGenData>) => {
-    upd(selId, p);
-    useGenPref.getState().remember("audioGen", p as Record<string, unknown>);
-  };
+  const patch = (p: Partial<AudioGenData>) => upd(selId, p);
   return (
     <div className="gen-panel">
       <GenPromptBar
@@ -956,6 +951,116 @@ export function AudioConfigPanel() {
           </>
         }
       />
+    </div>
+  );
+}
+
+/** File → dataURL（本地选图 / 拖入共用） */
+function fileToDataUrl(f: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as string);
+    r.onerror = () => reject(new Error(`读取文件失败：${f.name}`));
+    r.readAsDataURL(f);
+  });
+}
+
+/** 资产选图网格（角色卡「生成参考图」用）— 弹层内多选资产库图片，确认后转 dataURL 交给调用方；也可从本地磁盘选文件 */
+function AssetPickGrid({ onPick, onClose }: { onPick: (dataUrls: string[]) => void; onClose: () => void }) {
+  const items = useAssets((s) => s.items).filter((a) => a.kind === "image");
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+
+  const toggle = (id: string) => {
+    const next = new Set(sel);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSel(next);
+  };
+
+  const confirm = async () => {
+    if (!sel.size) return;
+    setBusy(true);
+    try {
+      const urls: string[] = [];
+      for (const id of sel) {
+        const it = items.find((x) => x.id === id);
+        if (!it) continue;
+        urls.push(await assetToDataUrl(it.path, it.mime));
+      }
+      onPick(urls);
+      onClose();
+    } catch (e) {
+      toast(errMsg(e), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 本地磁盘选图（可多选，读成 dataURL 直接加入参考） */
+  const pickLocal = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.multiple = true;
+    input.onchange = () => {
+      const files = Array.from(input.files ?? []);
+      if (!files.length) return;
+      setBusy(true);
+      Promise.all(files.map(fileToDataUrl))
+        .then((urls) => {
+          onPick(urls);
+          onClose();
+        })
+        .catch((e) => toast(errMsg(e), "err"))
+        .finally(() => setBusy(false));
+    };
+    input.click();
+  };
+
+  return (
+    <div className="cc-asset-pick">
+      <div className="cc-asset-head">
+        <span className="gp-sec-title" style={{ margin: 0 }}>
+          从资产库选参考图（可多选：脸 / 腿 / 胸等局部图）
+        </span>
+        <span style={{ flex: 1 }} />
+        <button className="btn sm" disabled={busy} title="从本地磁盘选择图片文件（可多选）" onClick={pickLocal}>
+          {busy ? "读取中…" : "本地文件"}
+        </button>
+        <button className="btn sm" onClick={onClose}>
+          取消
+        </button>
+        <button className="btn sm primary" disabled={busy || !sel.size} onClick={() => void confirm()}>
+          {busy ? "转换中…" : `用这 ${sel.size} 张作参考`}
+        </button>
+      </div>
+      {items.length ? (
+        <div className="cc-asset-grid">
+          {items.map((it) => {
+            const on = sel.has(it.id);
+            return (
+              <button
+                key={it.id}
+                className={`cc-asset-cell ${on ? "on" : ""}`}
+                title={it.name || "资产图片"}
+                onClick={() => toggle(it.id)}
+              >
+                <img src={assetUrl(it.thumb || it.path)} alt="" loading="lazy" />
+                {on ? (
+                  <span className="cc-asset-check">
+                    <IcCheck size={12} />
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="sec-desc" style={{ padding: "10px 0" }}>
+          资产库还没有图片。画布上生成过的图片会自动收录进资产库。
+        </div>
+      )}
     </div>
   );
 }
@@ -982,6 +1087,16 @@ export function CharConfigPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [d, models]);
 
+  const [refPickerOpen, setRefPickerOpen] = useState(false);
+  // ⚠ hooks 必须全部放在条件 return 之前：选中/取消选中时 hooks 数量不能变，否则 React 报
+  // 「Rendered more hooks than during the previous render」直接白屏。上游图 join/split 保证
+  // 只在内容变化时重渲染（同 refCount 模式）。
+  const upstreamImgs = useBoard(() => {
+    if (!selId) return "";
+    return collectUpstream(selId).images.join("\n");
+  })
+    .split("\n")
+    .filter(Boolean);
   if (!selId || !d || suppressed) return null;
   const patch = (p: Partial<CharCardData>) => upd(selId, p);
   const mode = d.outMode ?? (d.genImages === false ? "prompt" : "image");
@@ -991,6 +1106,25 @@ export function CharConfigPanel() {
   const toggleDeliv = (v: CharCardData["deliverables"][number]) => {
     const has = d.deliverables.includes(v);
     patch({ deliverables: has ? d.deliverables.filter((x) => x !== v) : [...d.deliverables, v] });
+  };
+  const genRefCount = d.genRefs?.length ?? 0;
+  const removeRef = (i: number) => patch({ genRefs: (d.genRefs ?? []).filter((_, k) => k !== i) });
+
+  /** 拖入本地图片文件 → dataURL 追加进已选参考 */
+  const onDropFiles = async (e: React.DragEvent) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/"));
+    if (!files.length) {
+      toast("拖入的文件里没有图片", "err");
+      return;
+    }
+    try {
+      const urls = await Promise.all(files.map(fileToDataUrl));
+      patch({ genRefs: [...(d.genRefs ?? []), ...urls] });
+      toast(`已添加 ${urls.length} 张参考图`, "ok");
+    } catch (err) {
+      toast(errMsg(err), "err");
+    }
   };
 
   return (
@@ -1051,6 +1185,87 @@ export function CharConfigPanel() {
                   </button>
                 );
               })}
+            </div>
+          </NodeParamsPop>
+          <NodeParamsPop
+            icon={<IcImage size={14} />}
+            label={genRefCount ? `参考图 ${genRefCount}` : "参考图"}
+            title="生成参考图：分析用图不变，只换生成套件的参考图"
+            up
+          >
+            {/* 整个弹卡都是拖入区：把本地图片文件直接拖进来即可加入参考 */}
+            <div
+              className="cc-refs-wrap"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => void onDropFiles(e)}
+            >
+              <div className="gp-sec-title">生成参考图（可换更清晰的图 / 多张局部参考）</div>
+              {/* 上游传入图：默认参考，只读展示 */}
+              <div className="cc-ref-sect">
+                <div className="cc-ref-sect-lab">上游传入{upstreamImgs.length ? `（${upstreamImgs.length} 张，默认参考）` : ""}</div>
+                {upstreamImgs.length ? (
+                  <div className="cc-ref-thumbs">
+                    {upstreamImgs.map((src, i) => (
+                      <span key={i} className="cc-ref-thumb ro" title={`上游传入图 ${i + 1}（默认参考）`}>
+                        <Thumb src={src} alt="" />
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="sec-desc">没有上游图片：连一张人物图到输入口</div>
+                )}
+              </div>
+              {/* 已选参考图：优先于上游，可移除 */}
+              <div className="cc-ref-sect">
+                <div className="cc-ref-sect-lab">
+                  已选参考{genRefCount ? `（${genRefCount} 张）` : ""}
+                  {d.genRefs === undefined ? (
+                    <span className="cc-ref-sect-hint">未设置 = 用上游图</span>
+                  ) : d.genRefs.length === 0 ? (
+                    <span className="cc-ref-sect-hint">已清空 = 不带参考图</span>
+                  ) : null}
+                </div>
+                {genRefCount ? (
+                  <div className="cc-ref-thumbs">
+                    {d.genRefs!.map((src, i) => (
+                      <span key={i} className="cc-ref-thumb" title={`参考图 ${i + 1}`}>
+                        <Thumb src={src} alt="" />
+                        <button className="cc-ref-x" title="移除这张参考图" aria-label="移除这张参考图" onClick={() => removeRef(i)}>
+                          <IcClose size={10} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              {/* 添加块：虚线圆角矩形 + 号。点开资产库选图；也可直接拖图片文件进来 */}
+              <button
+                className="cc-ref-add"
+                title="点开资产库选图；也可以直接把本地图片文件拖进这个弹卡"
+                onClick={() => setRefPickerOpen((v) => !v)}
+              >
+                <IcPlus size={15} />
+                <span>添加参考图</span>
+                <span className="cc-ref-add-hint">点选资产库 · 或拖入本地图片</span>
+              </button>
+              {refPickerOpen ? (
+                <AssetPickGrid
+                  onPick={(urls) => patch({ genRefs: [...(d.genRefs ?? []), ...urls] })}
+                  onClose={() => setRefPickerOpen(false)}
+                />
+              ) : null}
+              {d.genRefs !== undefined ? (
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                  <button className="btn sm" title="回到默认：用上游传入的第一张图作参考" onClick={() => patch({ genRefs: undefined })}>
+                    恢复上游默认
+                  </button>
+                  {genRefCount > 0 ? (
+                    <button className="btn sm" title="生成时不带任何参考图（纯提示词）" onClick={() => patch({ genRefs: [] })}>
+                      清空参考图
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </NodeParamsPop>
           {hasPrompts ? (

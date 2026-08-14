@@ -12,7 +12,7 @@ import { generateImage } from "./services/imageGen";
 import { generateVideo } from "./services/videoGen";
 import { generateAudio } from "./services/audioGen";
 import { webSearch, searchContext } from "./services/webSearch";
-import { runComfyTemplate } from "./services/comfy";
+import { runComfyTemplate, effectiveParams } from "./services/comfy";
 import { autoSaveImage } from "./services/imageSaver";
 import { chatCaps, familyMaxCount, familyMaxRef, gptSize, imageFamily, nearestAspect, parseRatio } from "./modelMeta";
 import { videoFamily, videoMeta } from "./videoMeta";
@@ -32,6 +32,7 @@ import { assetUrl, fetchBytes, assetsDir } from "./services/assetFiles";
 import { notifyDone } from "./sound";
 import { dubVideo } from "./videoEdit";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { getStatus as getLocalLlmStatus, stopModel as stopLocalLlmModel } from "./services/localLlm";
 import type {
   AssetGenMeta,
   AudioGenData,
@@ -60,6 +61,7 @@ import type {
   StylePresetData,
   StoryboardData,
   VideoGenData,
+  DirectorData,
 } from "./types";
 
 const SEPARATORS: Record<CombineData["separator"], string> = {
@@ -71,6 +73,35 @@ const SEPARATORS: Record<CombineData["separator"], string> = {
 /* ---------- 上游收集 ----------
    直接前驱取值；纯文本节点（拼接/风格预设）会向上递归物化自己的输出；
    组节点按成员位置顺序聚合；「忽略」的节点不向下游传递 */
+
+/**
+ * GPU 大任务（ComfyUI / 远程视频生成）前的显存释放检查。
+ *
+ * 本地 GGUF 模型（llama-server）会占用显存，和 ComfyUI/视频生成争抢。
+ * 任务前检查：若有 MOMO 启动的本地模型在跑，提示用户确认后释放。
+ * 只停 MOMO 自己启动的（localLlm.stopModel 只按 modelId 查 Rust running map），
+ * 不影响用户在 MOMO 外部启动的进程。
+ *
+ * 生成结束后不自动重载模型（用户下次对话时按需启动）。
+ */
+async function releaseLocalGpuIfOccupied(taskLabel: string): Promise<void> {
+  if (!isTauri) return; // 浏览器预览无本地进程
+  try {
+    const status = await getLocalLlmStatus();
+    const running = status.filter((s) => s.running);
+    if (!running.length) return;
+    const names = running.map((s) => s.modelName).join("、");
+    if (!confirm(`当前本地模型「${names}」占用显存，执行${taskLabel}前建议先释放。是否立即释放？`)) {
+      return; // 用户拒绝：继续执行任务（不阻塞）
+    }
+    for (const s of running) {
+      await stopLocalLlmModel(s.modelId);
+    }
+    toast("已释放本地模型显存", "ok");
+  } catch {
+    // 释放失败不阻塞主任务
+  }
+}
 
 /** 单个节点自身的输出（文本 / 图片 / 视频 / 音频） */
 function nodeOutput(
@@ -218,6 +249,12 @@ function nodeOutput(
     case "videoGen":
     case "videoDub": {
       const u = (d as { resultUrl?: string }).resultUrl;
+      if (u) videos.push(u);
+      break;
+    }
+    case "director": {
+      // 导演台成片：有 outputUrl 时输出视频，否则不向下游传值
+      const u = (d as DirectorData).outputUrl;
       if (u) videos.push(u);
       break;
     }
@@ -408,6 +445,40 @@ export function isNodeDirty(id: string): boolean {
   const node = useBoard.getState().nodes.find((n) => n.id === id);
   const sig = (node?.data as Record<string, unknown> | undefined)?.inputSig;
   return typeof sig === "string" && sig !== sigOf(id);
+}
+
+/**
+ * 单个可运行节点的预估费用（「全部运行」批量账单用）：
+ * 按节点参数 × 模型单价估算；ComfyUI 等无法预估或模型未配置的返回 0（真跑时会各自报错/记账）。
+ */
+function estimateNodeCost(nid: string, nodes: LiteNode[]): number {
+  const n = nodes.find((x) => x.id === nid);
+  if (!n) return 0;
+  const d = n.data as Record<string, unknown>;
+  try {
+    switch (n.type) {
+      case "imageGen": {
+        const card = resolveModelCard("image", d.modelId as string | undefined);
+        return estimateCost(card.model, { images: Number(d.count ?? 1) });
+      }
+      case "charCard": {
+        const card = resolveModelCard("image", d.imageModelId as string | undefined);
+        return estimateCost(card.model, { images: (d.deliverables as unknown[] | undefined)?.length ?? 3 });
+      }
+      case "videoGen": {
+        const card = resolveModelCard("video", d.modelId as string | undefined);
+        return estimateCost(card.model, { videoSec: Number(d.duration ?? 5) * Number(d.parallel ?? 1) });
+      }
+      case "audioGen": {
+        const card = resolveModelCard("audio", d.modelId as string | undefined);
+        const text = String(d.prompt ?? d.text ?? "");
+        return estimateCost(card.model, { audioSec: Math.max(1, Math.round(text.length / 5)) });
+      }
+    }
+  } catch {
+    return 0;
+  }
+  return 0;
 }
 
 /** 预算护栏：超日预算阻断、超确认阈值弹确认（返回的 block/confirm 由调用方处理） */
@@ -1241,6 +1312,8 @@ export async function runVideoGen(id: string) {
       const meta = videoMeta(videoFamily(c));
       const useRef = data.refMode === "reference" && (meta.maxRef ?? 0) > 0 && images.length > 0;
       const lastFrame = !useRef && meta.tail && (data.useTail ?? true) && images.length >= 2 ? images[1] : undefined;
+      // GPU 大任务前检查本地 LLM 显存占用（远程视频生成通常也吃本地推理显存）
+      await releaseLocalGpuIfOccupied("视频生成");
       const baseReq = {
         prompt: finalPrompt,
         image: useRef ? undefined : images[0],
@@ -1340,17 +1413,31 @@ export async function runComfy(id: string) {
   const { texts, images, videos: upVideos } = collectUpstream(id);
   upd(id, { status: "running", error: undefined, progress: "准备参数…", progressPct: undefined });
   try {
-    // 只收集用户在节点上手填的值；上游图/文交给服务层自动识别入口（图片参数 → LoadImage → 缺失图片输入自动注入）
+    // 陈旧 variantId 守卫：模板编辑/undo 后 variantId 可能指向已删除的分支，静默回落会丢参数
+    let variantId = data.variantId;
+    if (variantId && !tpl.variants?.some((v) => v.id === variantId)) {
+      toast(`该模板已无「${variantId}」分支，已切回默认`, "err");
+      variantId = undefined;
+      upd(id, { variantId: undefined });
+    }
+    // 按当前分支的有效参数收集用户填值；paramsByVariant 优先（分支参数记忆），回落 data.params
+    const effParams = effectiveParams(tpl, variantId);
+    const branchStore = variantId ? data.paramsByVariant?.[variantId] : undefined;
+    const branchParams = branchStore ?? data.params ?? {};
     const values: Record<string, string | number | boolean> = {};
-    for (const p of tpl.params) {
-      const own = data.params?.[p.key];
+    for (const p of effParams) {
+      const own = branchParams[p.key];
       if (own !== undefined && own !== "") values[p.key] = own;
     }
+    // GPU 大任务前检查本地 LLM 显存占用（ComfyUI 与 llama-server 争抢显存）
+    await releaseLocalGpuIfOccupied("ComfyUI 工作流");
     const { images: results, texts: outTexts, videos: outVideos } = await runComfyTemplate(settings.comfy.host, tpl, values, {
       onProgress: (m, pct) => upd(id, { progress: m, ...(pct !== undefined ? { progressPct: pct } : {}) }),
       upstreamImages: images,
       upstreamTexts: texts,
       upstreamVideos: upVideos,
+      variantId,
+      imageSlotMap: data.imageSlotMap,
     });
     upd(id, {
       status: "done",
@@ -1361,11 +1448,11 @@ export async function runComfy(id: string) {
       progress: undefined,
       progressPct: undefined,
     });
-    const promptText = String(values[tpl.params.find((p) => p.kind === "text")?.key ?? ""] ?? texts.join("\n") ?? "");
+    const promptText = String(values[effParams.find((p) => p.kind === "text")?.key ?? ""] ?? texts.join("\n") ?? "");
     pushHistory(id, {
       prompt: promptText,
-      modelId: `comfy:${tpl.id}`,
-      params: { templateId: tpl.id, ...(data.params ?? {}) },
+      modelId: `comfy:${tpl.id}${variantId ? `/${variantId}` : ""}`,
+      params: { templateId: tpl.id, ...(variantId ? { variantId } : {}), ...branchParams },
       results: [...results, ...outVideos],
     });
     if (outVideos.length) {
@@ -1651,7 +1738,8 @@ async function genCharDeliverable(
   const results = await generateImage(card, {
     prompt: finalPrompt,
     n: 1,
-    refImages: refs.length ? refs.slice(0, 2) : undefined,
+    // 多张局部参考（脸/腿/胸…）最多带 6 张；各协议内部再自行裁剪
+    refImages: refs.length ? refs.slice(0, 6) : undefined,
     aspect: data.aspect && data.aspect !== "auto" ? data.aspect : undefined,
     resolution: data.resolution,
     quality: data.quality,
@@ -1712,7 +1800,9 @@ export async function runCharCard(id: string) {
       for (let i = 0; i < list.length; i++) {
         const k = list[i];
         upd(id, { progress: `生成${DELIV_LABEL[k]}（${i + 1}/${list.length}）…` });
-        const refs = [refImage, anchor].filter((x): x is string => !!x);
+        // 参考图取最新 data：genRefs（用户在参数栏指定的清晰图/局部图）> 上游传入第一张图
+        const cur = charData(id) ?? data;
+        const refs = [...(cur.genRefs ?? (refImage ? [refImage] : [])), anchor].filter((x): x is string => !!x);
         const first = await genCharDeliverable(id, k, prompts[k]!, refs);
         anchor ??= first;
       }
@@ -1747,7 +1837,11 @@ export async function regenCharDeliverable(id: string, k: CharDeliverable, opts?
     const anchorK = (["turnaround", "portrait", "closeup"] as CharDeliverable[]).find(
       (x) => x !== k && data.results[x]?.length,
     );
-    const refs = [images[0], anchorK ? data.results[anchorK]![0] : undefined].filter((x): x is string => !!x);
+    // 参考图取 genRefs（参数栏指定的清晰图/局部图）> 上游传入第一张图
+    const refs = [
+      ...(data.genRefs ?? (images[0] ? [images[0]] : [])),
+      anchorK ? data.results[anchorK]![0] : undefined,
+    ].filter((x): x is string => !!x);
     await genCharDeliverable(id, k, prompt, refs, { append: opts?.append });
     upd(id, { status: "done", progress: undefined });
     notifyDone(`${DELIV_LABEL[k]}生成`);
@@ -2368,6 +2462,13 @@ const RUNNERS: Partial<Record<NodeKind, (id: string) => Promise<void>>> = {
   vectorize: gated("vectorize", runVectorize),
 };
 
+/**
+ * 可自动运行的节点类型 —— UI 判断「能否运行/显示运行按钮」的唯一来源。
+ * ⚠ 勿再手抄第二张表（曾经 UI 与引擎各一份：ecomImage 漏掉、combine 多出，两处漂移出 bug）。
+ * 新增可运行节点 = 往 RUNNERS 加一行，UI 自动跟上。
+ */
+export const RUNNABLE_KINDS = Object.keys(RUNNERS) as NodeKind[];
+
 type LiteNode = { id: string; type?: string; parentId?: string; data: unknown };
 type LiteEdge = { source: string; target: string };
 
@@ -2531,7 +2632,10 @@ export async function runAllFlows() {
   const vidN = all.filter((nid) => typeOf(nid) === "videoGen").length;
   const audN = all.filter((nid) => typeOf(nid) === "audioGen").length;
   if (imgN + vidN + audN > 0) {
-    const msg = `将从头重算 ${all.length} 个节点（生图类 ${imgN} · 视频 ${vidN} · 音频 ${audN}），生成类请求会计费。确定全部运行？`;
+    // 批量费用预估：按每个生成节点的参数与模型单价汇总（ComfyUI 等无法预估的项不计入，消息里明说）
+    const total = all.reduce((s, nid) => s + estimateNodeCost(nid, nodes), 0);
+    const money = total > 0 ? `\n预估费用：约 ¥${total.toFixed(2)}（未含 ComfyUI 等无法预估项）` : "";
+    const msg = `将从头重算 ${all.length} 个节点（生图类 ${imgN} · 视频 ${vidN} · 音频 ${audN}），生成类请求会计费。${money}\n确定全部运行？`;
     let go: boolean;
     if (isTauri) {
       const { ask } = await import("@tauri-apps/plugin-dialog");

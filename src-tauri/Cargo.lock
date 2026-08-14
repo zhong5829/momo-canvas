@@ -2644,6 +2644,7 @@ dependencies = [
  "tiff 0.11.3",
  "visioncortex",
  "vtracer",
+ "windows 0.61.3",
 ]
 
 [[package]]

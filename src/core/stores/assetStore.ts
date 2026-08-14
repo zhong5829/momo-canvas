@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { AssetFolder, AssetGenMeta, AssetItem, AssetKind } from "../types";
 import { loadJSON, saveJSON } from "../persist";
-import { errMsg, sanitizeFilename, uid } from "../utils";
+import { errMsg, hashDataUrl, sanitizeFilename, uid } from "../utils";
 import { deleteAssetFile, extFromMime, fetchBytes, kindFromExt, mimeFromExt, sniffExt, storeAssetFile } from "../services/assetFiles";
 import { toast } from "./uiStore";
 import { useBoard } from "./boardStore";
@@ -18,10 +18,19 @@ export type CollectInput = {
   nodeId?: string;
   /** 多结果生成的分组信息；groupSlot 相同会原位替换旧资产 */
   group?: Pick<AssetItem, "groupId" | "groupLabel" | "groupKind" | "groupSlot" | "groupCover">;
+  /** 导演台来源（资产库可按导演项目/片段分组定位，方案 §8.3） */
+  director?: AssetItem["director"];
+  /** 内容指纹（导演台参考图去重用；传入后写入资产项） */
+  contentHash?: string;
 };
+
+/** 回收站保留天数：超过自动彻底清理（删除磁盘文件） */
+const TRASH_DAYS = 30;
 
 type AssetState = {
   items: AssetItem[];
+  /** 回收站（删除的资产先进这里，可恢复；超期或手动彻底删除才动磁盘文件） */
+  trash: AssetItem[];
   folders: AssetFolder[];
   loaded: boolean;
   open: boolean;
@@ -34,7 +43,14 @@ type AssetState = {
   importFiles: (files: File[]) => Promise<void>;
   /** 导入单个文件并返回资产项（视频节点等需要拿到落盘路径时用） */
   importFileGetItem: (f: File) => Promise<AssetItem | null>;
+  /** 删除 → 移入回收站（不删磁盘文件） */
   removeMany: (ids: string[]) => Promise<void>;
+  /** 从回收站恢复 */
+  restoreMany: (ids: string[]) => void;
+  /** 彻底删除（回收站页用；删除磁盘文件） */
+  purgeMany: (ids: string[]) => void;
+  /** 收藏/取消收藏 */
+  toggleFav: (id: string) => void;
   moveTo: (ids: string[], folderId: string | null) => void;
   rename: (id: string, name: string) => void;
   /** 覆盖式设置某资产的标签（去重、去空） */
@@ -48,18 +64,23 @@ type AssetState = {
 
 let initOnce: Promise<void> | null = null;
 
-type PersistShape = { items: AssetItem[]; folders: AssetFolder[] };
+type PersistShape = { items: AssetItem[]; folders: AssetFolder[]; trash?: AssetItem[] };
 
 export const useAssets = create<AssetState>((set, get) => {
   const persist = () => {
-    const { items, folders, loaded } = get();
+    const { items, folders, trash, loaded } = get();
     if (!loaded) return;
     // 浏览器预览模式的 blob 路径重启即失效，不值得持久化
-    void saveJSON("assets.json", "v1", { items: items.filter((i) => !i.path.startsWith("blob:")), folders } satisfies PersistShape);
+    void saveJSON("assets.json", "v1", {
+      items: items.filter((i) => !i.path.startsWith("blob:")),
+      folders,
+      trash,
+    } satisfies PersistShape);
   };
 
   return {
     items: [],
+    trash: [],
     folders: [],
     loaded: false,
     open: false,
@@ -67,7 +88,16 @@ export const useAssets = create<AssetState>((set, get) => {
     init: () =>
       (initOnce ??= (async () => {
         const saved = await loadJSON<PersistShape>("assets.json", "v1");
-        set({ items: saved?.items ?? [], folders: saved?.folders ?? [], loaded: true });
+        const now = Date.now();
+        const trash = saved?.trash ?? [];
+        // 超期回收站项：后台彻底清理（删磁盘文件），不留僵尸
+        const expired = trash.filter((t) => now - (t.deletedAt ?? now) > TRASH_DAYS * 86400_000);
+        const kept = trash.filter((t) => !expired.includes(t));
+        if (expired.length) {
+          for (const it of expired) void deleteAssetFile(it.path, it.thumb);
+          void saveJSON("assets.json", "v1", { items: saved?.items ?? [], folders: saved?.folders ?? [], trash: kept } satisfies PersistShape);
+        }
+        set({ items: saved?.items ?? [], folders: saved?.folders ?? [], trash: kept, loaded: true });
       })()),
 
     setOpen: (v) => set({ open: v }),
@@ -104,6 +134,9 @@ export const useAssets = create<AssetState>((set, get) => {
           source: "canvas",
           gen: input.gen,
           nodeId: input.nodeId,
+          director: input.director,
+          // dataURL 来源自动写内容指纹：导演台参考图等按内容去重的场景才能跨入口生效
+          contentHash: input.contentHash ?? (input.src.startsWith("data:") ? hashDataUrl(input.src) : undefined),
           ...input.group,
           createdAt: Date.now(),
         };
@@ -161,11 +194,37 @@ export const useAssets = create<AssetState>((set, get) => {
     },
 
     removeMany: async (ids) => {
+      // 删除 → 回收站（不删磁盘文件）：误删可恢复；30 天后或回收站里手动彻底删除才动文件
       const setIds = new Set(ids);
       const doomed = get().items.filter((i) => setIds.has(i.id));
-      set((s) => ({ items: s.items.filter((i) => !setIds.has(i.id)) }));
+      const now = Date.now();
+      set((s) => ({
+        items: s.items.filter((i) => !setIds.has(i.id)),
+        trash: [...doomed.map((i) => ({ ...i, deletedAt: now })), ...s.trash],
+      }));
+      persist();
+    },
+
+    restoreMany: (ids) => {
+      const setIds = new Set(ids);
+      set((s) => ({
+        items: [...s.trash.filter((i) => setIds.has(i.id)).map(({ deletedAt: _d, ...rest }) => rest), ...s.items],
+        trash: s.trash.filter((i) => !setIds.has(i.id)),
+      }));
+      persist();
+    },
+
+    purgeMany: (ids) => {
+      const setIds = new Set(ids);
+      const doomed = get().trash.filter((i) => setIds.has(i.id));
+      set((s) => ({ trash: s.trash.filter((i) => !setIds.has(i.id)) }));
       persist();
       for (const it of doomed) void deleteAssetFile(it.path, it.thumb);
+    },
+
+    toggleFav: (id) => {
+      set((s) => ({ items: s.items.map((i) => (i.id === id ? { ...i, fav: !i.fav } : i)) }));
+      persist();
     },
 
     moveTo: (ids, folderId) => {

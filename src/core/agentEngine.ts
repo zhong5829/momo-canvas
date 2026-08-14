@@ -241,6 +241,7 @@ async function agentLoop(asstId: string) {
     const { text: raw } = await chatStream(card, buildContext(scratch), {
       system: AGENT_SYSTEM,
       builtinSearch: useBuiltin,
+      disableThinking: !st().thinkingOn, // 思考模式开关（仅创作助手生效）
     });
     const act = parseAction(raw);
 
@@ -547,6 +548,7 @@ export async function sendSideChat() {
       chatStream(card, history, {
         system: parts.join("\n\n"),
         builtinSearch: useBuiltin,
+        disableThinking: !useAgent.getState().thinkingOn, // 思考模式开关（仅创作助手生效）
         onText: (full) => useAgent.getState().updateMsg(asstId, { text: full }),
         onReasoning: (full) => useAgent.getState().updateMsg(asstId, { reasoning: full }),
       });

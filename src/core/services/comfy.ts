@@ -3,9 +3,10 @@
  *  探活 /system_stats · 提交 /prompt · 轮询 /history/{id} · 取图 /view · 传图 /upload/image
  *  进度：/ws WebSocket 实时节点级进度（连不上时静默退回轮询文案）
  */
-import type { ComfyExposedParam, ComfyParamKind, ComfyTemplate, ComfyWfNode } from "../types";
+import type { ComfyExposedParam, ComfyParamKind, ComfyTemplate, ComfyVariant, ComfyWfNode } from "../types";
 import { xfetch, trimBase, readErrorBody } from "./http";
 import { dataUrlToBlob, toDataUrl, uid } from "../utils";
+import { zhNode } from "../../modules/comfy/wfGraph";
 
 export function normalizeHost(host: string): string {
   let h = host.trim();
@@ -42,6 +43,9 @@ const isConnection = (v: unknown): v is [string, number] =>
   Array.isArray(v) && v.length === 2 && typeof v[0] === "string";
 
 export const isImageLoaderClass = (ct: string) => /loadimage/i.test(ct);
+
+/** imageSlotMap 的哨兵值：明确「这个入口不喂图」（区别于 undefined = 走默认顺序分配） */
+export const COMFY_SLOT_NONE = "__none__";
 export const isOutputClass = (ct: string) => /saveimage|previewimage|save|preview/i.test(ct);
 
 function guessKind(node: ComfyWfNode, input: string, value: unknown): ComfyParamKind {
@@ -95,6 +99,122 @@ export function analyzeCaps(wf: Record<string, ComfyWfNode>): WfCaps {
   }
   textEntries.sort((a, b) => Number(a.negative) - Number(b.negative) || Number(a.nodeId) - Number(b.nodeId));
   return { imageEntries, textEntries, outputs };
+}
+
+/* ---------------- 能力识别 v3（结合 object_info + 拓扑，自动识别全部语义入口） ---------------- */
+
+export type WfCapsV3 = WfCaps & {
+  /** 视频入口：LoadVideo / VHS 类节点 id */
+  videoEntries: string[];
+  /** 音频入口：LoadAudio 类节点 id */
+  audioEntries: string[];
+  /** APP Mode / 子图声明（部分新版 ComfyUI 工作流自带） */
+  appMode?: string;
+  /** 子图声明：节点 id → 所属子图名 */
+  subgraphMap?: Record<string, string>;
+  /** 自动推断的语义槽（直接可用于 ComfyVariant.slots） */
+  autoSlots?: Array<{ semantic: string; media: string; nodeId: string; input: string; label: string; required: boolean }>;
+};
+
+/** 音频加载器类名匹配（LoadAudio / AudioLoad 等） */
+export const isAudioLoaderClass = (ct: string) => /loadaudio|audioload/i.test(ct);
+
+/**
+ * 能力识别 v3（方案 §阶段0）：优先读取 APP Mode / 子图声明，
+ * 再结合节点类型与拓扑自动识别图片、视频、音频、正/负提示词、首尾帧、多参考和主/辅助输出，
+ * 并把识别结果映射成可直接使用的语义槽。
+ *
+ * @param wf 工作流
+ * @param objectInfo 可选：ComfyUI /object_info 返回（有则用输入类型精确判定 media）
+ */
+export function analyzeCapsV3(
+  wf: Record<string, ComfyWfNode>,
+  objectInfo?: Record<string, any> | null,
+): WfCapsV3 {
+  const ids = Object.keys(wf).sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+  const base = analyzeCaps(wf);
+
+  // 1. 读取 APP Mode / 子图声明（部分工作流的根节点或 extra 字段里有）
+  let appMode: string | undefined;
+  const subgraphMap: Record<string, string> = {};
+  for (const [id, node] of Object.entries(wf)) {
+    // APP Mode 声明（部分工作流的 _meta 或 inputs 里带 app_mode）
+    const am = (node as any)?._meta?.app_mode ?? (node as any)?.inputs?.app_mode;
+    if (typeof am === "string" && !appMode) appMode = am;
+    // 子图声明（_meta.subgraph 或 inputs.subgraph_name）
+    const sg = (node as any)?._meta?.subgraph ?? (node as any)?.inputs?.subgraph_name;
+    if (typeof sg === "string") subgraphMap[id] = sg;
+  }
+
+  // 2. 视频 / 音频入口
+  const videoEntries = ids.filter((id) => isVideoLoaderClass(wf[id].class_type));
+  const audioEntries = ids.filter((id) => isAudioLoaderClass(wf[id].class_type));
+
+  // 3. 自动推断语义槽：把识别出的入口映射成首帧/尾帧/参考图/参考视频/参考音频/提示词
+  const autoSlots: WfCapsV3["autoSlots"] = [];
+  // 提示词（正面）
+  const posText = base.textEntries.find((t) => !t.negative);
+  if (posText) autoSlots.push({ semantic: "prompt", media: "text", nodeId: posText.nodeId, input: posText.input, label: "正面提示词", required: true });
+  // 提示词（负面）
+  const negText = base.textEntries.find((t) => t.negative);
+  if (negText) autoSlots.push({ semantic: "negativePrompt", media: "text", nodeId: negText.nodeId, input: negText.input, label: "负面提示词", required: false });
+  // 图片入口 → 首帧 / 尾帧 / 参考图（按节点 id 排序，前两个映射为首尾帧，其余为参考图）
+  base.imageEntries.forEach((nid, i) => {
+    if (i === 0) {
+      autoSlots.push({ semantic: "firstFrame", media: "image", nodeId: nid, input: "image", label: "首帧", required: false });
+    } else if (i === 1) {
+      // 第二个图片入口：检查节点标题/输入名是否含 last/end → 尾帧，否则参考图
+      const title = (wf[nid]._meta?.title ?? "").toLowerCase();
+      const hasLast = /last|end|尾帧|末帧/.test(title) || /last_?frame|end_?frame/i.test(nid);
+      autoSlots.push({
+        semantic: hasLast ? "lastFrame" : "referenceImage",
+        media: "image",
+        nodeId: nid,
+        input: "image",
+        label: hasLast ? "尾帧" : `参考图 ${i}`,
+        required: false,
+      });
+    } else {
+      autoSlots.push({ semantic: "referenceImage", media: "image", nodeId: nid, input: "image", label: `参考图 ${i}`, required: false });
+    }
+  });
+  // 视频入口 → 参考视频
+  videoEntries.forEach((nid, i) => {
+    autoSlots.push({ semantic: "referenceVideo", media: "video", nodeId: nid, input: "video", label: i === 0 ? "参考视频" : `参考视频 ${i + 1}`, required: false });
+  });
+  // 音频入口 → 参考音频
+  audioEntries.forEach((nid, i) => {
+    autoSlots.push({ semantic: "referenceAudio", media: "audio", nodeId: nid, input: "audio", label: i === 0 ? "参考音频" : `参考音频 ${i + 1}`, required: false });
+  });
+
+  // 4. 如果有 objectInfo，用输入类型精确修正 media（覆盖默认猜测）
+  //    ComfyUI object_info 结构：{ [class_type]: { input: { required: {...}, optional: {...} } } }
+  if (objectInfo) {
+    for (const slot of autoSlots) {
+      const oi = objectInfo[wf[slot.nodeId]?.class_type];
+      if (!oi?.input) continue;
+      // 输入定义在 required 或 optional 里，值为 [type, ...] 或 { type, ... }
+      const inputDef = oi.input.required?.[slot.input] ?? oi.input.optional?.[slot.input];
+      if (!inputDef) continue;
+      const t = Array.isArray(inputDef) ? inputDef[0] : inputDef?.type;
+      if (typeof t === "string") {
+        if (/IMAGE/i.test(t)) slot.media = "image";
+        else if (/VIDEO|VHS/i.test(t)) slot.media = "video";
+        else if (/AUDIO/i.test(t)) slot.media = "audio";
+        else if (/INT|FLOAT/i.test(t)) slot.media = "number";
+        else if (/STRING/i.test(t)) slot.media = "text";
+      }
+    }
+  }
+
+  return {
+    ...base,
+    videoEntries,
+    audioEntries,
+    appMode,
+    subgraphMap: Object.keys(subgraphMap).length ? subgraphMap : undefined,
+    autoSlots,
+  };
 }
 
 /** 有没有别的节点引用它（作为连线来源） */
@@ -168,6 +288,44 @@ export function fetchObjectInfo(host: string): Promise<Record<string, any> | nul
   return p;
 }
 
+/**
+ * 从 object_info 提取某节点某输入的 combo 可选项。
+ * ComfyUI object_info 结构：{ [class_type]: { input: { required/optional: { [input]: 定义 } } } }
+ * combo 类型的定义形如 [ ["选项1","选项2",...], {配置} ] → 取数组首元素为选项列表。
+ * 非 combo（纯字符串/数字/布尔）→ undefined（调用方保持文本框）。
+ */
+export function comboOptionsFor(
+  objectInfo: Record<string, any> | null,
+  classType: string,
+  input: string,
+): string[] | undefined {
+  const oi = objectInfo?.[classType]?.input;
+  if (!oi) return undefined;
+  const def = oi.required?.[input] ?? oi.optional?.[input];
+  if (!Array.isArray(def) || !Array.isArray(def[0])) return undefined;
+  const opts = def[0].filter((x: unknown): x is string => typeof x === "string");
+  return opts.length ? opts : undefined;
+}
+
+/**
+ * 给参数列表补上 combo 可选项（运行时从 ComfyUI 服务端拉 object_info，有缓存）。
+ * 供编辑器/节点参数面板用：options 填进 ComfyExposedParam，UI 据此渲染下拉。
+ * 服务端不可用或非 combo → options 留空，退化为文本框，不影响运行。
+ */
+export async function enrichParamsWithCombo(
+  host: string,
+  wf: Record<string, ComfyWfNode>,
+  params: ComfyExposedParam[],
+): Promise<ComfyExposedParam[]> {
+  if (!params.length || !host) return params;
+  const info = await fetchObjectInfo(host);
+  if (!info) return params;
+  return params.map((p) => {
+    const opts = comboOptionsFor(info, wf[p.nodeId]?.class_type ?? "", p.input);
+    return opts ? { ...p, options: opts } : p;
+  });
+}
+
 export type WfInputInfo = {
   nodeId: string;
   nodeTitle: string;
@@ -204,6 +362,181 @@ export function guessOutputNode(wf: Record<string, ComfyWfNode>): string | undef
     entries.find(([, n]) => n.class_type.includes("PreviewImage")) ??
     entries.find(([, n]) => n.class_type.toLowerCase().includes("save"));
   return hit?.[0];
+}
+
+/* ---------------- 子工作流分支提取（v2） ---------------- */
+//
+// 方案 §18.5：分支切换用 include-list，不复用 pruneDisabled 的自动跨接。
+// pruneDisabled 适合「关掉某个可选中间节点」，但跨分支时会错误地把图像分支
+// 旁路到视频分支的相邻输入，导致执行错误路径。子工作流必须严格按白名单过滤。
+//
+// 执行顺序（方案 §18.5）：
+//   选择主模板/子分支 → 提取白名单子工作流 → 应用分支内部忽略节点
+//   → 写入参数和语义素材槽 → object_info 预检 → 提交 ComfyUI
+
+/** 从一个节点的输入里收集所有「连线来源」节点 id（去重） */
+function upstreamNodeIds(node: ComfyWfNode): string[] {
+  const ids: string[] = [];
+  for (const v of Object.values(node.inputs ?? {})) {
+    if (isConnection(v)) ids.push(v[0]);
+  }
+  return ids;
+}
+
+export type ExtractVariantResult = {
+  /** 提取后的子工作流（只含白名单节点；连线指向白名单外的会保留，交给 object_info 报错） */
+  wf: Record<string, ComfyWfNode>;
+  /** 实际进入白名单的节点 id（含祖先闭包 + 显式共享） */
+  allowed: string[];
+  /** 连线指向了白名单外节点的输入列表（供 UI 提示「依赖未选」） */
+  dangling: Array<{ from: string; input: string; missing: string }>;
+};
+
+/**
+ * 按 variant 的 nodeIds + outputNodeIds 反向祖先闭包 + 显式 sharedNodeIds，
+ * 从 tpl.workflow 中提取白名单子工作流。
+ *
+ * allowed 构成（方案 §18.5）：
+ *   分支 nodeIds（用户框选的节点，全部保留）
+ *   + outputNodeIds 反向无界祖先闭包（输出链上的所有必要上游，含共享的模型/文本前置）
+ *   + 显式 sharedNodeIds（不在输出反链上、但分支需要引用的节点，如参数注入）
+ *
+ * 关于 sharedNodeIds 与闭包的关系：
+ * - ComfyUI 工作流的依赖都是连线，输出反链上的共享前置（如 CheckpointLoader）会被
+ *   无界闭包自动收编——这是正确的，因为输出链确实需要它们。
+ * - sharedNodeIds 的真正作用是：① 供 UI 标记「多分支共享」徽标；② §18.6 的非共享节点
+ *   重叠检测；③ 给那些被分支节点引用、但不在任何输出反链上的节点一个显式入口。
+ * - dangling（连线指向白名单外）在正常工作流里几乎不会触发，因为闭包已经把反链全收编了；
+ *   它只在「分支节点引用了非反链上的外部节点且未声明 shared」时出现，作为防御性兜底。
+ *
+ * 其他规则：
+ * - default 分支（老模板）nodeIds 为空时，等价于整个工作流，保证老行为零回归。
+ * - 正式分支（非 default）必须至少有一个 outputNodeIds，否则抛中文错误。
+ */
+export function extractVariantWorkflow(
+  tpl: ComfyTemplate,
+  variantId: string | undefined,
+): ExtractVariantResult {
+  const wf = tpl.workflow;
+  const allIds = Object.keys(wf);
+  // 找 variant：未指定 / 找不到 / 是 default 分支 → 整个工作流（老模板兼容路径）
+  const variant = variantId ? tpl.variants?.find((v) => v.id === variantId) : undefined;
+  const isDefaultFallback = !variant || variant.id === "default";
+
+  // default 分支且 nodeIds 为空（老模板 normalize 出的 default）→ 等价整个工作流
+  const seedNodeIds = variant && variant.nodeIds.length ? variant.nodeIds : isDefaultFallback ? allIds : [];
+
+  // 正式分支（非 default）没有节点：报错
+  if (!seedNodeIds.length) {
+    const msg = variant
+      ? `子工作流分支「${variant.name}」没有归属节点，请先在模板编辑器中框选节点`
+      : "未选择子工作流分支，且模板没有默认分支";
+    throw new Error(msg);
+  }
+
+  // 1. allowed 起点 = 分支 nodeIds + 显式 sharedNodeIds
+  const allowed = new Set<string>(seedNodeIds);
+  if (variant?.sharedNodeIds) for (const id of variant.sharedNodeIds) if (wf[id]) allowed.add(id);
+
+  // 2. 输出反向无界闭包：从 outputNodeIds 出发，沿连线反向收编所有必要上游。
+  //    含共享的模型/文本前置——它们是输出链必须经过的节点，方案 §18.5「反向找到的必要祖先」。
+  const outputSeedsRaw = variant?.outputNodeIds?.length ? variant.outputNodeIds : [];
+  if (outputSeedsRaw.length) {
+    const validOutputs = outputSeedsRaw.filter((id) => wf[id]);
+    if (!validOutputs.length) {
+      throw new Error(
+        `子工作流分支「${variant?.name}」的输出节点（${outputSeedsRaw.join(", ")}）在工作流中不存在`,
+      );
+    }
+    const queue = [...validOutputs];
+    const seen = new Set<string>(queue);
+    while (queue.length) {
+      const id = queue.shift()!;
+      allowed.add(id);
+      for (const up of upstreamNodeIds(wf[id])) {
+        if (wf[up] && !seen.has(up)) {
+          seen.add(up);
+          queue.push(up);
+        }
+      }
+    }
+  } else if (!isDefaultFallback) {
+    // 正式分支必须指定输出（方案 §18.6：不允许没有输出的正式分支）
+    throw new Error(`子工作流分支「${variant?.name}」没有指定输出节点`);
+  }
+
+  // 3. 过滤工作流：只保留白名单节点；连线指向白名单外的记入 dangling（不删连线、不跨接）
+  //    正常工作流里 dangling 几乎不触发（闭包已收编反链）；它防御「分支引用了非反链外部节点」。
+  //    ⚠️ 必须深拷贝节点：后续 runComfyTemplate 会修改 node.inputs（写提示词/图片名/参数），
+  //    不拷贝会污染 store 里的模板本体（P0-1 修复）。
+  const out: Record<string, ComfyWfNode> = {};
+  const dangling: ExtractVariantResult["dangling"] = [];
+  for (const id of allowed) {
+    const node = wf[id];
+    if (!node) continue;
+    out[id] = { ...node, inputs: { ...node.inputs }, _meta: node._meta ? { ...node._meta } : undefined };
+    for (const [input, v] of Object.entries(node.inputs ?? {})) {
+      if (isConnection(v) && !allowed.has(v[0])) {
+        dangling.push({ from: id, input, missing: v[0] });
+      }
+    }
+  }
+
+  return { wf: out, allowed: [...allowed], dangling };
+}
+
+/** 在提取分支后，对分支内部的 disabledNodes 走 pruneDisabled（安全忽略，不跨分支） */
+export function extractAndPruneVariant(
+  tpl: ComfyTemplate,
+  variantId: string | undefined,
+): { wf: Record<string, ComfyWfNode>; dangling: ExtractVariantResult["dangling"] } {
+  const { wf, dangling } = extractVariantWorkflow(tpl, variantId);
+  const variant = variantId ? tpl.variants?.find((v) => v.id === variantId) : undefined;
+  const pruned = pruneDisabled(wf, variant?.disabledNodes ?? tpl.disabledNodes);
+  return { wf: pruned, dangling };
+}
+
+/** 获取模板的有效参数列表：指定分支优先用分支 params，否则回落顶层 params（老模板兼容） */
+export function effectiveParams(tpl: ComfyTemplate, variantId?: string): ComfyExposedParam[] {
+  if (variantId) {
+    const v = tpl.variants?.find((x) => x.id === variantId);
+    if (v) return v.params;
+  }
+  return tpl.params;
+}
+
+/** 获取模板的有效输出节点：指定分支优先用分支 outputNodeIds[0]，否则回落顶层 outputNodeId */
+export function effectiveOutputNodeId(tpl: ComfyTemplate, variantId?: string): string | undefined {
+  if (variantId) {
+    const v = tpl.variants?.find((x) => x.id === variantId);
+    if (v?.outputNodeIds.length) return v.outputNodeIds[0];
+  }
+  return tpl.outputNodeId;
+}
+
+/** 在 tpl 中按 id 查 variant（便利方法，供 UI / runner 使用） */
+export function findVariant(tpl: ComfyTemplate, variantId?: string): ComfyVariant | undefined {
+  if (!variantId) return undefined;
+  return tpl.variants?.find((v) => v.id === variantId);
+}
+
+/**
+ * 构建图片入口列表（与下方 runComfyTemplate 的默认分配顺序完全一致）：
+ * 暴露的图片参数（顺序=effectiveParams）→ 未被参数占用的 LoadImage 节点（按编号排序）。
+ * 入口 key 与 imageSlotMap 的 key 同构（"nodeId.input"）。输入映射弹卡与节点徽章共用。
+ */
+export function buildImageEntries(tpl: ComfyTemplate, variantId?: string): { key: string; label: string }[] {
+  const eff = effectiveParams(tpl, variantId);
+  const imgParams = eff.filter((p) => p.kind === "image");
+  const occupied = new Set(imgParams.map((p) => p.nodeId));
+  const { wf } = extractVariantWorkflow(tpl, variantId);
+  const loaders = Object.keys(wf)
+    .filter((id) => isImageLoaderClass(wf[id].class_type) && !occupied.has(id))
+    .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+  return [
+    ...imgParams.map((p) => ({ key: p.key, label: p.label })),
+    ...loaders.map((id) => ({ key: `${id}.image`, label: zhNode(wf[id]) })),
+  ];
 }
 
 /* ---------------- 运行 ---------------- */
@@ -328,22 +661,39 @@ export async function runComfyTemplate(
     upstreamTexts?: string[];
     /** 上游视频：自动上传并喂给 LoadVideo 类节点（SeedVR2 放大等视频工作流） */
     upstreamVideos?: string[];
+    /** 子工作流分支 id；undefined/找不到/default → 走整个工作流（老模板兼容） */
+    variantId?: string;
+    /**
+     * 图片输入精确映射：入口 key（"nodeId.input"，与暴露参数 key 同构）→ 上游图 dataURL。
+     * 指定了的入口精确用这张图；未映射的入口仍走默认顺序分配（旧行为零回归）。
+     */
+    imageSlotMap?: Record<string, string>;
   } = {},
 ): Promise<ComfyRunResult> {
   const base = normalizeHost(host);
   if (!base) throw new Error("请先在「设置 → ComfyUI」中填写服务地址");
 
-  // 1. 深拷贝 + 剔除被忽略的节点，然后写入参数值
-  const wf: Record<string, ComfyWfNode> = pruneDisabled(
-    JSON.parse(JSON.stringify(tpl.workflow)),
-    tpl.disabledNodes,
-  );
+  // 1. 提取子工作流分支（include-list + 依赖闭包 + 安全忽略），再写入参数值。
+  //    variantId 为空 / default / 老模板 → extractAndPruneVariant 返回整个工作流，行为零回归。
+  const { wf: wfRaw, dangling } = extractAndPruneVariant(tpl, opts.variantId);
+  if (dangling.length) {
+    const detail = dangling.slice(0, 3).map((d) => `#${d.from}.${d.input} → #${d.missing}`).join("；");
+    throw new Error(
+      `子工作流分支有 ${dangling.length} 处依赖未选入分支（如 ${detail}），请在模板编辑器中补全共享节点或重新框选`,
+    );
+  }
+  const wf: Record<string, ComfyWfNode> = wfRaw;
+  const params = effectiveParams(tpl, opts.variantId);
+  const outNodeId = effectiveOutputNodeId(tpl, opts.variantId);
   const nodeTitle = (nid: string) => {
     const n = wf[nid];
     return n ? n._meta?.title ?? n.class_type : nid;
   };
 
-  const imgQueue = [...(opts.upstreamImages ?? [])];
+  // 精确映射占用的图从队列扣除，避免同一张图被默认顺序再喂给别的入口
+  // （同一张图映射给两个入口是允许的：ensureUploaded 有缓存，不会重复上传；NONE 哨兵不占图）
+  const mappedSrcs = new Set(Object.values(opts.imageSlotMap ?? {}).filter((s) => s !== COMFY_SLOT_NONE));
+  const imgQueue = (opts.upstreamImages ?? []).filter((s) => !mappedSrcs.has(s));
   let imagesUsed = 0;
   let lastImageSrc: string | undefined;
   const uploadCache = new Map<string, string>();
@@ -362,16 +712,19 @@ export async function runComfyTemplate(
   const imageParamNodes = new Set<string>(); // 已由图片参数占用的节点
   let hasTextParam = false;
   let firstTextFilled = false;
-  for (const p of tpl.params) {
+  for (const p of params) {
     const node = wf[p.nodeId];
     if (!node) continue; // 节点被忽略/不存在
     const own = paramValues[p.key];
     if (p.kind === "image") {
       imageParamNodes.add(p.nodeId);
       let v = own !== undefined && own !== "" ? own : undefined;
+      // 取值优先级：用户手填值 > 精确映射（imageSlotMap[p.key]）> 默认顺序（上游图队列）；NONE 哨兵 = 明确不给图
+      const mapped = opts.imageSlotMap?.[p.key];
       if (typeof v === "string" && v.startsWith("data:")) v = await ensureUploaded(v);
+      else if (mapped && mapped !== COMFY_SLOT_NONE) v = await ensureUploaded(mapped);
       else if (v === undefined && imgQueue.length) v = await ensureUploaded(imgQueue.shift()!);
-      if (v === undefined) throw new Error(`图片参数「${p.label}」缺少输入：请连接上游图片节点`);
+      if (v === undefined) throw new Error(`图片参数「${p.label}」缺少输入：请连接上游图片节点，或在输入映射里指定`);
       node.inputs[p.input] = v;
       continue;
     }
@@ -388,12 +741,18 @@ export async function runComfyTemplate(
     node.inputs[p.input] = p.kind === "number" || p.kind === "seed" ? Number(v) : v;
   }
 
-  // 2a. 剩余上游图片 → 未被参数占用的 LoadImage 节点（按编号顺序）
-  if (imgQueue.length) {
+  // 2a. 剩余上游图片 → 未被参数占用的 LoadImage 节点（精确映射优先，其余按编号顺序）
+  {
     const loaders = Object.keys(wf)
       .filter((id) => isImageLoaderClass(wf[id].class_type) && !imageParamNodes.has(id))
       .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
     for (const id of loaders) {
+      const mapped = opts.imageSlotMap?.[`${id}.image`];
+      if (mapped && mapped !== COMFY_SLOT_NONE) {
+        wf[id].inputs.image = await ensureUploaded(mapped);
+        continue;
+      }
+      if (mapped === COMFY_SLOT_NONE) continue; // 明确不给图：入口留空（工作流端自行报错或走默认）
       if (!imgQueue.length) break;
       wf[id].inputs.image = await ensureUploaded(imgQueue.shift()!);
     }
@@ -544,7 +903,7 @@ export async function runComfyTemplate(
         const q = new URLSearchParams({ filename: f.filename, subfolder: f.subfolder ?? "", type: f.type ?? "output" });
         return `${base}/view?${q.toString()}`;
       };
-      const nodeIds = tpl.outputNodeId && outputs[tpl.outputNodeId] ? [tpl.outputNodeId] : Object.keys(outputs);
+      const nodeIds = outNodeId && outputs[outNodeId] ? [outNodeId] : Object.keys(outputs);
       for (const nid of nodeIds) {
         for (const img of outputs[nid]?.images ?? []) urls.push(viewUrl(img));
       }

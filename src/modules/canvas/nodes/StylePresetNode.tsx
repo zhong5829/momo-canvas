@@ -35,7 +35,6 @@ export const StylePresetNode = memo(function StylePresetNode({ id, data, selecte
         sel.size ? (
           <button
             className="btn sm nodrag"
-            style={{ marginRight: 2 }}
             onClick={() => upd(id, { selected: [] })}
           >
             清空 {sel.size}
@@ -58,7 +57,7 @@ export const StylePresetNode = memo(function StylePresetNode({ id, data, selecte
           ))}
         </div>
         {sel.size ? (
-          <div style={{ fontSize: 12, color: "var(--text-3)", lineHeight: 1.5, maxHeight: 54, overflowY: "auto" }} className="nowheel">
+          <div style={{ fontSize: 12, color: "var(--text-3)", lineHeight: 1.5, maxHeight: 54, overflowY: "auto" }} className="nodrag nowheel">
             {[...sel].join(", ")}
           </div>
         ) : (

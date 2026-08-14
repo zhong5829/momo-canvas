@@ -54,9 +54,9 @@ export const RelightNode = memo(function RelightNode({ id, data, selected }: Nod
       selected={selected}
       width={330}
       headExtra={
-        <span className="acts nodrag" style={{ opacity: 1, display: "flex", alignItems: "center", gap: 5 }}>
+        <span className="acts nodrag">
           <OutModeToggle id={id} mode={mode} />
-          <button className="icon-btn" title="重置打光参数" onClick={reset}>
+          <button className="icon-btn" title="重置打光参数" aria-label="重置打光参数" onClick={reset}>
             <IcRefresh size={15} />
           </button>
         </span>
@@ -76,7 +76,7 @@ export const RelightNode = memo(function RelightNode({ id, data, selected }: Nod
             onChange={(az, el) => upd(id, { azimuth: az, elevation: el, smart: false })}
           />
         </div>
-        <div className="chips">
+        <div className="chips nodrag">
           {LIGHT_DIRS.map((L) => (
             <button
               key={L.label}
@@ -101,7 +101,7 @@ export const RelightNode = memo(function RelightNode({ id, data, selected }: Nod
           />
           <b>{d.brightness}%</b>
         </div>
-        <div className="ctl-row">
+        <div className="ctl-row nodrag">
           <span>颜色</span>
           <span className="swatches">
             <button
@@ -154,21 +154,27 @@ export const RelightNode = memo(function RelightNode({ id, data, selected }: Nod
               {running ? <IcLoading size={17} /> : <IcBulb size={17} />}
               {running ? "打光中…" : "生成打光效果"}
             </button>
-            {running ? (
-              <div className="skeleton">
-                <span>正在重新布光…</span>
-              </div>
-            ) : main ? (
+            {main ? (
               <EditSurface id={id} src={main}>
                 <Thumb className="img-main" src={main} alt="" res onClick={() => setLightbox(main, upImage)} />
               </EditSurface>
+            ) : running ? (
+              <div className="skeleton">
+                <span>正在重新布光…</span>
+              </div>
+            ) : null}
+            {running && main ? (
+              <div className="progress-line">
+                <IcLoading size={14} />
+                正在重新布光…
+              </div>
             ) : null}
           </>
         ) : (
           <div className="prompt-out nodrag">
             <div className="po-head">
               <span>输出的打光提示词（随参数实时更新）</span>
-              <button className="icon-btn" title="复制提示词" onClick={() => void copyPrompt()}>
+              <button className="icon-btn" title="复制提示词" aria-label="复制提示词" onClick={() => void copyPrompt()}>
                 <IcCopy size={14} />
               </button>
             </div>

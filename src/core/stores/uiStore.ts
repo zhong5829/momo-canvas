@@ -63,11 +63,24 @@ type UiState = {
   templateMgrEdit: string | null;
   /** 角色库弹层（人物预设） */
   charLibOpen: boolean;
+  /** Skill 管理器弹层 */
+  skillMgrOpen: boolean;
+  /** 导演台全屏工作台 */
+  directorOpen: boolean;
+  /** GGUF 导入向导弹层 */
+  ggufImportOpen: boolean;
+  /** 本地模型引擎（llama-server）配置弹层 */
+  localLlmSetupOpen: boolean;
+  /** 打开导演台时的画布节点 id */
+  directorNodeId: string | null;
   lightbox: string | null;
   /** 灯箱对比模式的「原图」：非空时灯箱显示前后对比滑块 */
   lightboxBefore: string | null;
   /** 灯箱内容类型：video 时用 <video> 播放（节点上只显示封面帧，点开才真正播放） */
   lightboxKind: "image" | "video";
+  /** 对比视图：同节点多张结果并排（网格灯箱），点某张切到单图放大模式 */
+  lightboxList: string[] | null;
+  setLightboxList: (v: string[] | null) => void;
   /** 顺序预览播放列表（时间线粗剪「预览成片」）：非空时全屏播放器逐段自动连播 */
   seqPreview: string[] | null;
   addMenu: AddMenuState;
@@ -120,6 +133,10 @@ type UiState = {
   setSideEditorOpen: (v: boolean) => void;
   setTemplateMgr: (v: boolean, editId?: string | null) => void;
   setCharLibOpen: (v: boolean) => void;
+  setSkillMgrOpen: (v: boolean) => void;
+  setDirectorOpen: (v: boolean) => void;
+  setGgufImportOpen: (v: boolean) => void;
+  setLocalLlmSetupOpen: (v: boolean) => void;
   setLightbox: (src: string | null, before?: string | null, kind?: "image" | "video") => void;
   setSeqPreview: (urls: string[] | null) => void;
   setAddMenu: (v: AddMenuState) => void;
@@ -150,9 +167,16 @@ export const useUi = create<UiState>((set) => ({
   templateMgrOpen: false,
   templateMgrEdit: null,
   charLibOpen: false,
+  skillMgrOpen: false,
+  directorOpen: false,
+  ggufImportOpen: false,
+  localLlmSetupOpen: false,
+  directorNodeId: null,
   lightbox: null,
   lightboxBefore: null,
   lightboxKind: "image",
+  lightboxList: null,
+  setLightboxList: (v) => set({ lightboxList: v }),
   seqPreview: null,
   addMenu: null,
   gallery: [],
@@ -193,6 +217,10 @@ export const useUi = create<UiState>((set) => ({
   setSideEditorOpen: (v) => set({ sideEditorOpen: v }),
   setTemplateMgr: (v, editId) => set({ templateMgrOpen: v, templateMgrEdit: v ? (editId ?? null) : null }),
   setCharLibOpen: (v) => set({ charLibOpen: v }),
+  setSkillMgrOpen: (v) => set({ skillMgrOpen: v }),
+  setDirectorOpen: (v) => set({ directorOpen: v }),
+  setGgufImportOpen: (v) => set({ ggufImportOpen: v }),
+  setLocalLlmSetupOpen: (v) => set({ localLlmSetupOpen: v }),
   setLightbox: (src, before, kind) =>
     set({ lightbox: src, lightboxBefore: src ? (before ?? null) : null, lightboxKind: src ? (kind ?? "image") : "image" }),
   setSeqPreview: (urls) => set({ seqPreview: urls?.length ? urls : null }),

@@ -14,6 +14,7 @@ import { toast } from "../../core/stores/uiStore";
 import { PopSelect } from "../../ui/PopSelect";
 import { assetToDataUrl, assetUrl } from "../../core/services/assetFiles";
 import { errMsg, isTauri } from "../../core/utils";
+import { grabFrame } from "../../core/videoEdit";
 import { ShortcutBar, sendAsset } from "./ShortcutBar";
 import { getNativeDragAsset, setNativeDragAsset } from "./dragState";
 import type { AssetItem, AssetKind } from "../../core/types";
@@ -76,7 +77,9 @@ import {
   IcLibrary,
   IcLayers,
   IcMusic,
+  IcRestore,
   IcSearch,
+  IcStar,
   IcTag,
   IcTrash,
   IcUpload,
@@ -85,7 +88,7 @@ import {
 } from "../../ui/icons";
 import "./assets.css";
 
-const KIND_TABS: { key: AssetKind | "all"; label: string; icon: React.ReactNode }[] = [
+const KIND_TABS: { key: AssetKind | "all" | "fav" | "trash"; label: string; icon: React.ReactNode }[] = [
   { key: "all", label: "全部", icon: <IcGallery size={17} /> },
   { key: "image", label: "图片", icon: <IcImage size={17} /> },
   { key: "video", label: "视频", icon: <IcVideo size={17} /> },
@@ -93,6 +96,8 @@ const KIND_TABS: { key: AssetKind | "all"; label: string; icon: React.ReactNode 
   { key: "pdf", label: "PDF", icon: <IcFile size={17} /> },
   { key: "vector", label: "矢量", icon: <IcVector size={17} /> },
   { key: "other", label: "其他", icon: <IcFile size={17} /> },
+  { key: "fav", label: "收藏", icon: <IcStar size={17} /> },
+  { key: "trash", label: "回收站", icon: <IcTrash size={17} /> },
 ];
 
 const KIND_BADGE: Record<AssetKind, string> = { image: "", video: "视频", audio: "音频", pdf: "PDF", vector: "SVG", other: "文件" };
@@ -128,16 +133,20 @@ export function AssetLibrary() {
   const open = useAssets((s) => s.open);
   const setOpen = useAssets((s) => s.setOpen);
   const items = useAssets((s) => s.items);
+  const trash = useAssets((s) => s.trash);
   const folders = useAssets((s) => s.folders);
   const importFiles = useAssets((s) => s.importFiles);
   const removeMany = useAssets((s) => s.removeMany);
+  const restoreMany = useAssets((s) => s.restoreMany);
+  const purgeMany = useAssets((s) => s.purgeMany);
+  const toggleFav = useAssets((s) => s.toggleFav);
   const moveTo = useAssets((s) => s.moveTo);
   const createFolder = useAssets((s) => s.createFolder);
   const renameFolder = useAssets((s) => s.renameFolder);
   const deleteFolder = useAssets((s) => s.deleteFolder);
   const addTagMany = useAssets((s) => s.addTagMany);
 
-  const [kind, setKind] = useState<AssetKind | "all">("all");
+  const [kind, setKind] = useState<AssetKind | "all" | "fav" | "trash">("all");
   const [folderId, setFolderId] = useState<string | "all">("all");
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [keyword, setKeyword] = useState("");
@@ -151,6 +160,14 @@ export function AssetLibrary() {
   const [dragOut, setDragOut] = useState(false);
   /** 右键菜单：屏幕坐标 + 目标资产 */
   const [cardMenu, setCardMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  /** 组卡右键菜单 */
+  const [groupMenu, setGroupMenu] = useState<{ x: number; y: number; key: string } | null>(null);
+  /** 网格内双击重命名的资产 */
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renamingName, setRenamingName] = useState("");
+  /** 回收站彻底删除的二次确认（直接删磁盘文件，必须两步） */
+  const [purgeConfirmId, setPurgeConfirmId] = useState<string | null>(null);
+  const [purgeAll, setPurgeAll] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const dragTrackStop = useRef<(() => void) | null>(null);
@@ -176,7 +193,9 @@ export function AssetLibrary() {
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
     return items.filter((i) => {
-      if (kind !== "all" && i.kind !== kind) return false;
+      if (kind === "fav") {
+        if (!i.fav) return false;
+      } else if (kind !== "all" && i.kind !== kind) return false;
       if (folderId !== "all" && i.folderId !== folderId) return false;
       if (tagFilter && !(i.tags ?? []).includes(tagFilter)) return false;
       if (kw && !`${i.name} ${i.prompt ?? ""} ${i.model ?? ""} ${(i.tags ?? []).join(" ")}`.toLowerCase().includes(kw))
@@ -211,9 +230,13 @@ export function AssetLibrary() {
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: items.length };
-    for (const i of items) c[i.kind] = (c[i.kind] ?? 0) + 1;
+    for (const i of items) {
+      c[i.kind] = (c[i.kind] ?? 0) + 1;
+      if (i.fav) c.fav = (c.fav ?? 0) + 1;
+    }
+    c.trash = trash.length;
     return c;
-  }, [items]);
+  }, [items, trash]);
 
   /** 全部标签 → 出现次数（按次数降序） */
   const allTags = useMemo(() => {
@@ -270,7 +293,61 @@ export function AssetLibrary() {
     await removeMany([...selected]);
     clearSel();
     setPreviewIdx(null);
-    toast(`已删除 ${n} 个资产（文件已从磁盘移除）`, "ok");
+    toast(`已删除 ${n} 个资产 → 回收站（30 天内可恢复）`, "ok");
+  };
+
+  /** 批量导出：Tauri 选文件夹复制文件 + 附 meta.json；浏览器逐张下载 */
+  const exportMany = async (ids: string[]) => {
+    const list = items.filter((i) => ids.includes(i.id));
+    if (!list.length) return;
+    if (!isTauri) {
+      for (const it of list) {
+        const a = document.createElement("a");
+        a.href = assetUrl(it.path);
+        a.download = `${it.name}.${it.path.split(".").pop() ?? "png"}`;
+        a.click();
+      }
+      toast(`已开始下载 ${list.length} 个文件`, "ok");
+      return;
+    }
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const dir = await open({ directory: true, title: "选择导出文件夹" });
+    if (typeof dir !== "string") return;
+    const { copyFile, writeTextFile } = await import("@tauri-apps/plugin-fs");
+    let ok = 0;
+    for (const it of list) {
+      try {
+        await copyFile(it.path, `${dir}\\${it.name}.${it.path.split(".").pop() ?? "png"}`);
+        ok++;
+      } catch (e) {
+        toast(`导出「${it.name}」失败：${errMsg(e)}`, "err");
+      }
+    }
+    try {
+      await writeTextFile(
+        `${dir}\\momo-meta.json`,
+        JSON.stringify(list.map((i) => ({ name: i.name, prompt: i.prompt, model: i.model, kind: i.kind, tags: i.tags })), null, 2),
+      );
+    } catch {
+      /* meta 写失败不阻塞导出 */
+    }
+    toast(`已导出 ${ok} 个文件 → ${dir}`, "ok");
+  };
+
+  /** 把一批资产作为图片节点放入画布（组卡右键「组内全部放画布」用） */
+  const addImagesToCanvas = async (list: AssetItem[]) => {
+    setOpen(false);
+    let ok = 0;
+    for (const it of list) {
+      try {
+        const src = await assetToDataUrl(it.path, it.mime);
+        useBoard.getState().addNode("image", { x: 120 + ok * 40, y: 120 + ok * 40 }, { src, name: it.name, status: "done" });
+        ok++;
+      } catch (e) {
+        toast(`读取资产失败（${it.name}）：${errMsg(e)}`, "err");
+      }
+    }
+    if (ok) toast(`已放入画布 ${ok} 个图片节点`, "ok");
   };
 
   const previewItem = previewIdx !== null ? filtered[previewIdx] : null;
@@ -441,6 +518,78 @@ export function AssetLibrary() {
             />
           </div>
 
+          {kind === "trash" ? (
+            <div className="al-trash">
+              <div className="al-trash-head">
+                <b>回收站（{trash.length}）</b>
+                <span className="sec-desc" style={{ flex: 1 }}>
+                  删除的资产保留 30 天，之后自动彻底清理；「恢复」回到资产库
+                </span>
+                {trash.length ? (
+                  <button
+                    className={`btn sm ${purgeAll ? "danger" : ""}`}
+                    title="彻底删除回收站全部资产（删除磁盘文件，不可恢复）"
+                    onClick={() => {
+                      if (!purgeAll) {
+                        setPurgeAll(true);
+                        return;
+                      }
+                      purgeMany(trash.map((t) => t.id));
+                      setPurgeAll(false);
+                      toast("回收站已清空", "ok");
+                    }}
+                  >
+                    <IcTrash size={14} /> {purgeAll ? "再点一次确认" : "全部彻底删除"}
+                  </button>
+                ) : null}
+              </div>
+              {trash.length ? (
+                <div className="al-trash-list">
+                  {trash.map((t) => (
+                    <div key={t.id} className="al-trash-item">
+                      <div className="a-thumb sm">
+                        <AssetThumb item={t} />
+                      </div>
+                      <div className="al-trash-info">
+                        <b>{t.name}</b>
+                        <span className="sec-desc">
+                          {t.kind === "image" ? "图片" : KIND_BADGE[t.kind] || "文件"} · 删除于{" "}
+                          {t.deletedAt ? fmtDate(t.deletedAt) : "—"}
+                        </span>
+                      </div>
+                      <span style={{ flex: 1 }} />
+                      <button className="btn sm" title="恢复回资产库" onClick={() => { restoreMany([t.id]); toast("已恢复", "ok"); }}>
+                        <IcRestore size={14} /> 恢复
+                      </button>
+                      {purgeConfirmId === t.id ? (
+                        <button
+                          className="btn sm danger"
+                          title="再次点击确认：删除磁盘文件，不可恢复"
+                          onClick={() => { purgeMany([t.id]); setPurgeConfirmId(null); toast("已彻底删除", "ok"); }}
+                        >
+                          确认删除
+                        </button>
+                      ) : (
+                        <button
+                          className="btn sm danger"
+                          title="彻底删除（删除磁盘文件，不可恢复）"
+                          onClick={() => setPurgeConfirmId(t.id)}
+                        >
+                          <IcTrash size={14} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="al-empty">
+                  <IcRestore size={40} />
+                  <br />
+                  回收站是空的
+                </div>
+              )}
+            </div>
+          ) : (
           <div className="al-grid">
             {filtered.length === 0 ? (
               <div className="al-empty">
@@ -468,7 +617,7 @@ export function AssetLibrary() {
                     <div key={entry.key} className="a-group-stack">
                       <div
                         className={`a-card a-group-card ${allSelected ? "sel" : ""}`}
-                        title={`${it.groupLabel || it.prompt || it.name}\n${members.length} 个生成结果 · 点击展开`}
+                        title={`${it.groupLabel || it.prompt || it.name}\n${members.length} 个生成结果 · 点击展开\n右键：整组操作`}
                         onClick={() => {
                           if (selected.size) {
                             const next = new Set(selected);
@@ -478,6 +627,11 @@ export function AssetLibrary() {
                           } else {
                             setFocusedGroupId(entry.key);
                           }
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setGroupMenu({ x: e.clientX, y: e.clientY, key: entry.key });
                         }}
                       >
                         <div className="a-thumb"><AssetThumb item={it} /></div>
@@ -537,11 +691,26 @@ export function AssetLibrary() {
                     if (selected.size) toggleSel(it.id);
                     else setPreviewIdx(idx);
                   }}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    setRenamingId(it.id);
+                    setRenamingName(it.name);
+                  }}
                 >
                   <div className="a-thumb">
                     <AssetThumb item={it} />
                   </div>
                   {KIND_BADGE[it.kind] ? <span className="a-badge">{KIND_BADGE[it.kind]}</span> : null}
+                  <button
+                    className={`a-fav ${it.fav ? "on" : ""}`}
+                    title={it.fav ? "取消收藏" : "收藏（「收藏」页签集中查看）"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleFav(it.id);
+                    }}
+                  >
+                    <IcStar size={13} />
+                  </button>
                   <button
                     className="a-check"
                     onClick={(e) => {
@@ -551,12 +720,36 @@ export function AssetLibrary() {
                   >
                     {selected.has(it.id) ? <IcCheck size={14} /> : null}
                   </button>
-                  <div className="a-name">{it.name}</div>
+                  {renamingId === it.id ? (
+                    <input
+                      className="a-rename-input"
+                      autoFocus
+                      value={renamingName}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setRenamingName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === "Escape") {
+                          if (e.key === "Enter" && renamingName.trim()) {
+                            useAssets.getState().rename(it.id, renamingName.trim());
+                          }
+                          setRenamingId(null);
+                          e.stopPropagation();
+                        }
+                      }}
+                      onBlur={() => {
+                        if (renamingName.trim()) useAssets.getState().rename(it.id, renamingName.trim());
+                        setRenamingId(null);
+                      }}
+                    />
+                  ) : (
+                    <div className="a-name">{it.name}</div>
+                  )}
                 </div>
                 );
               })
             )}
           </div>
+          )}
 
           {selected.size ? (
             <div className="al-batchbar">
@@ -600,6 +793,9 @@ export function AssetLibrary() {
                   ))}
                 </datalist>
               </div>
+              <button className="btn sm" title="把所选资产复制到指定文件夹（附带元信息 momo-meta.json）" onClick={() => void exportMany([...selected])}>
+                <IcDownload size={15} /> 批量导出
+              </button>
               <button className={`btn sm ${confirmDel ? "primary" : "danger"}`} onClick={() => void batchDelete()}>
                 <IcTrash size={15} /> {confirmDel ? "再点一次确认删除" : "批量删除"}
               </button>
@@ -657,6 +853,42 @@ export function AssetLibrary() {
           })()
         : null}
 
+      {/* 组卡右键：整组操作 */}
+      {groupMenu
+        ? (() => {
+            const entry = entries.find((e) => e.key === groupMenu.key);
+            if (!entry) return null;
+            const members = [...entry.items].sort((a, b) => groupMemberOrder(a) - groupMemberOrder(b));
+            return (
+              <>
+                <div
+                  style={{ position: "fixed", inset: 0, zIndex: 490 }}
+                  onMouseDown={() => setGroupMenu(null)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setGroupMenu(null);
+                  }}
+                />
+                <div className="a-menu glass" style={{ left: Math.min(groupMenu.x, window.innerWidth - 250), top: Math.min(groupMenu.y, window.innerHeight - 200) }}>
+                  <button className="am-row" onClick={() => void addImagesToCanvas(members)}>
+                    组内 {members.length} 张全部放入画布
+                  </button>
+                  <button
+                    className="am-row"
+                    onClick={() => {
+                      void removeMany(members.map((m) => m.id));
+                      setGroupMenu(null);
+                      toast(`整组 ${members.length} 项已移到回收站`, "ok");
+                    }}
+                  >
+                    删除整组（移到回收站）
+                  </button>
+                </div>
+              </>
+            );
+          })()
+        : null}
+
       {previewItem ? (
         <AssetPreview
           item={previewItem}
@@ -668,7 +900,7 @@ export function AssetLibrary() {
           onDelete={async () => {
             await removeMany([previewItem.id]);
             setPreviewIdx(null);
-            toast("已删除", "ok");
+            toast("已移到回收站（30 天内可恢复）", "ok");
           }}
         />
       ) : null}
@@ -812,7 +1044,7 @@ function CardMenu({ item, x, y, onClose }: { item: AssetItem; x: number; y: numb
               return;
             }
             onClose();
-            void removeMany([item.id]).then(() => toast("已删除（文件已从磁盘移除）", "ok"));
+            void removeMany([item.id]).then(() => toast("已移到回收站（30 天内可恢复）", "ok"));
           }}
         >
           {confirmDel ? "再点一次确认删除" : "删除资产"}
@@ -855,6 +1087,23 @@ function AssetPreview({
     if (!t) return;
     setTags(item.id, [...(item.tags ?? []), t]);
     setTagInput("");
+  };
+
+  /** 抽视频首/尾帧 → 落资产库（可拖进导演台当首帧/尾帧接力参考） */
+  const grabToLibrary = async (point: "first" | "last") => {
+    try {
+      const { dataUrl } = await grabFrame(url, point);
+      const a = await useAssets.getState().collect({
+        src: dataUrl,
+        kind: "image",
+        name: `${item.name}·${point === "first" ? "首帧" : "尾帧"}`,
+        model: item.model,
+        prompt: item.prompt,
+      });
+      toast(a ? `已抽取${point === "first" ? "首帧" : "尾帧"}到资产库 → ${a.name}` : "抽帧失败", a ? "ok" : "err");
+    } catch (e) {
+      toast(`抽帧失败：${errMsg(e)}`, "err");
+    }
   };
 
   return (
@@ -952,6 +1201,16 @@ function AssetPreview({
         </div>
         {item.prompt ? <div className="prompt-box">{item.prompt}</div> : null}
         <div style={{ flex: 1 }} />
+        {item.kind === "video" ? (
+          <>
+            <button className="btn" title="抽取视频第一帧为图片，收进资产库（可拖进导演台当首帧）" onClick={() => void grabToLibrary("first")}>
+              抽首帧
+            </button>
+            <button className="btn" title="抽取视频最后一帧为图片，收进资产库（可拖进导演台当尾帧/接力首帧）" onClick={() => void grabToLibrary("last")}>
+              抽尾帧
+            </button>
+          </>
+        ) : null}
         <button className="btn" onClick={() => void saveAsAsset(item)}>
           <IcDownload size={16} /> 另存为…
         </button>

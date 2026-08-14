@@ -16,7 +16,91 @@ import {
   type UnitPrice,
 } from "../types";
 import { loadJSON, saveJSON } from "../persist";
-import { uid } from "../utils";
+import { isTauri, uid } from "../utils";
+import { useLocalGguf } from "./localGgufStore";
+import { toast } from "./uiStore";
+
+/** API Key 落盘加密前缀（DPAPI 密文 hex）；内存中始终是明文，只有写盘/读盘时转换 */
+const KEY_ENC_PREFIX = "dpapi:";
+
+/** 落盘前把 providers/search 的 apiKey 换成 DPAPI 密文（返回浅拷贝；加密失败保持明文——不比现状更差） */
+async function encryptKeysForDisk(s: Settings): Promise<Settings> {
+  if (!isTauri) return s; // 浏览器预览无 DPAPI：保持明文
+  const { invoke } = await import("@tauri-apps/api/core");
+  const enc = async (k: string) => {
+    if (!k || k.startsWith(KEY_ENC_PREFIX)) return k;
+    const c = await invoke<string>("dpapi_encrypt", { s: k }).catch(() => "");
+    return c ? KEY_ENC_PREFIX + c : k;
+  };
+  const providers = [];
+  for (const p of s.models.providers) {
+    providers.push(p.apiKey ? { ...p, apiKey: await enc(p.apiKey) } : p);
+  }
+  const search = s.search.apiKey ? { ...s.search, apiKey: await enc(s.search.apiKey) } : s.search;
+  return { ...s, models: { ...s.models, providers }, search };
+}
+
+/** 加载后把 dpapi: 前缀的 apiKey 解回明文（失败保留原值并提示重填——换机器/换用户后 DPAPI 解不开） */
+async function decryptKeysFromDisk(s: Settings): Promise<Settings> {
+  const need = s.models.providers.some((p) => p.apiKey?.startsWith(KEY_ENC_PREFIX)) || !!s.search.apiKey?.startsWith(KEY_ENC_PREFIX);
+  if (!need || !isTauri) return s;
+  const { invoke } = await import("@tauri-apps/api/core");
+  let failed = 0;
+  const dec = async (k: string) => {
+    if (!k.startsWith(KEY_ENC_PREFIX)) return k;
+    try {
+      return await invoke<string>("dpapi_decrypt", { s: k.slice(KEY_ENC_PREFIX.length) });
+    } catch {
+      failed++;
+      return k;
+    }
+  };
+  const providers = [];
+  for (const p of s.models.providers) providers.push(p.apiKey ? { ...p, apiKey: await dec(p.apiKey) } : p);
+  const search = s.search.apiKey ? { ...s.search, apiKey: await dec(s.search.apiKey) } : s.search;
+  if (failed) toast(`有 ${failed} 个 API Key 解密失败（DPAPI 绑定本机用户），请到「设置 → 模型配置」重新填写`, "err");
+  return { ...s, models: { ...s.models, providers }, search };
+}
+
+/**
+ * 注入本地 GGUF 模型为虚拟服务商。
+ *
+ * 设计（§7）：
+ *  - 所有本地 GGUF 模型合并到**同一家**虚拟服务商（id 固定 "local-gguf"），避免 ProviderCard 数量膨胀
+ *  - 每个本地模型 = chat 槽的一个 model 项；model 值 = model.name（与 localGgufStore.name 对应）
+ *  - 协议固定 "llamacpp"：对话时由 llm.ts 检测并 ensureRunning（动态注入 baseUrl）
+ *  - baseUrl/apiKey 留空：运行期由 ensureRunning 填入
+ *  - 注入只作用在内存（不写盘），不污染用户配置的 providers
+ *  - 本地模型放在 providers 数组末尾：远程服务商在「第一家可用」兜底中优先
+ *
+ * 注意：必须在 localGgufStore.init() 之后调用，否则 models 为空。
+ */
+const LOCAL_GGUF_PROVIDER_ID = "local-gguf";
+
+function injectLocalGgufProviders(providers: ProviderCard[]): ProviderCard[] {
+  const localModels = useLocalGguf.getState().models;
+  if (!localModels.length) return providers;
+  const chatModels = localModels.map((m) => m.name);
+  const virtualCard: ProviderCard = {
+    id: LOCAL_GGUF_PROVIDER_ID,
+    name: "本地 GGUF 模型",
+    baseUrl: "",
+    apiKey: "",
+    models: {
+      chat: {
+        protocol: "llamacpp",
+        models: chatModels,
+      },
+    },
+    logo: "🧠",
+  };
+  // 替换已有虚拟项（幂等）或追加
+  const filtered = providers.filter((p) => p.id !== LOCAL_GGUF_PROVIDER_ID);
+  return [...filtered, virtualCard];
+}
+
+/** 导出常量供 llm.ts / localLlm.ts 复用 */
+export { LOCAL_GGUF_PROVIDER_ID as LOCAL_GGUF_PID };
 
 /** 「服务商 + 模型」复合键（节点选择 / 角色默认 都用它） */
 export function modelKey(providerId: string, model: string) {
@@ -89,6 +173,8 @@ function normalize(v: Partial<Settings>): Settings {
     pricing: { overrides: { ...((v.pricing as { overrides?: Record<string, UnitPrice> } | undefined)?.overrides ?? {}) } },
     // 本地超清放大引擎：浅合并默认值，老数据无此键 → 拿默认（4K / 自动 tile / 重叠 32）
     enhance: { ...DEFAULT_SETTINGS.enhance, ...(v.enhance ?? {}) },
+    // 本地 GGUF 引擎：浅合并默认值，老数据无此键 → 空对象（首次使用时引导配置）
+    localLlm: { ...DEFAULT_SETTINGS.localLlm, ...(v.localLlm ?? {}) },
   };
 }
 
@@ -176,7 +262,8 @@ void import("./logStore").then(({ registerSecretSource }) => {
 export const useSettings = create<SettingsState>((set, get) => {
   const commit = (next: Settings) => {
     set({ settings: next });
-    void saveJSON("settings.json", "v3", next);
+    // 落盘前 API Key 转 DPAPI 密文（内存保持明文，运行期无感）
+    void encryptKeysForDisk(next).then((disk) => saveJSON("settings.json", "v3", disk));
   };
 
   return {
@@ -185,6 +272,8 @@ export const useSettings = create<SettingsState>((set, get) => {
 
     init: () =>
       (initOnce ??= (async () => {
+        // 先初始化本地 GGUF 模型注册表（resolveModelCard 会在内存注入虚拟服务商）
+        void useLocalGguf.getState().init();
         let merged: Settings | null = null;
         const v3 = await loadJSON<Partial<Settings>>("settings.json", "v3");
         if (v3) {
@@ -203,14 +292,15 @@ export const useSettings = create<SettingsState>((set, get) => {
               if (bak) merged = normalize(bak);
             }
           }
-          if (merged) void saveJSON("settings.json", "v3", merged);
+          if (merged) void encryptKeysForDisk(merged).then((d) => saveJSON("settings.json", "v3", d));
         }
-        const final = merged ?? DEFAULT_SETTINGS;
+        // 加载后把 dpapi: 密文 Key 解回明文（换机器/用户解不开 → 保留密文 + toast 提示重填）
+        const final = (merged ? await decryptKeysFromDisk(merged) : null) ?? DEFAULT_SETTINGS;
         applyTheme(final.theme);
         applyGpu(final.gpuBoost);
         set({ settings: final, loaded: true });
-        // 每次启动写一份备份，任何升级/迁移出问题都能从备份找回
-        if (merged) void saveJSON("settings.backup.json", "v3", final);
+        // 每次启动写一份备份（同样加密落盘），任何升级/迁移出问题都能从备份找回
+        if (merged) void encryptKeysForDisk(final).then((d) => saveJSON("settings.backup.json", "v3", d));
       })()),
 
     importSettings: (raw) => {
@@ -274,21 +364,23 @@ export function flattenCard(p: ProviderCard, role: ModelRole, model?: string): M
 /** 解析节点应使用的模型：节点指定的「pid::model」 > 角色默认 > 第一家配了该角色的。兼容旧数据的纯 pid。 */
 export function resolveModelCard(role: ModelRole, key?: string): ModelCard {
   const { providers, defaults } = useSettings.getState().settings.models;
+  // 注入本地 GGUF 虚拟服务商（只在内存，不写盘）
+  const all = injectLocalGgufProviders(providers);
   const sel = splitModelKey(key);
   const def = splitModelKey(defaults[role]);
   const hasRole = (x: ProviderCard) => !!x.models[role]?.models.length;
   let p: ProviderCard | undefined;
   let model: string | undefined;
   if (sel.pid) {
-    p = providers.find((x) => x.id === sel.pid && hasRole(x));
+    p = all.find((x) => x.id === sel.pid && hasRole(x));
     model = sel.model;
   }
   if (!p) {
-    p = providers.find((x) => x.id === def.pid && hasRole(x));
+    p = all.find((x) => x.id === def.pid && hasRole(x));
     model = def.model;
   }
   if (!p) {
-    p = providers.find(hasRole);
+    p = all.find(hasRole);
     model = undefined;
   }
   const card = p ? flattenCard(p, role, model) : null;
@@ -298,7 +390,10 @@ export function resolveModelCard(role: ModelRole, key?: string): ModelCard {
 
 /** 配置了某角色模型的全部服务商（供节点模型选择器使用） */
 export function providersOfRole(role: ModelRole): ProviderCard[] {
-  return useSettings.getState().settings.models.providers.filter((p) => p.models[role]?.models.length);
+  const providers = useSettings.getState().settings.models.providers;
+  // 注入本地 GGUF 虚拟服务商（只在内存，不写盘）
+  const all = injectLocalGgufProviders(providers);
+  return all.filter((p) => p.models[role]?.models.length);
 }
 
 /** 该角色的默认协议（新建槽位时用） */

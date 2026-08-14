@@ -1,4 +1,5 @@
 import type { Node } from "@xyflow/react";
+import type { SkillRunSnapshot } from "./skillTypes";
 
 /* ---------------- 节点 ---------------- */
 export type NodeKind =
@@ -23,7 +24,8 @@ export type NodeKind =
   | "storyboard"
   | "enhanceLocal"
   | "vectorize"
-  | "ecomImage";
+  | "ecomImage"
+  | "director";
 
 export type RunStatus = "idle" | "running" | "done" | "error";
 
@@ -352,7 +354,16 @@ export type ComfyData = {
   status: RunStatus;
   error?: string;
   templateId?: string;
+  /** 当前选中的子工作流分支（多分支模板时选；单分支/老模板留空走 default） */
+  variantId?: string;
   params: Record<string, string | number>;
+  /** 各分支独立的参数记忆（切换分支不丢参数）；键为 variantId，值为该分支的 params */
+  paramsByVariant?: Record<string, Record<string, string | number>>;
+  /**
+   * 输入映射：图片入口 key（"nodeId.input"，与暴露参数 key 同构）→ 上游图 dataURL。
+   * 精确指定「哪张上游图进哪个入口」（深度图口 / 图生图口…）；未映射的入口走默认顺序分配（旧行为零回归）。
+   */
+  imageSlotMap?: Record<string, string>;
   results: string[];
   picked: number;
   /** 工作流的文本输出（ShowText 等节点），多段用空行分隔 */
@@ -515,6 +526,12 @@ export type CharCardData = {
   aspect?: string;
   resolution?: string;
   quality?: string;
+  /**
+   * 生成套件的参考图（dataURL 列表，与「分析用图」分离）：
+   * undefined = 默认用上游传入第一张图；[] = 明确不参考图；非空 = 用这些图（支持多张局部参考）。
+   * 分析（视觉提炼档案）始终用上游传入图，不受此字段影响。
+   */
+  genRefs?: string[];
 };
 
 /* ---------------- 电商长图设计 ---------------- */
@@ -632,7 +649,7 @@ export type PortType = "text" | "image" | "video" | "audio";
 /** asr = 语音识别（语音输入/通话模式用）；纯新增角色，旧配置里没有该键，加载时按未配置处理 */
 export type ModelRole = "chat" | "image" | "video" | "audio" | "asr";
 
-export type ChatProtocol = "openai" | "anthropic" | "gemini";
+export type ChatProtocol = "openai" | "anthropic" | "gemini" | "ollama" | "llamacpp";
 export type ImageProtocol = "openai" | "gemini";
 export type VideoProtocol = "zhipu" | "siliconflow" | "openai";
 export type AudioProtocol = "openai";
@@ -679,6 +696,75 @@ export type ModelCard = {
   size?: string;
 };
 
+/* ---------------- 本地 GGUF 模型（llama-server 后端） ---------------- */
+// 设计原则（§5）：
+//  - 独立于 ProviderCard，本地模型注册表存独立 JSON（local-gguf-models.json）
+//  - 运行期通过虚拟服务商（id 前缀 "local-gguf"）注入到 resolveModelCard，复用全链路
+//  - 协议 "llamacpp"：对话时由 ensureRunning 启动 llama-server，动态注入 baseUrl
+//  - 不复制/移动用户的 GGUF 文件，只保存路径
+
+/** GPU 层卸载策略：auto 让 llama-server 自行决定；正整数表示指定层数 */
+export type GpuLayers = "auto" | number;
+
+/** 推理模式：auto = 跟随模型默认；on = 强制输出 reasoning；off = 不输出 */
+export type ReasoningMode = "auto" | "on" | "off";
+
+/** 一个本地 GGUF 模型的完整注册项 */
+export type LocalGgufModel = {
+  /** 稳定唯一 ID（uid），也是虚拟服务商复合键的 model 段 */
+  id: string;
+  /** MOMO 中显示的名称（默认从文件名推断，可改） */
+  name: string;
+  /** GGUF 主权重文件的绝对路径 */
+  ggufPath: string;
+  /** 视觉投影文件（mmproj）的绝对路径；有则视为视觉模型 */
+  mmprojPath?: string;
+  /** 文件大小（字节，来自 fs.stat） */
+  sizeBytes?: number;
+  /** 量化标识（如 Q4_K_M，来自 analyzeGguf 文件名解析） */
+  quantization?: string;
+  /** 架构标识（如 qwen / llama，来自 analyzeGguf 文件名解析） */
+  architecture?: string;
+  /** 能力标记：vision 由 mmprojPath 是否存在决定，不靠模型名猜 */
+  capabilities: {
+    chat: true;
+    vision: boolean;
+    reasoning: boolean;
+  };
+  /** 推理后端，当前固定 llama-server */
+  runtime: "llama-server";
+  /** 上下文长度（默认 4096） */
+  contextSize: number;
+  /** GPU 卸载层数（默认 auto） */
+  gpuLayers: GpuLayers;
+  /** 推理模式（默认 auto） */
+  reasoningMode: ReasoningMode;
+  /** 上次使用的端口（优先复用，避免每次变端口） */
+  port?: number;
+  /** llama-server 可执行文件路径（记录上次成功用的路径；为空则用全局设置） */
+  executablePath?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** llama-server 运行期状态（来自 Rust get_local_llm_status） */
+export type LocalLlmStatus = {
+  modelId: string;
+  modelName: string;
+  running: boolean;
+  port?: number;
+  pid?: number;
+  startedAt?: number;
+};
+
+/** 本地 GGUF 引擎配置（llama-server 路径，一次性配置后所有本地模型复用） */
+export type LocalLlmCfg = {
+  /** llama-server 可执行文件路径；为空表示未配置（首次使用时引导用户选择） */
+  executablePath?: string;
+  /** 上次探测到的版本号（诊断展示用） */
+  version?: string;
+};
+
 export type ModelsCfg = {
   providers: ProviderCard[];
   /** 各角色默认模型，复合键「providerId::model」（旧数据可能只有 providerId，加载时会规整） */
@@ -704,6 +790,7 @@ export const PROTOCOLS: Record<ModelRole, { value: string; label: string }[]> = 
     { value: "openai", label: "OpenAI 兼容" },
     { value: "anthropic", label: "Anthropic Claude" },
     { value: "gemini", label: "Google Gemini" },
+    { value: "ollama", label: "Ollama 本地" },
   ],
   image: [
     { value: "openai", label: "OpenAI 兼容 (images API)" },
@@ -722,7 +809,14 @@ export const PROTOCOLS: Record<ModelRole, { value: string; label: string }[]> = 
 export type SearchProvider = "tavily" | "bocha" | "searxng" | "zhipu" | "langsearch" | "serper" | "jina";
 export type SearchCfg = { provider: SearchProvider; apiKey: string; baseUrl: string; maxResults: number };
 export type ImgFormat = "png" | "jpeg" | "webp";
-export type SaveCfg = { dir: string; format: ImgFormat; pattern: string; autoSave: boolean };
+export type SaveCfg = {
+  dir: string;
+  format: ImgFormat;
+  pattern: string;
+  autoSave: boolean;
+  /** PNG 保存时嵌入元信息（提示词/模型/seed/时间，iTXt 文本块，不重编码图像） */
+  embedMeta: boolean;
+};
 export type ComfyCfg = { host: string };
 export type ThemeName = "light" | "dark" | "black";
 
@@ -770,6 +864,7 @@ export type HotkeyAction =
   | "theme"
   | "newBoard"
   | "voiceCall"
+  | "director"
   // 下方工具坞：添加各类节点到视图中心（与 nodeCatalog 的条目一一对应）
   | "addImage"
   | "addVideo"
@@ -791,7 +886,8 @@ export type HotkeyAction =
   | "addStoryboard"
   | "addEnhanceLocal"
   | "addVectorize"
-  | "addEcomImage";
+  | "addEcomImage"
+  | "addDirector";
 
 export const HOTKEY_LABEL: Record<HotkeyAction, string> = {
   moveTool: "移动工具（激活/取消）",
@@ -815,6 +911,7 @@ export const HOTKEY_LABEL: Record<HotkeyAction, string> = {
   theme: "切换主题（云白 → 深空蓝 → 深邃黑）",
   newBoard: "新建画布",
   voiceCall: "语音通话（开始/挂断）",
+  director: "打开/关闭导演台",
   undo: "撤销",
   redo: "重做",
   duplicate: "创建副本",
@@ -840,6 +937,7 @@ export const HOTKEY_LABEL: Record<HotkeyAction, string> = {
   addCharCard: "添加节点：角色卡",
   addEcomImage: "添加节点：电商长图",
   addStoryboard: "添加节点：分镜",
+  addDirector: "添加节点：导演台",
   addEnhanceLocal: "添加节点：超清放大",
   addVectorize: "添加节点：智能矢量",
 };
@@ -874,28 +972,30 @@ export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   theme: "ctrl+shift+t",
   newBoard: "ctrl+shift+n",
   voiceCall: "ctrl+shift+v",
+  director: "ctrl+shift+d",
   // 工具坞按排列顺序对应 1~9、0，编辑/角色类用 Alt+数字
   addImage: "1",
-  addVideo: "",
-  addAudio: "",
-  addAudioGen: "",
-  addVideoDub: "",
+  addVideo: "6",
+  addAudio: "alt+1",
+  addAudioGen: "alt+0",
+  addVideoDub: "alt+v",
   addPrompt: "2",
   addStylePreset: "3",
   addNote: "4",
-  addChat: "5",
-  addLlmText: "7",
-  addCombine: "",
+  addChat: "",
+  addLlmText: "",
+  addCombine: "alt+c",
   addImageGen: "8",
   addVideoGen: "9",
   addComfy: "0",
   addRelight: "alt+2",
   addMultiAngle: "alt+3",
   addCharCard: "alt+4",
-  addEcomImage: "",
-  addStoryboard: "",
-  addEnhanceLocal: "",
-  addVectorize: "",
+  addEcomImage: "alt+6",
+  addStoryboard: "alt+7",
+  addDirector: "alt+5",
+  addEnhanceLocal: "alt+8",
+  addVectorize: "alt+9",
 };
 
 /* ---------------- 快捷方式（资产库侧边栏） ---------------- */
@@ -999,12 +1099,14 @@ export type Settings = {
   pricing: { overrides: Record<string, UnitPrice> };
   /** 本地超清放大引擎（DirectML 本地推理，非破坏） */
   enhance: EnhanceCfg;
+  /** 本地 GGUF 引擎配置（llama-server 路径，一次性配置） */
+  localLlm: LocalLlmCfg;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
   models: { providers: [], defaults: {} },
   search: { provider: "tavily", apiKey: "", baseUrl: "", maxResults: 5 },
-  save: { dir: "", format: "png", pattern: "{date}_{time}_{model}", autoSave: false },
+  save: { dir: "", format: "png", pattern: "{date}_{time}_{model}", autoSave: false, embedMeta: true },
   comfy: { host: "http://127.0.0.1:8188" },
   theme: "dark",
   gpuBoost: true,
@@ -1018,6 +1120,7 @@ export const DEFAULT_SETTINGS: Settings = {
   budget: { dailyCap: 0, perRunCap: 0, confirmOverCost: 0 },
   pricing: { overrides: {} },
   enhance: { defaultTarget: "4k", tileSize: 0, tileOverlap: 32 },
+  localLlm: {},
 };
 
 /** v1（单套配置）旧结构，用于迁移 */
@@ -1031,7 +1134,7 @@ export type LegacySettingsV1 = {
   theme?: ThemeName;
 };
 
-/* ---------------- ComfyUI 模板 ---------------- */
+/* ---------------- ComfyUI 模板（v2：支持子工作流分支） ---------------- */
 export type ComfyWfNode = {
   class_type: string;
   inputs: Record<string, unknown>;
@@ -1047,17 +1150,104 @@ export type ComfyExposedParam = {
   label: string;
   kind: ComfyParamKind;
   value: string | number | boolean;
+  /** combo 类型参数的可选项（来自 ComfyUI /object_info；有则渲染为下拉选择器，否则文本框） */
+  options?: string[];
+};
+
+/** 子工作流分支的语义色名（样式通过主题 token + color-mix 生成，不硬编码 rgba） */
+export type ComfyVariantColor = "blue" | "green" | "orange" | "purple" | "cyan" | "pink";
+
+/** 子工作流分支的输入/输出能力标识，供后续导演台配方与绑定向导使用 */
+export type ComfyCapability =
+  | "text-to-image"
+  | "image-to-image"
+  | "text-to-video"
+  | "image-to-video"
+  | "first-last-to-video"
+  | "reference-to-video"
+  | "video-to-video"
+  | "custom";
+
+/** 语义槽标识：首帧/尾帧/角色参考/提示词等，供后续语义绑定使用 */
+export type ComfySemantic =
+  | "prompt"
+  | "negativePrompt"
+  | "firstFrame"
+  | "lastFrame"
+  | "referenceImage"
+  | "referenceVideo"
+  | "referenceAudio"
+  | "layoutGuide"
+  | "poseGuide"
+  | "characterRef"
+  | "shotScale"
+  | "lighting"
+  | "controlVideo"
+  | "duration"
+  | "width"
+  | "height"
+  | "fps"
+  | "seed"
+  | "loraName"
+  | "loraStrength"
+  | "custom";
+
+/** 语义槽在 ComfyUI 工作流中的具体绑定位置 */
+export type ComfySlotBinding = {
+  nodeId: string;
+  input: string;
+  index?: number;
+};
+
+/** 一个语义槽的完整定义（属于具体 variant，不挂在整个模板上） */
+export type ComfySemanticSlot = {
+  id: string;
+  label: string;
+  semantic: ComfySemantic;
+  media: "text" | "image" | "video" | "audio" | "number" | "boolean";
+  required: boolean;
+  maxItems?: number;
+  bindings: ComfySlotBinding[];
+};
+
+/** 子工作流分支：一个工作流文件可拆成多个可命名、着色、独立运行的分支 */
+export type ComfyVariant = {
+  id: string;
+  name: string;
+  color: ComfyVariantColor;
+  /** 归属此分支的节点 id（其余节点不参与本分支提交） */
+  nodeIds: string[];
+  /** 本分支的输出节点 id（可多个） */
+  outputNodeIds: string[];
+  /** 被多个分支共享的节点 id（如模型加载节点） */
+  sharedNodeIds?: string[];
+  /** 本分支内仍需忽略的节点（沿用现有 pruneDisabled 安全逻辑） */
+  disabledNodes?: string[];
+  /** 本分支暴露的可调参数（与顶层 params 同构） */
+  params: ComfyExposedParam[];
+  /** 语义槽（首版为空数组，阶段 1+ 的绑定向导填充） */
+  slots?: ComfySemanticSlot[];
+  /** 分支能力标识（阶段 1+ 填充） */
+  capability?: ComfyCapability;
+  /** 语义槽校验时间戳（工作流指纹变化后失效） */
+  verifiedAt?: number;
+  /** 工作流结构指纹（用于检测工作流内容变化后让 verifiedAt 失效） */
+  fingerprint?: string;
 };
 
 export type ComfyTemplate = {
   id: string;
   name: string;
   workflow: Record<string, ComfyWfNode>;
+  /** v1 兼容字段：无 variants 时作为「默认分支」的参数来源 */
   params: ComfyExposedParam[];
+  /** v1 兼容字段：无 variants 时作为「默认分支」的输出节点 */
   outputNodeId?: string;
-  /** 被忽略的节点：运行时剔除，下游自动跨接到其上游 */
+  /** v1 兼容字段：被忽略的节点，运行时剔除，下游自动跨接到其上游 */
   disabledNodes?: string[];
   createdAt: number;
+  /** v2：子工作流分支。无此字段或空数组时，comfyStore 加载会生成一个 default 分支 */
+  variants?: ComfyVariant[];
 };
 
 /* ---------------- 画布模板（组/所选打包保存，可反复实例化） ---------------- */
@@ -1192,7 +1382,342 @@ export type AssetItem = {
   groupSlot?: string;
   /** 组卡封面优先级：电商最终长图为 true */
   groupCover?: boolean;
+  /** 导演台来源（可选，资产库可按导演项目/片段分组定位，方案 §8.3） */
+  director?: {
+    projectId: string;
+    sceneId?: string;
+    segmentId?: string;
+    takeId?: string;
+    role?: "firstFrame" | "lastFrame" | "reference" | "generated" | "export" | "previz" | "audio";
+  };
+  /** 内容指纹（导演台参考图去重用：同一 dataURL 反复同步只收录一次） */
+  contentHash?: string;
+  /** 收藏：资产库「收藏」筛选置顶展示 */
+  fav?: boolean;
+  /** 回收站时间戳：非空 = 在回收站里（删除不再直接删文件，等彻底清理） */
+  deletedAt?: number;
   createdAt: number;
 };
 
 export type AssetFolder = { id: string; name: string };
+
+/* ---------------- 导演台（Director）---------------- */
+//
+// 方案 §5 数据层级：Project → Scene → Segment → Shot → Take
+// 本轮（项目壳切片）只实现最小结构，后续切片逐步填充 scenes/segments/takes/recipes/timeline。
+// 节点 data 只保存项目引用（projectId），完整项目数据由 directorStore 独立持久化到 director-projects.json。
+
+/** 画布上的导演台节点 data（极简：只存项目引用 + 摘要字段） */
+export type DirectorData = {
+  status: RunStatus;
+  error?: string;
+  /** 关联的导演项目 id（directorStore 里的 DirectorProject.id） */
+  projectId?: string;
+  /** 当前成片地址（导出后写回，作为视频输出口的值） */
+  outputUrl?: string;
+  /** 成片封面 */
+  cover?: string;
+  /** 进度文案（如「生成中 3/8」） */
+  progress?: string;
+};
+
+/** 导演角色（人物连续性描述） */
+export type DirectorCharacter = {
+  id: string;
+  name: string;
+  /** 外观与服装说明（连续性约束） */
+  continuity: string;
+  /** 角色参考图资产 id（可选，从角色卡/资产库拖入） */
+  assetIds?: string[];
+};
+
+/** 镜头（片段内的景别/机位/剪辑变化，方案 §5） */
+export type DirectorShot = {
+  id: string;
+  startSec: number;
+  endSec: number;
+  /** 景别：大全景/全景/中景/近景/特写 */
+  shotSize: string;
+  /** 摄影机/运镜 */
+  camera: string;
+  /** 动作描述 */
+  action: string;
+  /** 音频提示（对白/音效/音乐） */
+  audio: string;
+};
+
+/** 生成片段（一次视频模型任务，方案 §5） */
+export type DirectorSegment = {
+  id: string;
+  sceneId: string;
+  durationSec: number;
+  summary: string;
+  /** 对白原文（逐句） */
+  dialogue: string[];
+  shots: DirectorShot[];
+  /** 承接上一段的连续性说明 */
+  continuityIn?: string;
+  /** 本段结束状态（供下一段继承） */
+  continuityOut?: string;
+  /** 对应的原文范围（字符起止，防 LLM 丢段） */
+  scriptRange?: [number, number];
+  /** 用户锁定的片段（重新拆分时不覆盖） */
+  locked?: boolean;
+  /** 该片段采用的 Take id（null = 未选片） */
+  approvedTakeId?: string | null;
+  /** 该片段的所有 Take（图片/视频版本） */
+  takes?: DirectorTake[];
+  /** 片段级素材槽（首帧/尾帧/角色参考/动作参考，覆盖项目全局槽） */
+  slots?: DirectorSlotValue[];
+  /** 片段级生成配方 id（覆盖项目默认） */
+  recipeId?: string;
+  /** 片段级提示词覆盖 */
+  promptOverride?: string;
+};
+
+/** 场景（同一地点/时间/戏剧事件，方案 §5） */
+export type DirectorScene = {
+  id: string;
+  location: string;
+  segments: DirectorSegment[];
+  /** 场景级连续性规则（光线/色调/环境音） */
+  continuityRule?: string;
+};
+
+/** 素材槽值（方案 §7.7） */
+export type DirectorSlotValue = {
+  semantic: ComfySemantic;
+  /** 绑定的资产 id 列表（多参考时有序） */
+  assetIds: string[];
+};
+
+/** 生成配方（方案 §7.5 / §20.1） */
+export type DirectorRecipe = {
+  id: string;
+  name: string;
+  engine: "comfy" | "provider";
+  output: "image" | "video";
+  mode: "t2i" | "i2i" | "t2v" | "i2v" | "fl2v" | "r2v" | "v2v";
+  /** ComfyUI 配方：模板 + 子分支 */
+  templateId?: string;
+  variantId?: string;
+  /** 远程配方：服务商模型复合键 */
+  providerModelKey?: string;
+  /** 能力快照（切换配方时检查兼容性） */
+  capabilitySnapshot?: {
+    maxDurationSec?: number;
+    durations?: number[];
+    aspects?: string[];
+    resolutions?: string[];
+    firstFrame: boolean;
+    lastFrame: boolean;
+    referenceImages: number;
+    referenceVideos: number;
+    referenceAudio: number;
+    nativeAudio: boolean;
+  };
+  defaultParams: Record<string, string | number | boolean>;
+};
+
+/** 版本快照（方案 §7.9，不可变） */
+export type DirectorTake = {
+  id: string;
+  segmentId: string;
+  kind: "image" | "video";
+  target: "storyboard" | "firstFrame" | "lastFrame" | "clip";
+  status: "queued" | "running" | "done" | "error" | "cancelled";
+  assetId?: string;
+  error?: string;
+  promptSnapshot: string;
+  recipeSnapshot?: DirectorRecipe;
+  slotSnapshot?: DirectorSlotValue[];
+  paramSnapshot?: Record<string, unknown>;
+  workflowFingerprint?: string;
+  createdAt: number;
+  /** 是否标记采用（进入时间线） */
+  approved?: boolean;
+  /** 星标/备注 */
+  starred?: boolean;
+  note?: string;
+  /** 派生来源：本 Take 是从哪个原始 Take 经后处理派生而来（派生链，方案 §20.5） */
+  derivedFrom?: { takeId: string; postRecipeId: string; postRecipeName: string };
+  /** 生成时实际执行的 Skill 栈快照（方案 §17.4：结果可追溯用的是哪个版本规则） */
+  skillSnapshots?: SkillRunSnapshot[];
+};
+
+/** 全局/场景/片段规则（方案 §20.4） */
+export type DirectorRuleSet = {
+  name: string;
+  positive: {
+    style?: string;
+    visualTone?: string;
+    lighting?: string;
+    cameraLanguage?: string;
+    sceneContinuity?: string;
+    promptPrefix?: string;
+    promptSuffix?: string;
+  };
+  negative: {
+    noSubtitles?: boolean;
+    noWatermark?: boolean;
+    noBackgroundMusic?: boolean;
+    noDialogue?: boolean;
+    noText?: boolean;
+    extra?: string[];
+  };
+  generation: {
+    aspect?: string;
+    resolution?: string;
+    fps?: number;
+    nativeAudio?: boolean;
+  };
+};
+
+/** 时间线条目（采用版本顺序，方案 §7.10） */
+export type DirectorTimelineEntry = {
+  segmentId: string;
+  takeId: string;
+  /** 实际时长（秒，来自采用 Take） */
+  durationSec: number;
+  /** 入点/出点（可选裁切，默认整段） */
+  inSec?: number;
+  outSec?: number;
+};
+
+/** 后处理配方（方案 §20.5）：放大/补帧/修复分支 */
+export type DirectorPostRecipe = {
+  id: string;
+  name: string;
+  kind: "upscale-image" | "upscale-video" | "interpolate" | "denoise" | "restore" | "custom";
+  templateId: string;
+  variantId: string;
+  inputKind: "image" | "video";
+  outputKind: "image" | "video";
+  defaultParams: Record<string, unknown>;
+};
+
+/** 音频绑定类型（方案 §23.5） */
+export type DirectorAudioKind = "dialogue" | "narration" | "sfx" | "ambient" | "music";
+
+/** 音频绑定（绑定到镜头/场景/剧情事件，方案 §23.5） */
+export type DirectorAudioTrack = {
+  id: string;
+  kind: DirectorAudioKind;
+  /** 绑定的片段 id（dialogue/narration/sfx）；ambient/music 绑定场景，可为空 */
+  segmentId?: string;
+  /** 绑定的场景 id（ambient/music） */
+  sceneId?: string;
+  /** 文本内容（对白/旁白/音效描述） */
+  text: string;
+  /** 音色（TTS voice） */
+  voice?: string;
+  /** 语速（TTS speed） */
+  speed?: number;
+  /** 情绪/语气标注 */
+  emotion?: string;
+  /** 生成的音频资产 id */
+  assetId?: string;
+  /** 多版本（同一句台词的多个 Take） */
+  takes?: Array<{ id: string; assetId?: string; note?: string }>;
+  /** 采用的版本 id */
+  approvedTakeId?: string;
+};
+
+/** 导演项目（保存在 directorStore，不进画布 node.data） */
+export type DirectorProject = {
+  id: string;
+  /** 关联的画布节点 id（删除节点时用于定位项目） */
+  nodeId: string;
+  /** 关联的画布 id（切换画布后结果仍写回正确位置） */
+  boardId: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  /** 目标成片时长（秒） */
+  targetDurationSec: number;
+  /** 画幅，如 "16:9" */
+  aspect: string;
+  /** 剧本/故事文本 */
+  script: string;
+  /** 剧本导入设置（方案 §20.2） */
+  scriptImport?: {
+    format: "text" | "markdown" | "json";
+    mode: "strict" | "preserve-and-split" | "advisory";
+    /** 自定义分段标记：行内含此文本即在该行处切段 */
+    delimiter?: string;
+    /** 自定义分场标记：行内含此文本即在该行处切场（分层：场 → 片段） */
+    sceneDelimiter?: string;
+  };
+  characters: DirectorCharacter[];
+  scenes: DirectorScene[];
+  recipes: DirectorRecipe[];
+  /** 项目全局素材槽（所有片段继承） */
+  globalSlots: DirectorSlotValue[];
+  /** 手动排除的上游参考图资产 id（不再自动同步进槽位） */
+  refExcluded?: string[];
+  /** 参考图接入点记忆：资产 id → 上次配置的语义（上游断开重连后恢复原接入点，不回落默认参考图） */
+  refSemMemory?: Record<string, ComfySemantic>;
+  /** 项目级规则 */
+  ruleSet?: DirectorRuleSet;
+  /** 时间线（采用版本顺序） */
+  timeline: DirectorTimelineEntry[];
+  /** 音频轨道（对白/旁白/音效/环境音/音乐，方案 §23.5） */
+  audioTracks?: DirectorAudioTrack[];
+  /** 提示词配方库（范例拆解保存的结果，随项目持久化，方案 §23.3） */
+  promptRecipes?: Array<{
+    id: string;
+    name: string;
+    category: string;
+    breakdown: {
+      subject: string;
+      scene: string;
+      action: string;
+      shotSize: string;
+      camera: string;
+      lighting: string;
+      style: string;
+      negative: string[];
+      modelSpecific: string;
+      original: string;
+    };
+    createdAt: number;
+  }>;
+  /** 导出的成片资产 id */
+  exportAssetId?: string;
+  /** 3D 站位实体（持久化，方案 §23.7） */
+  threedEntities?: PrevizEntity[];
+  /** 项目级 Skill 绑定（作用于所有 Segment，方案 §17.8） */
+  skillBindings?: Array<{
+    skillId: string;
+    enabled: boolean;
+    values: Record<string, string | number | boolean>;
+  }>;
+  schemaVersion: 1;
+};
+
+/** 3D 站位实体（角色/相机/光源/道具；x/y 为旧版俯视图 0-100 百分比坐标，3D 字段全部可选） */
+export type PrevizEntity = {
+  id: string;
+  kind: "character" | "camera" | "light" | "prop";
+  name: string;
+  /** 旧版 2D 俯视图坐标（0-100 百分比）；3D 页缺失 pos 时据此推导初始位置 */
+  x: number;
+  y: number;
+  /** 朝向角度 0-360（0 = 向上/远方）；缺失 rotDeg 时作为初始偏航角 */
+  angle: number;
+  color: string;
+  /** 体型/外形预设：male/female/strong/slim/teen/child/wide/chibi/crowd33/box/sphere/… */
+  preset?: string;
+  /** 3D 位置（米，地面 y=0） */
+  pos?: [number, number, number];
+  /** 3D 旋转（度） */
+  rotDeg?: [number, number, number];
+  /** 3D 三轴缩放 */
+  scale3?: [number, number, number];
+  /** 人偶关节姿势：关节名 → 欧拉角（度），仅 character 有效 */
+  pose?: Record<string, [number, number, number]>;
+  /** 光源强度（仅 kind=light） */
+  intensity?: number;
+  /** 本地上传模型的资产路径（GLB/GLTF，经资产库落盘；blob URL 不持久化） */
+  modelAssetPath?: string;
+};

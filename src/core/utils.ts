@@ -195,6 +195,16 @@ export function errMsg(e: unknown): string {
   return String(e);
 }
 
+/**
+ * dataURL 的廉价内容指纹（非加密，仅用于资产去重）。
+ * 取 头/中/尾 三段 + 长度：只看头尾会在「同尺寸同格式」图片间撞车
+ * （base64 前缀与文件头相同、末尾 padding 相同），中段必含像素数据。
+ */
+export function hashDataUrl(src: string): string {
+  const mid = Math.floor(src.length / 2);
+  return `${src.length}:${src.slice(0, 40)}:${src.slice(mid, mid + 40)}:${src.slice(-40)}`;
+}
+
 /** 宽容解析模型返回的 JSON：先剥掉推理模型的 <think> 思考块（里面的 { 会让 JSON 提取错位），
  *  再去代码块围栏，截取首个 { 到最后一个 }。失败返回 null。 */
 export function parseJsonLoose<T>(text: string): T | null {

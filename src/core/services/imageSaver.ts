@@ -1,11 +1,98 @@
 /**
  * 图片/视频保存服务 — 依据「设置 → 图片保存」写入磁盘
+ * PNG 保存可选嵌入元信息（提示词/模型/seed/时间）到 iTXt 文本块，纯字节操作不重编码图像。
  */
 import type { SaveCfg } from "../types";
 import { buildFilename, convertImage, dataUrlToBytes, imageSizeMeta, isTauri, toDataUrl, type FilenameMeta } from "../utils";
 import { xfetch } from "./http";
 
 export type SaveMeta = { prompt?: string; model?: string; seed?: string | number };
+
+/* ---------------- PNG 元信息（iTXt 文本块） ---------------- */
+
+/** CRC32（PNG chunk 校验用，标准多项式 0xEDB88320） */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes: Uint8Array, from: number, len: number): number {
+  let c = 0xffffffff;
+  for (let i = from; i < from + len; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/**
+ * 把元信息（时间/提示词/模型/seed）嵌进 PNG 字节流的 iTXt 文本块（插在第一个 IDAT 之前）。
+ * iTXt 支持 UTF-8（中文提示词不损坏）；纯字节操作不重编码图像数据，画质零损失、体积增量可忽略。
+ * 非 PNG 或结构异常 → 原样返回（静默降级，不阻塞保存）。
+ */
+export function embedPngMeta(png: Uint8Array, meta: SaveMeta): Uint8Array {
+  const SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (png.length < 40) return png;
+  for (let i = 0; i < 8; i++) if (png[i] !== SIG[i]) return png;
+  // 定位第一个 IDAT：8 字节签名后依次 chunk（len[4] type[4] data[len] crc[4]）
+  let idatAt = -1;
+  let off = 8;
+  while (off + 8 <= png.length) {
+    const len = new DataView(png.buffer, png.byteOffset + off, 4).getUint32(0, false);
+    const type = String.fromCharCode(png[off + 4], png[off + 5], png[off + 6], png[off + 7]);
+    if (type === "IDAT") {
+      idatAt = off;
+      break;
+    }
+    off += 12 + len;
+  }
+  if (idatAt < 0) return png;
+
+  const te = new TextEncoder();
+  const fields: [string, string][] = [["momo-time", String(Date.now())]];
+  if (meta.prompt) fields.push(["momo-prompt", meta.prompt]);
+  if (meta.model) fields.push(["momo-model", meta.model]);
+  if (meta.seed !== undefined && meta.seed !== "") fields.push(["momo-seed", String(meta.seed)]);
+
+  const chunks: Uint8Array[] = [];
+  for (const [kw, text] of fields) {
+    const kwB = te.encode(kw);
+    const txtB = te.encode(text);
+    // iTXt：keyword\0 + compressionFlag(1) + compressionMethod(1) + languageTag\0 + translatedKeyword\0 + text
+    const data = new Uint8Array(kwB.length + 5 + txtB.length);
+    let p = 0;
+    data.set(kwB, p);
+    p += kwB.length;
+    data[p++] = 0; // keyword 结束符
+    data[p++] = 0; // compressionFlag（不压缩）
+    data[p++] = 0; // compressionMethod
+    data[p++] = 0; // languageTag 空串
+    data[p++] = 0; // translatedKeyword 空串
+    data.set(txtB, p);
+    const chunk = new Uint8Array(12 + data.length);
+    new DataView(chunk.buffer).setUint32(0, data.length, false);
+    chunk[4] = 0x69; // 'i'
+    chunk[5] = 0x54; // 'T'
+    chunk[6] = 0x58; // 'X'
+    chunk[7] = 0x74; // 't'
+    chunk.set(data, 8);
+    new DataView(chunk.buffer).setUint32(8 + data.length, crc32(chunk, 4, 4 + data.length), false);
+    chunks.push(chunk);
+  }
+
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(png.length + total);
+  out.set(png.subarray(0, idatAt), 0);
+  let q = idatAt;
+  for (const c of chunks) {
+    out.set(c, q);
+    q += c.length;
+  }
+  out.set(png.subarray(idatAt), q);
+  return out;
+}
 
 async function ensureDataUrl(src: string): Promise<string> {
   return toDataUrl(src, (u, i) => xfetch(u as string, i));
@@ -33,7 +120,8 @@ export async function autoSaveImage(src: string, cfg: SaveCfg, meta: SaveMeta = 
       path = `${cfg.dir}\\${buildFilename(cfg.pattern, full)}_${i}.${ext}`;
     }
   }
-  await writeFile(path, dataUrlToBytes(dataUrl));
+  const raw = dataUrlToBytes(dataUrl);
+  await writeFile(path, cfg.format === "png" && cfg.embedMeta ? embedPngMeta(raw, meta) : raw);
   return path;
 }
 
@@ -58,7 +146,8 @@ export async function saveImageAs(src: string, cfg: SaveCfg, meta: SaveMeta = {}
   const fmt = target === "jpg" || target === "jpeg" ? "jpeg" : target === "webp" ? "webp" : "png";
   const dataUrl = await convertImage(await ensureDataUrl(src), fmt);
   const { writeFile } = await import("@tauri-apps/plugin-fs");
-  await writeFile(path, dataUrlToBytes(dataUrl));
+  const raw = dataUrlToBytes(dataUrl);
+  await writeFile(path, fmt === "png" && cfg.embedMeta ? embedPngMeta(raw, meta) : raw);
   return path;
 }
 

@@ -7,8 +7,13 @@ import { PopLayer } from "./PopSelect";
 import { PROMPT_AI_OPS, runPromptAiOp } from "./PromptAiTools";
 import { usePromptHist } from "../core/stores/promptHistStore";
 import { isCaptionOp } from "../core/runner";
-import { IcHistory, IcLoading, IcSparkles, IcTrash } from "./icons";
+import { skillsForContext } from "../core/stores/skillStore";
+import { runSkill, defaultSkillValues } from "../core/skillEngine";
+import { toast } from "../core/stores/uiStore";
+import { errMsg } from "../core/utils";
+import { IcHistory, IcLoading, IcSparkles, IcTrash, IcWand } from "./icons";
 import type { LlmTextOp } from "../core/types";
+import type { MomoSkill } from "../core/skillTypes";
 
 export function PromptToolsBtn({
   value,
@@ -22,12 +27,18 @@ export function PromptToolsBtn({
   onApply: (t: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [view, setView] = useState<"main" | "custom">("main");
+  const [view, setView] = useState<"main" | "custom" | "skill">("main");
   const [custom, setCustom] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [kw, setKw] = useState("");
+  const [activeSkill, setActiveSkill] = useState<MomoSkill | null>(null);
+  const [skillVals, setSkillVals] = useState<Record<string, string | number | boolean>>({});
   const wrapRef = useRef<HTMLDivElement>(null);
   const items = usePromptHist((s) => s.items);
+  const availableSkills = [
+    ...skillsForContext("prompt.text"),
+    ...(image ? skillsForContext("prompt.image") : []),
+  ].filter((s, i, arr) => arr.findIndex((x) => x.id === s.id) === i);
 
   useEffect(() => {
     void usePromptHist.getState().init();
@@ -36,6 +47,7 @@ export function PromptToolsBtn({
   const close = () => {
     setOpen(false);
     setView("main");
+    setActiveSkill(null);
   };
 
   const run = async (op: LlmTextOp) => {
@@ -49,6 +61,34 @@ export function PromptToolsBtn({
     } finally {
       setBusy(null);
     }
+  };
+
+  const runActiveSkill = async () => {
+    if (!activeSkill) return;
+    setBusy("skill:" + activeSkill.id);
+    try {
+      if (!value.trim() && !image) {
+        toast("先写点内容或接入图片，再让 Skill 处理", "err");
+        return;
+      }
+      const out = await runSkill(activeSkill, skillVals, value, image);
+      if (out && out.trim()) {
+        onApply(out);
+        close();
+      } else {
+        toast("Skill 返回空结果，未替换文本", "err");
+      }
+    } catch (e) {
+      toast(errMsg(e), "err");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const pickSkill = (s: MomoSkill) => {
+    setActiveSkill(s);
+    setSkillVals(defaultSkillValues(s));
+    setView("skill");
   };
 
   const hist = items
@@ -89,6 +129,19 @@ export function PromptToolsBtn({
                   );
                 })}
               </div>
+              {availableSkills.length ? (
+                <>
+                  <div className="pa-skill-title"><IcWand size={13} /> Skill</div>
+                  {availableSkills.map((s) => (
+                    <button key={s.id} className="pop-item" disabled={!!busy} onClick={() => pickSkill(s)}>
+                      <span className="pi-text">
+                        <span className="pi-label">{s.name}</span>
+                        <span className="pi-desc">{s.description || s.instructions.slice(0, 40) + "…"}</span>
+                      </span>
+                    </button>
+                  ))}
+                </>
+              ) : null}
               <div className="pop-title pt-hist-title">
                 <IcHistory size={13} /> 历史
                 {items.some((i) => !i.pin) ? (
@@ -126,6 +179,37 @@ export function PromptToolsBtn({
                 )}
               </div>
             </>
+          ) : view === "skill" && activeSkill ? (
+            <div className="pa-custom">
+              <div className="pop-title">{activeSkill.name}</div>
+              <div className="sec-desc" style={{ marginBottom: 8, fontSize: 12 }}>{activeSkill.description}</div>
+              {activeSkill.variables.length ? (
+                <div className="pa-skill-vars nodrag nowheel">
+                  {activeSkill.variables.map((v) => (
+                    <div key={v.key} className="pa-skill-var">
+                      <label className="pi-desc" style={{ fontWeight: 500 }}>{v.label}</label>
+                      {v.type === "select" ? (
+                        <select className="input sm nodrag" value={String(skillVals[v.key] ?? v.default ?? "")} onChange={(e) => setSkillVals((m) => ({ ...m, [v.key]: e.target.value }))}>
+                          {(v.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      ) : v.type === "boolean" ? (
+                        <input type="checkbox" className="nodrag" checked={!!skillVals[v.key]} onChange={(e) => setSkillVals((m) => ({ ...m, [v.key]: e.target.checked }))} />
+                      ) : (
+                        <input className="input sm nodrag" type={v.type === "number" ? "number" : "text"} value={String(skillVals[v.key] ?? v.default ?? "")} placeholder={v.hint} onChange={(e) => setSkillVals((m) => ({ ...m, [v.key]: v.type === "number" ? Number(e.target.value) : e.target.value }))} />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="sec-desc" style={{ fontSize: 12, marginBottom: 8, maxHeight: 120, overflow: "auto", whiteSpace: "pre-wrap" }}>{activeSkill.instructions.slice(0, 200)}…</div>
+              )}
+              <div className="pa-custom-foot">
+                <button className="btn sm" onClick={() => setView("main")}>返回</button>
+                <button className="btn sm primary" disabled={!!busy} onClick={() => void runActiveSkill()}>
+                  {busy ? <IcLoading size={14} /> : <IcWand size={14} />} 执行并替换
+                </button>
+              </div>
+            </div>
           ) : (
             <div className="pa-custom">
               <div className="pop-title">自定义指令</div>

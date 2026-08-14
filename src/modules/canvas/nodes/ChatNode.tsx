@@ -30,10 +30,11 @@ export const ChatNode = memo(function ChatNode({ id, data, selected }: NodeProps
       selected={selected}
       width={390}
       headExtra={
-        <span className="acts nodrag" style={{ opacity: 1 }}>
+        <span className="acts nodrag">
           <button
             className={`icon-btn ${d.webSearch ? "on" : ""}`}
             title={d.webSearch ? "联网搜索：开" : "联网搜索：关"}
+            aria-label={d.webSearch ? "联网搜索：开" : "联网搜索：关"}
             onClick={() => upd(id, { webSearch: !d.webSearch })}
           >
             <IcGlobe size={17} />
@@ -41,6 +42,7 @@ export const ChatNode = memo(function ChatNode({ id, data, selected }: NodeProps
           <button
             className={`icon-btn ${d.showThinking ? "on" : ""}`}
             title={d.showThinking ? "显示思考过程：开" : "显示思考过程：关"}
+            aria-label={d.showThinking ? "显示思考过程：开" : "显示思考过程：关"}
             onClick={() => upd(id, { showThinking: !d.showThinking })}
           >
             <IcBrain size={17} />
@@ -48,6 +50,7 @@ export const ChatNode = memo(function ChatNode({ id, data, selected }: NodeProps
           <button
             className="icon-btn"
             title="清空对话"
+            aria-label="清空对话"
             onClick={() => upd(id, { messages: [], status: "idle", error: undefined })}
           >
             <IcTrash size={17} />
@@ -76,7 +79,7 @@ export const ChatNode = memo(function ChatNode({ id, data, selected }: NodeProps
               }
             }}
           />
-          <button className="send-btn" disabled={running || !d.draft.trim()} onClick={() => void sendChat(id)}>
+          <button className="send-btn" title="发送" aria-label="发送" disabled={running || !d.draft.trim()} onClick={() => void sendChat(id)}>
             {running ? <IcLoading size={18} /> : <IcSend size={18} />}
           </button>
         </div>
@@ -113,7 +116,19 @@ function MsgView({ m, showThinking }: { m: ChatData["messages"][number]; showThi
       {m.sources?.length ? (
         <div className="src-chips">
           {m.sources.map((s, i) => (
-            <a key={i} title={s.title} onClick={() => void openExternal(s.url)}>
+            <a
+              key={i}
+              title={s.title}
+              role="button"
+              tabIndex={0}
+              onClick={() => void openExternal(s.url)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void openExternal(s.url);
+                }
+              }}
+            >
               [{i + 1}] {s.title}
             </a>
           ))}

@@ -14,7 +14,8 @@ import { loadJSON, loadJSONChecked, saveJSON } from "../persist";
 import { externalizeBoards, gcBlobs, hydrateBoards } from "../blobStore";
 import { STYLE_CATEGORIES } from "../stylePresets";
 import { useUi } from "./uiStore";
-import { genPrefFor } from "./genPrefStore";
+import { genPrefFor, useGenPref } from "./genPrefStore";
+import { useDirector } from "./directorStore";
 
 /** 拖动吸附对齐的阈值（flow 坐标 px） */
 const ALIGN_SNAP = 6;
@@ -83,6 +84,8 @@ export function defaultData(kind: NodeKind): Record<string, unknown> {
         userRefs: [],
         slides: [],
       };
+    case "director":
+      return { status: "idle" };
   }
 }
 
@@ -124,6 +127,9 @@ export function outPortType(kind: NodeKind, data?: Record<string, unknown>): Por
     case "note":
     case "group": // 组有 out-text / out-image 两个出口，走专门逻辑
       return null;
+    case "director":
+      // 有成片输出时是视频口；尚未导出时不向下游传值（返回 null）
+      return data?.outputUrl ? "video" : null;
   }
 }
 
@@ -151,6 +157,7 @@ export const NODE_INPUTS: Record<NodeKind, { text?: boolean; image?: boolean; vi
   storyboard: { text: true, image: true },
   enhanceLocal: { image: true },
   vectorize: { image: true },
+  director: { text: true, image: true, video: true, audio: true },
 };
 
 /** 成组自动排布时的类别顺序：输入 → 智能处理 → 生成 → 备注 */
@@ -177,6 +184,7 @@ const KIND_RANK: Record<NodeKind, number> = {
   comfy: 12,
   note: 13,
   group: 14,
+  director: 15,
 };
 function kindRank(kind: NodeKind): number {
   return KIND_RANK[kind] ?? 99;
@@ -205,6 +213,7 @@ export const NODE_LABEL: Record<NodeKind, string> = {
   storyboard: "分镜",
   enhanceLocal: "超清放大",
   vectorize: "智能矢量",
+  director: "导演台",
 };
 
 type BoardRecord = { meta: BoardMeta; nodes: AppNode[]; edges: Edge[] };
@@ -266,6 +275,8 @@ type BoardState = {
   ungroupSelected: () => void;
   snapshot: () => void;
   undo: () => void;
+  /** 导演台 undo/redo 恢复：把快照里 director 节点的项目从归档移回 */
+  restoreDirectorProjects: (nodes: AppNode[]) => void;
   redo: () => void;
   /** 一键清空当前画布（全部节点与连线；入撤销历史，Ctrl+Z 可整体恢复） */
   clearAll: () => void;
@@ -609,6 +620,27 @@ export const useBoard = create<BoardState>((set, get) => {
     set({ canUndo: false, canRedo: false });
   };
 
+  /**
+   * 快照瘦身：清掉一份快照里的媒体大字段（results/src/视频等 dataURL）。
+   * 撤销历史占内存的大头是图片；undo 回 30 步以内图片完整，更早的步骤结构与文本参数仍在。
+   * 只替换该快照数组内的节点对象，不影响其它快照/当前画布共享的原对象。
+   */
+  const stripMedia = (snap: { nodes: AppNode[]; edges: Edge[] }) => {
+    snap.nodes = snap.nodes.map((n) => {
+      const d = n.data as Record<string, unknown> | undefined;
+      if (!d) return n;
+      let changed = false;
+      const nd: Record<string, unknown> = { ...d };
+      for (const k of ["results", "src", "textOut", "videoResults"]) {
+        if (k in nd) {
+          nd[k] = undefined;
+          changed = true;
+        }
+      }
+      return changed ? { ...n, data: nd } : n;
+    });
+  };
+
   const snapshot = () => {
     // 同一动作可能触发多个变更回调（如删节点连带删边），300ms 内合并为一步
     const now = Date.now();
@@ -616,6 +648,7 @@ export const useBoard = create<BoardState>((set, get) => {
     lastSnapAt = now;
     past.push({ nodes: get().nodes, edges: get().edges });
     if (past.length > 60) past.shift();
+    if (past.length > 30) stripMedia(past[0]);
     future = [];
     set({ canUndo: true, canRedo: false });
   };
@@ -627,6 +660,7 @@ export const useBoard = create<BoardState>((set, get) => {
     lastSoftSnapAt = now;
     past.push({ nodes: get().nodes, edges: get().edges });
     if (past.length > 60) past.shift();
+    if (past.length > 30) stripMedia(past[0]);
     future = [];
     set({ canUndo: true, canRedo: false });
   };
@@ -726,11 +760,35 @@ export const useBoard = create<BoardState>((set, get) => {
       persist();
     },
 
+    // 导演台 undo/redo 恢复：快照里存在的 director 节点，其项目可能因删除时归档了，需移回
+    // 同时，快照里不存在但当前画布上的 director 节点被删了，其项目应归档（redo 删除场景）
+    // 为简单起见：只处理「快照里有但归档里也有」的情况（移回 projects）
+    // （redo 的反向场景由 removeNode 的 archive 触发，不再重复）
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    restoreDirectorProjects: (nodes) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const directorIds = (nodes as any[])
+        .filter((n) => n.type === "director")
+        .map((n) => (n.data as import("../types").DirectorData).projectId)
+        .filter(Boolean) as string[];
+      if (!directorIds.length) return;
+      const s = useDirector.getState();
+      const toRestore = s.archived.filter((p) => directorIds.includes(p.id));
+      if (toRestore.length) {
+        const archived = s.archived.filter((p) => !directorIds.includes(p.id));
+        const projects = [...toRestore, ...s.projects];
+        useDirector.setState({ archived, projects });
+        void saveJSON("director-projects.json", "v1", { projects, archived, schemaVersion: 1 });
+      }
+    },
+
     undo: () => {
       const snap = past.pop();
       if (!snap) return;
       future.push({ nodes: get().nodes, edges: get().edges });
       set({ nodes: snap.nodes, edges: snap.edges, canUndo: past.length > 0, canRedo: true });
+      // 导演台 undo 恢复：被删的 director 节点回来了，把项目从归档移回
+      get().restoreDirectorProjects(snap.nodes);
       persist();
     },
 
@@ -739,6 +797,7 @@ export const useBoard = create<BoardState>((set, get) => {
       if (!snap) return;
       past.push({ nodes: get().nodes, edges: get().edges });
       set({ nodes: snap.nodes, edges: snap.edges, canUndo: true, canRedo: future.length > 0 });
+      get().restoreDirectorProjects(snap.nodes);
       persist();
     },
 
@@ -1081,7 +1140,7 @@ export const useBoard = create<BoardState>((set, get) => {
         id,
         type: kind,
         position: pos,
-        // 生成类节点：用上次面板调过的参数落地（比例/分辨率/数量/并行等记忆）
+        // 全节点参数记忆：用上次同类节点的配置落地（角色卡勾选/便签颜色/打光角度/生成参数等）
         data: { ...defaultData(kind), ...genPrefFor(kind), ...(init ?? {}) },
         selected: false,
       };
@@ -1105,7 +1164,8 @@ export const useBoard = create<BoardState>((set, get) => {
         id,
         type: kind,
         position: { x: absX + w + 140, y: absY },
-        data: { ...defaultData(kind) },
+        // 与 addNode 一致：编辑链节点（打光/矢量/超清…）也用上次参数落地
+        data: { ...defaultData(kind), ...genPrefFor(kind) },
         selected: true,
       };
       set({
@@ -1141,6 +1201,12 @@ export const useBoard = create<BoardState>((set, get) => {
         return d;
       };
       const s = get();
+      // 配置记忆：用户主动修改（非 runner 结果写回）时按节点类型记「上次设置」，
+      // 新建同类节点由 addNode 的 genPrefFor(kind) 落地；内容/运行态字段在 remember 内过滤
+      if (opts?.result !== true) {
+        const kind = s.nodes.find((n) => n.id === id)?.type as NodeKind | undefined;
+        if (kind) useGenPref.getState().remember(kind, patch, defaultData(kind));
+      }
       if (s.nodes.some((n) => n.id === id)) {
         set({ nodes: s.nodes.map((n) => (n.id === id ? { ...n, data: merge(n.data as Record<string, unknown>) } : n)) });
         persist();
@@ -1180,6 +1246,13 @@ export const useBoard = create<BoardState>((set, get) => {
               }
             : n,
         );
+      }
+      // 导演台节点删除时归档项目（同步调用，避免 undo 竞态，P2-8 修复）
+      if (target?.type === "director") {
+        const d = target.data as import("../types").DirectorData;
+        if (d.projectId) {
+          useDirector.getState().archiveProject(d.projectId);
+        }
       }
       set({
         nodes: nodes.filter((n) => n.id !== id),
@@ -1223,6 +1296,12 @@ export const useBoard = create<BoardState>((set, get) => {
         delete d.inputSig;
         delete d.rev;
         delete d.fallbackModel;
+        // 导演台副本清空 projectId，让 DirectorNode 的 effect 自动建新项目（避免两节点共用一个项目）
+        if (n.type === "director") {
+          delete d.projectId;
+          delete d.outputUrl;
+          delete d.cover;
+        }
         const keepParent = n.parentId && map.has(n.parentId);
         // 组成员单独被复制（组没跟着复制）→ 转绝对坐标落到组外，避免位置错乱
         const parent = n.parentId ? s.nodes.find((x) => x.id === n.parentId) : undefined;

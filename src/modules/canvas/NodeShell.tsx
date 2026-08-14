@@ -53,7 +53,7 @@ function UpstreamPopover({ id, onClose }: { id: string; onClose: () => void }) {
       <div className="up-pop-head">
         <b>上游传入组合</b>
         <span title="按上游节点位置排序（上→下），拖动节点可调整顺序">按位置上→下排序</span>
-        <button className="icon-btn" title="关闭" onClick={onClose}>
+        <button className="icon-btn" title="关闭" aria-label="关闭" onClick={onClose}>
           <IcClose size={14} />
         </button>
       </div>
@@ -188,8 +188,9 @@ export function NodeShell({  id,
       <div className="mnode-head">
         <span className="kind-ic">{icon}</span>
         <span className="title">{title}</span>
-        <DirtyBadge id={id} />
       </div>
+      {/* 脏标记角标必须作 .mnode 直接子元素：.mnode-head 悬停/选中时整体 opacity:0，放里面会跟着消失 */}
+      <DirtyBadge id={id} />
       <div className="mnode-toolbar nodrag nowheel">
         {editing ? (
           <NodeEditMenu id={id} />
@@ -203,14 +204,15 @@ export function NodeShell({  id,
             <button
               className={`icon-btn ${ignored ? "on-warn" : ""}`}
               title={ignored ? "恢复此节点（重新向下游传递）" : "忽略此节点（半透明，不向下游传递）"}
+              aria-label={ignored ? "恢复此节点（重新向下游传递）" : "忽略此节点（半透明，不向下游传递）"}
               onClick={() => updateData(id, { ignored: !ignored })}
             >
               <IcEyeOff size={15} />
             </button>
-            <button className="icon-btn" title="创建副本 (Ctrl+D)" onClick={() => duplicateNode(id)}>
+            <button className="icon-btn" title="创建副本 (Ctrl+D)" aria-label="创建副本 (Ctrl+D)" onClick={() => duplicateNode(id)}>
               <IcCopy size={16} />
             </button>
-            <button className="icon-btn danger" title="删除 (Del)" onClick={() => removeNode(id)}>
+            <button className="icon-btn danger" title="删除 (Del)" aria-label="删除 (Del)" onClick={() => removeNode(id)}>
               <IcTrash size={16} />
             </button>
           </>

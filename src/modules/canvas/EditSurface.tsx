@@ -376,7 +376,7 @@ function CropOverlay() {
   };
 
   return (
-    <div ref={boxRef} className="es-ov nodrag nowheel" onPointerDown={down} onPointerMove={move} onPointerUp={up}>
+    <div ref={boxRef} className="es-ov nodrag nowheel" role="group" aria-label="裁剪框选区域" onPointerDown={down} onPointerMove={move} onPointerUp={up}>
       {rect && rect.w > 0.001 && rect.h > 0.001 ? (
         <div
           className="es-rect"
@@ -615,6 +615,7 @@ function MaskOverlay({ src }: { src: string }) {
       <canvas
         ref={viewRef}
         className="es-mask"
+        aria-label="蒙版涂抹画布"
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}

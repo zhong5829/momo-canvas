@@ -715,3 +715,93 @@ img.svg-bg {
 .tag-add:focus {
   border-color: var(--accent);
 }
+
+/* ---- 收藏星标 / 网格重命名 / 回收站 ---- */
+.a-fav {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  background: rgba(10, 14, 30, 0.45);
+  opacity: 0;
+  transition: opacity var(--t-fast), color var(--t-fast);
+  z-index: 2;
+}
+.a-card:hover .a-fav,
+.a-fav.on {
+  opacity: 1;
+}
+.a-fav.on {
+  color: #f5b83d;
+}
+.a-rename-input {
+  margin: 4px 6px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--input-bg);
+  color: var(--text-1);
+  font-size: 12px;
+  outline: none;
+  width: calc(100% - 12px);
+}
+.al-trash {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.al-trash-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.al-trash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+.al-trash-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: var(--input-bg);
+  border: 1px solid var(--panel-border);
+}
+.al-trash-item .a-thumb.sm {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  overflow: hidden;
+  flex: none;
+}
+.al-trash-item .a-thumb.sm img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.al-trash-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.al-trash-info b {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 340px;
+}

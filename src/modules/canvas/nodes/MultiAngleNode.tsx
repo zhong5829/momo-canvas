@@ -48,11 +48,12 @@ export const MultiAngleNode = memo(function MultiAngleNode({ id, data, selected 
       selected={selected}
       width={330}
       headExtra={
-        <span className="acts nodrag" style={{ opacity: 1, display: "flex", alignItems: "center", gap: 5 }}>
+        <span className="acts nodrag">
           <OutModeToggle id={id} mode={mode} />
           <button
             className="icon-btn"
             title="重置视角参数"
+            aria-label="重置视角参数"
             onClick={() => upd(id, { preset: "custom", yaw: 0, pitch: 0, shot: 2 })}
           >
             <IcRefresh size={15} />
@@ -71,7 +72,7 @@ export const MultiAngleNode = memo(function MultiAngleNode({ id, data, selected 
             onChange={(az, el) => upd(id, { yaw: az, pitch: Math.max(-60, Math.min(60, el)), preset: "custom" })}
           />
         </div>
-        <div className="chips" style={{ maxHeight: "none" }}>
+        <div className="chips nodrag">
           {ANGLE_PRESETS.map((p) => (
             <button
               key={p.value}
@@ -137,21 +138,27 @@ export const MultiAngleNode = memo(function MultiAngleNode({ id, data, selected 
               {running ? <IcLoading size={17} /> : <IcOrbit size={17} />}
               {running ? "换机位中…" : "生成新视角"}
             </button>
-            {running ? (
-              <div className="skeleton">
-                <span>正在移动机位重拍…</span>
-              </div>
-            ) : main ? (
+            {main ? (
               <EditSurface id={id} src={main}>
                 <Thumb className="img-main" src={main} alt="" res onClick={() => setLightbox(main, upImage)} />
               </EditSurface>
+            ) : running ? (
+              <div className="skeleton">
+                <span>正在移动机位重拍…</span>
+              </div>
+            ) : null}
+            {running && main ? (
+              <div className="progress-line">
+                <IcLoading size={14} />
+                正在移动机位重拍…
+              </div>
             ) : null}
           </>
         ) : (
           <div className="prompt-out nodrag">
             <div className="po-head">
               <span>输出的视角提示词（随参数实时更新）</span>
-              <button className="icon-btn" title="复制提示词" onClick={() => void copyPrompt()}>
+              <button className="icon-btn" title="复制提示词" aria-label="复制提示词" onClick={() => void copyPrompt()}>
                 <IcCopy size={14} />
               </button>
             </div>

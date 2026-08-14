@@ -217,7 +217,21 @@ export type ChatCaps = {
 };
 
 /** 按模型名/协议推断对话模型能力——名字会不断出新，规则按家族特征匹配，宁可漏判不误判 */
-export function chatCaps(card: Pick<ModelCard, "protocol" | "model">): ChatCaps {
+export function chatCaps(card: Pick<ModelCard, "id" | "protocol" | "model">): ChatCaps {
+  // 本地 GGUF 模型：能力来自注册表（capabilities.vision 由 mmproj 是否存在决定），不靠名字猜
+  if (card.protocol === "llamacpp" || (card.id && card.id.startsWith("local-gguf"))) {
+    // 动态查 localGgufStore（避免顶层 import 造成循环依赖）
+    const localModel = lookupLocalGguf(card.model);
+    if (localModel) {
+      return {
+        vision: localModel.capabilities.vision,
+        builtinSearch: false, // 本地模型不联网
+        note: localModel.capabilities.vision ? "本地视觉模型" : "本地文本模型",
+      };
+    }
+    // 注册表里找不到（可能尚未 init）：按非视觉处理，不误判
+    return { vision: false, builtinSearch: false, note: "本地模型" };
+  }
   const m = card.model.toLowerCase();
   // Claude / Gemini 全系多模态：协议或名字命中都算（中转站常以 openai 协议提供 claude/gemini）
   const vision =
@@ -253,4 +267,17 @@ export function builtinSearchTools(model: string): unknown[] | undefined {
   if (m.includes("minimax")) return [{ type: "web_search" }];
   if (m.includes("hunyuan")) return [{ type: "web_search", web_search: { enable: true } }];
   return undefined;
+}
+
+/**
+ * 查 localGgufStore，按模型名找本地 GGUF 注册项。
+ *
+ * 直接同步 import（实际无循环依赖：localGgufStore 不 import modelMeta）。
+ * 之前用动态 import 是过度保守，会导致首次调用返回 undefined，让本地视觉模型在启动竞态窗口
+ * 内被误判为非视觉并抛错阻断生成。
+ */
+import { useLocalGguf } from "./stores/localGgufStore";
+
+function lookupLocalGguf(name: string): { capabilities: { vision: boolean } } | undefined {
+  return useLocalGguf.getState().getByName(name);
 }

@@ -91,7 +91,6 @@ export function GenPromptBar({
               value={value}
               onChange={set}
               refs={kind === "imageGen" ? refs : []}
-              style={{ flex: 1 }}
             />
             <div className="gd-side">
               {upTextN > 0 || upImgN > 0 ? (
@@ -129,6 +128,7 @@ export function GenPromptBar({
               className="gd-send"
               disabled={!!running}
               title="生成（上游未运行的节点会按依赖顺序先自动运行）"
+              aria-label="生成"
               onClick={() => void runFlow(nodeId)}
             >
               {running ? <IcLoading size={17} /> : <IcSend size={17} />}
@@ -159,14 +159,14 @@ function HistPanel({ onPick, onClose }: { onPick: (t: string) => void; onClose: 
         <b>
           <IcHistory size={14} /> 提示词历史
         </b>
-        <button className="icon-btn" title="关闭" onClick={onClose}>
+        <button className="icon-btn" title="关闭" aria-label="关闭" onClick={onClose}>
           <IcClose size={14} />
         </button>
       </div>
       <div className="gd-hist-search">
         <input className="input" placeholder="搜索提示词…" value={kw} autoFocus onChange={(e) => setKw(e.target.value)} />
         {items.some((i) => !i.pin) ? (
-          <button className="btn sm" title="清空未收藏的历史" onClick={() => usePromptHist.getState().clear()}>
+          <button className="btn sm" title="清空未收藏的历史" aria-label="清空未收藏的历史" onClick={() => usePromptHist.getState().clear()}>
             <IcTrash size={13} />
           </button>
         ) : null}
@@ -183,11 +183,12 @@ function HistPanel({ onPick, onClose }: { onPick: (t: string) => void; onClose: 
               <button
                 className={`star ${i.pin ? "on" : ""}`}
                 title={i.pin ? "取消收藏" : "收藏置顶（不被清理）"}
+                aria-label={i.pin ? "取消收藏" : "收藏置顶（不被清理）"}
                 onClick={() => usePromptHist.getState().togglePin(i.id)}
               >
                 ★
               </button>
-              <button className="icon-btn danger" title="删除" onClick={() => usePromptHist.getState().remove(i.id)}>
+              <button className="icon-btn danger" title="删除" aria-label="删除" onClick={() => usePromptHist.getState().remove(i.id)}>
                 <IcTrash size={13} />
               </button>
             </div>
@@ -208,7 +209,7 @@ export function UpstreamPanel({ nodeId, onClose }: { nodeId: string; onClose: ()
       <div className="gd-up-head">
         <b>上游传入</b>
         <span className="gd-up-sum">{images.length} 张图 · {texts.length} 段文本</span>
-        <button className="icon-btn" title="关闭" onClick={onClose}>
+        <button className="icon-btn" title="关闭" aria-label="关闭" onClick={onClose}>
           <IcClose size={14} />
         </button>
       </div>

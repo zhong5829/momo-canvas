@@ -3,11 +3,15 @@
  *  - openai     OpenAI 兼容 /chat/completions（DeepSeek/GLM/Qwen/中转站等）
  *  - anthropic  Claude /v1/messages
  *  - gemini     Google /v1beta/models/{model}:streamGenerateContent
+ *  - ollama     本地 Ollama /api/chat（NDJSON 流，支持 thinking + keep_alive）
+ *  - llamacpp   本地 GGUF（llama-server，OpenAI 兼容；运行前由 ensureRunning 启动进程）
  */
 import type { ChatMsg, ModelCard } from "../types";
 import { xfetch, trimBase, readErrorBody } from "./http";
 import { shrinkForVision } from "../utils";
 import { builtinSearchTools } from "../modelMeta";
+import { streamOllamaChat } from "./ollama";
+import { ensureRunningFromCard, isLocalGgufCard } from "./localLlm";
 
 export type StreamCallbacks = {
   onText?: (full: string, delta: string) => void;
@@ -19,6 +23,13 @@ type StreamOpts = StreamCallbacks & {
   system?: string;
   /** 使用模型自带的联网搜索能力（Kimi/MiniMax/GLM 等，按家族注入 tools 请求体） */
   builtinSearch?: boolean;
+  /**
+   * 禁用思考模式（创作助手的一键开关用）：
+   *  - Ollama：/api/chat 下发 think:false（Qwen3 等推理模型跳过思考，不支持该参数的模型自动忽略）
+   *  - 本地 GGUF（llama-server）：OpenAI 兼容层下发 chat_template_kwargs.enable_thinking=false
+   *  - 其他协议：忽略（远程中转站不冒这个风险）
+   */
+  disableThinking?: boolean;
 };
 type StreamResult = { text: string; reasoning: string };
 
@@ -51,6 +62,20 @@ function splitDataUrl(dataUrl: string): { mime: string; b64: string } {
   return { mime, b64: dataUrl.split(",")[1] ?? "" };
 }
 
+/* ---------------- Ollama 本地（原生 /api/chat） ---------------- */
+// 签名适配：把 llm.ts 的 StreamOpts 转成 streamOllamaChat 的参数。
+// builtinSearch 对 Ollama 本地模型无意义（本地模型不联网），直接忽略。
+async function streamOllamaAdapter(card: ModelCard, msgs: ChatMsg[], opts: StreamOpts): Promise<StreamResult> {
+  return streamOllamaChat(card, msgs, {
+    onText: opts.onText,
+    onReasoning: opts.onReasoning,
+    signal: opts.signal,
+    system: opts.system,
+    // 思考开关：关闭时下发 think:false（不支持该参数的模型自动忽略）
+    think: opts.disableThinking ? false : undefined,
+  });
+}
+
 /* ---------------- OpenAI 兼容 ---------------- */
 async function streamOpenAI(card: ModelCard, msgs: ChatMsg[], opts: StreamOpts): Promise<StreamResult> {
   const apiMsgs: { role: string; content: unknown }[] = [];
@@ -69,13 +94,23 @@ async function streamOpenAI(card: ModelCard, msgs: ChatMsg[], opts: StreamOpts):
     }
   }
   const tools = opts.builtinSearch ? builtinSearchTools(card.model) : undefined;
+  // 思考开关：仅对本地 GGUF（llama-server）下发 chat_template_kwargs —— 远程中转站不认识该字段，
+  // 有些严格网关会 400，所以限定本地（llamacpp 分支改写后 id 仍是 local-gguf 前缀）
+  const thinkingKwargs =
+    opts.disableThinking && isLocalGgufCard(card) ? { chat_template_kwargs: { enable_thinking: false } } : {};
   const resp = await xfetch(`${trimBase(card.baseUrl)}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(card.apiKey ? { Authorization: `Bearer ${card.apiKey}` } : {}),
     },
-    body: JSON.stringify({ model: card.model, messages: apiMsgs, stream: true, ...(tools ? { tools, tool_choice: "auto" } : {}) }),
+    body: JSON.stringify({
+      model: card.model,
+      messages: apiMsgs,
+      stream: true,
+      ...thinkingKwargs,
+      ...(tools ? { tools, tool_choice: "auto" } : {}),
+    }),
     signal: opts.signal,
   });
   if (!resp.ok) throw new Error(`对话请求失败 ${resp.status}: ${await readErrorBody(resp)}`);
@@ -211,6 +246,11 @@ async function streamGemini(card: ModelCard, msgs: ChatMsg[], opts: StreamOpts):
 
 /* ---------------- 统一入口 ---------------- */
 export async function chatStream(card: ModelCard, msgs: ChatMsg[], opts: StreamOpts = {}): Promise<StreamResult> {
+  // 本地 GGUF：对话前确保 llama-server 已运行，动态注入 baseUrl（OpenAI 兼容协议走 streamOpenAI）
+  if (isLocalGgufCard(card) || card.protocol === "llamacpp") {
+    const baseUrl = await ensureRunningFromCard(card);
+    card = { ...card, protocol: "openai", baseUrl: `${baseUrl}/v1`, apiKey: "local" };
+  }
   if (!card.baseUrl && card.protocol !== "gemini") throw new Error(`模型「${card.name}」缺少 Base URL`);
   if (!card.model) throw new Error(`模型「${card.name}」缺少模型名称`);
   // 视觉输入压缩：大图先降采样再发，避免触发各协议的图片大小上限（如 10MB 报 400）
@@ -219,7 +259,12 @@ export async function chatStream(card: ModelCard, msgs: ChatMsg[], opts: StreamO
       m.images?.length ? { ...m, images: await Promise.all(m.images.map((s) => shrinkForVision(s))) } : m,
     ),
   );
-  const run = card.protocol === "anthropic" ? streamAnthropic : card.protocol === "gemini" ? streamGemini : streamOpenAI;
+  // ollama 的 system 透传（原生协议走 messages[0]=system，由 streamOllamaChat 内部处理）
+  const run =
+    card.protocol === "anthropic" ? streamAnthropic
+    : card.protocol === "gemini" ? streamGemini
+    : card.protocol === "ollama" ? streamOllamaAdapter
+    : streamOpenAI;
   const result = await run(card, shrunk, opts);
   if (!result.text && !result.reasoning)
     throw new Error(`模型「${card.name}」没有返回内容（请检查 Base URL / 模型名 / 协议是否匹配）`);

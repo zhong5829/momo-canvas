@@ -216,6 +216,7 @@ function EcomWorkshop({ id, d, onClose }: { id: string; d: EcomImageData; onClos
                       className="icon-btn"
                       disabled={running || !s.prompt}
                       title="重新生成本切片（按当前参考图与风格）"
+                      aria-label="重新生成本切片（按当前参考图与风格）"
                       onClick={() => void regenEcomSlide(id, i)}
                     >
                       <IcRefresh size={15} />
@@ -274,10 +275,10 @@ export const EcomImageNode = memo(function EcomImageNode({ id, data, selected }:
       selected={selected}
       width={300}
       headExtra={
-        <span className="acts nodrag" style={{ opacity: 1, display: "flex", alignItems: "center", gap: 5 }}>
+        <span className="acts nodrag">
           <OutModeToggle id={id} mode={mode} />
           {a ? (
-            <button className="icon-btn" title="清空分析与产出，重新规划" onClick={reset}>
+            <button className="icon-btn" title="清空分析与产出，重新规划" aria-label="清空分析与产出，重新规划" onClick={reset}>
               <IcRefresh size={15} />
             </button>
           ) : null}
@@ -304,13 +305,10 @@ export const EcomImageNode = memo(function EcomImageNode({ id, data, selected }:
             已规划 <b>{slides.length}</b> 切片{hasResult ? " · 长图已生成" : hasImgs ? " · 切片已生成" : ""}
           </div>
         ) : (
-          <div className="gen-sum">
-            <IcEcom size={13} />
-            <span>
-              {workMode === "h5"
-                ? "在底部「文案」里粘长文案，点「分析并规划」自动切片；确认提示词后「生成长图」"
-                : "连接产品图，点「分析并规划」产出切片；确认提示词后「生成长图」"}
-            </span>
+          <div className="node-hint">
+            {workMode === "h5"
+              ? "在底部「文案」里粘长文案，点「分析并规划」自动切片；确认提示词后「生成长图」"
+              : "连接产品图，点「分析并规划」产出切片；确认提示词后「生成长图」"}
           </div>
         )}
 

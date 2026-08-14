@@ -42,7 +42,7 @@ export const CombineNode = memo(function CombineNode({ id, data, selected }: Nod
           value={d.extra}
           onChange={(e) => upd(id, { extra: e.target.value })}
         />
-        <div style={{ fontSize: 12.5, color: "var(--text-3)", lineHeight: 1.6 }}>
+        <div className="node-hint">
           已连接 {inputCount} 路上游文本；输出 = 上游文本 + 附加文本，供下游生成节点使用。
         </div>
       </div>

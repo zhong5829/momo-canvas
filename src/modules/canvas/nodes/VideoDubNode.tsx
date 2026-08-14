@@ -41,8 +41,8 @@ export const VideoDubNode = memo(function VideoDubNode({ id, data, selected }: N
       width={300}
       headExtra={
         d.resultUrl ? (
-          <span className="acts nodrag" style={{ opacity: 1 }}>
-            <button className="icon-btn" title="保存到本地" onClick={() => void save()}>
+          <span className="acts nodrag">
+            <button className="icon-btn" title="保存到本地" aria-label="保存到本地" onClick={() => void save()}>
               <IcDownload size={17} />
             </button>
           </span>
@@ -50,7 +50,7 @@ export const VideoDubNode = memo(function VideoDubNode({ id, data, selected }: N
       }
     >
       <div className="mnode-body">
-        <div className="lang-seg" title="替换 = 只保留新音频；混合 = 原声与新音频叠加">
+        <div className="lang-seg nodrag" title="替换 = 只保留新音频；混合 = 原声与新音频叠加">
           <button className={(d.mode ?? "replace") === "replace" ? "on" : ""} onClick={() => upd(id, { mode: "replace" })}>
             替换原声
           </button>
@@ -58,7 +58,7 @@ export const VideoDubNode = memo(function VideoDubNode({ id, data, selected }: N
             与原声混合
           </button>
         </div>
-        <p className="hint" style={{ fontSize: 11.5, color: "var(--text-3)", margin: 0, lineHeight: 1.6 }}>
+        <p className="node-hint">
           绿口接视频、橙口接音频（音频/生成音频节点）。本地实时重编码（耗时约等于视频时长），输出 webm。
           音频短于视频则后段静音，长于视频则截断。
         </p>

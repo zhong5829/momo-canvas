@@ -34,6 +34,14 @@ APP/
 models/*
 !models/THIRD_PARTY_MODELS.txt
 
+# 本地推理引擎（llama.cpp 等第三方二进制，数百 MB 不入库；AppData 探测位有同名软链）
+tools/
+
+# AI 助手工具的本地临时目录（会话产物，不入库）
+.codex-tmp/
+.zcode/
+.claude/plans/
+
 # 本机图片质量黄金样本：引用 AppData 用户资产，不进入仓库/发行包
 quality-baseline/manifest.json
 quality-baseline/report.html

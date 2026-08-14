@@ -8,7 +8,7 @@
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { NodeShell, PortIn } from "../NodeShell";
-import { IcImage, IcVector } from "../../../ui/icons";
+import { IcImage, IcLoading, IcVector } from "../../../ui/icons";
 import { useUi } from "../../../core/stores/uiStore";
 import type { VectorizeData } from "../../../core/types";
 
@@ -33,11 +33,16 @@ export const VectorizeNode = memo(function VectorizeNode({ id, data, selected }:
       <div className="mnode-body">
         {running ? (
           <div className="enh-running">
-            <div className="enh-stage">{d.progress ?? "矢量化中…"}</div>
+            {/* 本地矢量化无百分比：阶段文案 + loading 图标（沿用既有 class，不新增样式） */}
+            <div className="progress-line">
+              <IcLoading size={14} />
+              {d.progress ?? "矢量化中…"}
+            </div>
           </div>
         ) : previewSrc ? (
           <div className="media-main">
-            <img className="img-main vec-preview" src={previewSrc} alt="" onClick={() => d.result && setLightbox(d.result)} />
+            {/* SVG 刻意例外不用 Thumb：位图缩略管线会把 SVG 栅格化，全项目唯一 <img> 直塞 */}
+            <img className="img-main vec-preview" src={previewSrc} alt="" title="点击预览" onClick={() => d.result && setLightbox(d.result)} />
             {d.report ? <div className="enh-report">{d.report}</div> : null}
           </div>
         ) : (

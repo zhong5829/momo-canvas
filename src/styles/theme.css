@@ -40,6 +40,9 @@
   --port-video: #2fbf8f;
   --port-audio: #ffa23e;
 
+  /* 通用细边框（别名，随各主题 --panel-border 生效） */
+  --border: var(--panel-border);
+
   --tb-h: 46px; /* 标题栏高度 */
 }
 

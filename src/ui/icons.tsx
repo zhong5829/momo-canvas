@@ -309,6 +309,12 @@ export const IcCheck = (p: IconProps) => (
   </I>
 );
 
+export const IcStar = (p: IconProps) => (
+  <I {...p}>
+    <path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 17l-5.2 2.6 1-5.8L3.5 9.7l5.9-.8L12 3.5z" />
+  </I>
+);
+
 export const IcChevronD = (p: IconProps) => (
   <I {...p}>
     <path d="m6 9.5 6 6 6-6" />
@@ -675,5 +681,54 @@ export const IcBell = (p: IconProps) => (
   <I {...p}>
     <path d="M18 9a6 6 0 1 0-12 0c0 5-2 6-2 6h16s-2-1-2-6" />
     <path d="M10 19a2.2 2.2 0 0 0 4 0" />
+  </I>
+);
+
+/* 3D 导演台：单人偶 */
+export const IcPerson = (p: IconProps) => (
+  <I {...p}>
+    <circle cx="12" cy="6.4" r="2.9" />
+    <path d="M12 11v5.4M12 16.4l-3.2 4.6M12 16.4l3.2 4.6M5.8 12.6c2-1 4.2-1.6 6.2-1.6s4.2.6 6.2 1.6" />
+  </I>
+);
+
+/* 3D 导演台：摄影机 */
+export const IcCamera = (p: IconProps) => (
+  <I {...p}>
+    <rect x="3" y="7" width="13" height="11" rx="2.2" />
+    <path d="M16 11.2 21 8v8.8l-5-3.2" />
+    <circle cx="8" cy="12.5" r="2.2" />
+  </I>
+);
+
+/* 3D 导演台：几何体 */
+export const IcBox = (p: IconProps) => (
+  <I {...p}>
+    <path d="M12 3.2 20 7.6v8.8l-8 4.4-8-4.4V7.6Z" />
+    <path d="M12 12.2 20 7.6M12 12.2 4 7.6M12 12.2v8.6" />
+  </I>
+);
+
+/* 3D 导演台：旋转模式（圆弧箭头） */
+export const IcRotate = (p: IconProps) => (
+  <I {...p}>
+    <path d="M20 12a8 8 0 1 1-2.5-5.8" />
+    <path d="M20 3.6v4h-4" />
+  </I>
+);
+
+/* 3D 导演台：移动模式（四向箭头） */
+export const IcMove = (p: IconProps) => (
+  <I {...p}>
+    <path d="M12 3v18M3 12h18" />
+    <path d="M9.4 5.6 12 3l2.6 2.6M9.4 18.4 12 21l2.6-2.6M5.6 9.4 3 12l2.6 2.6M18.4 9.4 21 12l-2.6 2.6" />
+  </I>
+);
+
+/* 3D 导演台：姿势（抬手人形） */
+export const IcPose = (p: IconProps) => (
+  <I {...p}>
+    <circle cx="12" cy="5.6" r="2.6" />
+    <path d="M12 9.6v5M12 14.6l-2.8 4.2M12 14.6l2.8 4.2M7 4.8c1.6 2 3.2 3 5 3s3.4-1 5-3" />
   </I>
 );

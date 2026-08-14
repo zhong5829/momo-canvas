@@ -30,6 +30,13 @@ button {
   color: inherit;
 }
 
+/* 去掉原生 input 外观：WebView2 会给 <input> 默认白色系统背景，与半透明的 --input-bg 叠加
+   → 出现「白色小框和外框错位重叠」的观感。appearance:none 后 CSS 背景/边框完整生效。 */
+input {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
 textarea,
 input {
   user-select: text;
@@ -90,7 +97,7 @@ button {
 .btn.primary {
   background: var(--grad-brand);
   color: #fff;
-  box-shadow: 0 4px 16px rgba(110, 120, 255, 0.35);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .btn.primary:hover {
   filter: brightness(1.08);
@@ -288,8 +295,35 @@ button {
   cursor: pointer;
   pointer-events: auto;
 }
-.toast.err { border-color: rgba(242, 79, 106, 0.5); color: var(--danger); }
+.toast.err { border-color: color-mix(in srgb, var(--danger) 50%, transparent); color: var(--danger); }
 .toast.ok { border-color: rgba(47, 191, 143, 0.5); color: var(--ok); }
+
+/* 错误边界兜底（src/ui/ErrorBoundary.tsx） */
+.err-boundary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 48px 24px;
+  height: 100%;
+  color: var(--text-2);
+}
+.err-boundary .eb-title {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-1);
+}
+.err-boundary .eb-msg {
+  font-size: 12.5px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: var(--r-md);
+  padding: 8px 12px;
+  max-width: 560px;
+  word-break: break-word;
+}
 
 .spin {
   animation: spin 0.9s linear infinite;
@@ -656,7 +690,7 @@ button {
 
 /* 提示词 AI 工具弹层（PromptAiTools：优化/扩写/反推/自定义指令） */
 .pop-layer.pa-pop {
-  min-width: 280px;
+  min-width: 300px;
   max-width: calc(100vw - 40px);
 }
 .pa-pop .pop-item .pi-label {
@@ -668,8 +702,8 @@ button {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 300px;
-  max-width: calc(100vw - 40px);
+  /* 宽度跟随浮层内容区：pt-pop(300) / pa-pop(300) 内均为 284，写死 300 会向右顶出浮层边界 */
+  width: 100%;
 }
 .pa-custom .pop-title {
   padding-bottom: 0;
@@ -678,6 +712,30 @@ button {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
+}
+/* Skill 分区标题（菜单视图里的 Skill 列表上方） */
+.pa-skill-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 10px 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+/* Skill 变量表单 */
+.pa-skill-vars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pa-skill-var {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.pa-skill-var .input {
+  width: 100%;
 }
 
 /* 输入框内嵌字数（提示词节点：字数从底部条挪进输入框右下角） */
@@ -688,7 +746,7 @@ button {
   position: absolute;
   right: 9px;
   bottom: 6px;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-3);
   opacity: 0.75;
   pointer-events: none;
@@ -872,4 +930,40 @@ button {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* GGUF 导入向导：命令块 + Modelfile 预览 */
+.gguf-cmd-block {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  padding-right: 90px;
+}
+.gguf-cmd {
+  font-family: monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-1);
+  margin: 0;
+}
+.gguf-cmd-block .btn {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+}
+.gguf-modelfile {
+  font-family: monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  max-height: 240px;
+  overflow: auto;
+  color: var(--text-2);
+  margin-top: 6px;
 }

@@ -9,8 +9,9 @@ MOMO 智能画布：Tauri 2 (Rust 壳) + React 19 + TypeScript + React Flow (@xy
 ## 常用命令
 
 ```bash
-pnpm tauri dev      # 开发运行（Vite 固定端口 1420，被占用会直接失败）
-npx tsc --noEmit    # 类型检查（最常用的验证手段；本项目无测试、无 lint 配置）
+pnpm tauri dev      # 开发运行（Vite 固定端口 1430，被占用会直接失败；弹宠项目占用 1420）
+npx tsc --noEmit    # 类型检查（最常用的验证手段；本项目无测试）
+pnpm lint           # ESLint：只开 react-hooks/rules-of-hooks（Hooks 铁律，白屏事故根因），改组件后必跑
 pnpm build          # tsc && vite build，仅前端产物，可作完整验证
 pnpm tauri build    # 打包发行版 —— 仅在用户明确要求时执行
 ```
@@ -72,6 +73,7 @@ src-tauri/              Rust 壳，仅插件配置（dialog/fs/http/store/opener
 
 ## 关键约定
 
+- **Hooks 铁律（白屏事故根因）**：组件里所有 hooks（useState/useMemo/useBoard 等一切 `use*`）必须放在**条件 return（如 `if (!selId) return null`）之前**——面板类的「先订阅再 return null 隐藏」模式尤其容易把新增 hook 写在 return 之后，hooks 数量随选中态变化 → React 报「Rendered more hooks」整窗白屏。底部参数栏已整体包 `ErrorBoundary`（src/ui/ErrorBoundary.tsx）兜底，但那是保险不是许可。
 - **报错**：service 层抛带中文信息的 `Error`；runner 捕获后走 `pushError(source, msg)`（uiStore）→ 报错中心（标题栏铃铛）+ 可点击 toast。不要裸 `toast(..., "err")` 报运行类错误。
 - **节点内大图必须用 `<Thumb>`**（`src/ui/Thumb.tsx`）而非 `<img>`：图片全程是 dataURL，原图直塞 img 会让画布拖动掉帧；原图仅用于灯箱预览/保存/传模型。
 - React Flow 节点内的可交互元素加 `nodrag` class，否则拖不了输入框选不了文本。

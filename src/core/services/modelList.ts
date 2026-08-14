@@ -7,6 +7,7 @@
  */
 import type { ProtocolId } from "../types";
 import { xfetch, trimBase, readErrorBody } from "./http";
+import { fetchOllamaModelNames } from "./ollama";
 
 export async function fetchModelList(protocol: ProtocolId, baseUrl: string, apiKey: string): Promise<string[]> {
   let ids: string[] = [];
@@ -35,6 +36,10 @@ export async function fetchModelList(protocol: ProtocolId, baseUrl: string, apiK
       throw new Error(
         `按 OpenAI 兼容方式尝试拉取失败（自定义协议本身没有标准的模型列表接口）。最后错误：${lastErr || "无模型返回"}。可直接输入模型名回车添加`,
       );
+  } else if (protocol === "ollama") {
+    // Ollama 原生 /api/tags，无需 API Key
+    if (!baseUrl) throw new Error("请先填写 Ollama 地址（默认 http://127.0.0.1:11434）");
+    ids = await fetchOllamaModelNames(baseUrl);
   } else if (protocol === "gemini") {
     const base = trimBase(baseUrl || "https://generativelanguage.googleapis.com");
     const root = base.includes("/v1beta") ? base : `${base}/v1beta`;
