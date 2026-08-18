@@ -59,11 +59,14 @@ function parseSkillMd(text: string): { fm: Frontmatter; instructions: string } {
   return { fm, instructions };
 }
 
-/** 从纯文本 SKILL.md 导入（快速 Skill 入口） */
-export function importSkillMd(filename: string, text: string): ImportResult {
-  const { fm, instructions } = parseSkillMd(text);
+/** frontmatter + 正文 → MomoSkill（校验 contexts/phase/output 合法性） */
+function skillFromFrontmatter(
+  fm: Frontmatter,
+  instructions: string,
+  fallbackName: string,
+  references?: string[],
+): ImportResult {
   const warnings: string[] = [];
-  // 校验 contexts 合法性
   const validContexts: SkillContext[] = (fm.contexts ?? ["prompt.text"]).filter(
     (c): c is SkillContext =>
       [
@@ -82,17 +85,70 @@ export function importSkillMd(filename: string, text: string): ImportResult {
   const output = (fm.output && validOutputs.includes(fm.output as SkillOutput) ? fm.output : "text") as SkillOutput;
 
   const skill = newSkill({
-    id: fm.id || undefined,
-    name: fm.name || filename.replace(/\.md$/i, ""),
+    id: fm.id || fm.name || undefined, // name 派生稳定 id：重复导入同名 Skill 覆盖更新而非新增重复项
+    name: fm.name || fallbackName,
     version: fm.version || "1.0.0",
     description: fm.description || "",
     contexts: validContexts,
     phase,
     output,
     instructions,
+    references,
     source: "import",
   });
   return { skill, warnings };
+}
+
+/** 从纯文本 SKILL.md 导入（快速 Skill 入口） */
+export function importSkillMd(filename: string, text: string): ImportResult {
+  const { fm, instructions } = parseSkillMd(text);
+  return skillFromFrontmatter(fm, instructions, filename.replace(/\.md$/i, ""));
+}
+
+/**
+ * 从 Claude 风格 Skill zip 导入（SKILL.md + 可选 agents/、references/ 等）。
+ * 解压由调用方完成（JSZip），这里只接受「路径 → 内容」映射。
+ * 查找根目录或一级子目录下的 SKILL.md；脚本文件与路径穿越条目忽略并记 warning。
+ */
+export function importClaudeSkillZip(files: Map<string, Uint8Array | string>): ImportResult {
+  const warnings: string[] = [];
+  const blocked = [".js", ".mjs", ".cjs", ".py", ".sh", ".bat", ".cmd", ".ps1", ".exe", ".dll", ".so", ".dylib"];
+  let totalBytes = 0;
+  let skillMdText: string | null = null;
+  let skillMdDepth = Infinity;
+  const references: string[] = [];
+
+  for (const [rawPath, content] of files) {
+    const path = rawPath.replace(/\\/g, "/");
+    if (path.includes("..") || path.startsWith("/")) {
+      warnings.push(`忽略路径不安全的条目：${rawPath}`);
+      continue;
+    }
+    const lower = path.toLowerCase();
+    if (blocked.some((ext) => lower.endsWith(ext)) || lower.includes("scripts/")) {
+      warnings.push(`当前版本不执行 Skill 脚本，已忽略：${path}`);
+      continue;
+    }
+    totalBytes += typeof content === "string" ? content.length : content.byteLength;
+    const segs = path.split("/").filter(Boolean);
+    // SKILL.md：根目录或一级子目录，取层级最浅的一份
+    if (segs.length >= 1 && segs.length <= 2 && segs[segs.length - 1].toLowerCase() === "skill.md") {
+      if (segs.length < skillMdDepth) {
+        skillMdDepth = segs.length;
+        skillMdText = typeof content === "string" ? content : new TextDecoder().decode(content);
+      }
+      continue;
+    }
+    // references/ 只记文件名列表（内容本轮不落盘，与 .momoskill 一致）
+    const refIdx = segs.indexOf("references");
+    if (refIdx >= 0 && refIdx < segs.length - 1) references.push(segs.slice(refIdx + 1).join("/"));
+  }
+  if (totalBytes > MAX_TOTAL_BYTES) throw new Error(`Skill 包总体积超过 ${MAX_TOTAL_BYTES / 1024 / 1024}MB 上限`);
+  if (skillMdText == null) throw new Error("压缩包里找不到 SKILL.md（Claude 风格 Skill 需包含 SKILL.md）");
+
+  const { fm, instructions } = parseSkillMd(skillMdText);
+  const r = skillFromFrontmatter(fm, instructions, "未命名 Skill", references.length ? references : undefined);
+  return { skill: r.skill, warnings: [...warnings, ...r.warnings] };
 }
 
 /** .momoskill ZIP 包内的 skill.json 结构 */
@@ -187,7 +243,7 @@ export function importSkillPackage(
   const output = (sj.output && validOutputs.includes(sj.output as SkillOutput) ? sj.output : "text") as SkillOutput;
 
   const skill = newSkill({
-    id: sj.id,
+    id: sj.id || sj.name || undefined, // 同上：稳定 id，重复导入覆盖更新
     name: sj.name || "未命名 Skill",
     version: sj.version || "1.0.0",
     description: sj.description || "",

@@ -572,27 +572,40 @@ export function SmartCanvas() {
         return;
       }
 
-      // 从资产库拖出的图片资产 → 图片节点（读成 dataURL，与其余图片来源约定一致）
-      // Tauri 下资产卡走原生拖拽（HTML5 拿不到自定义数据），从拖拽状态里补回资产 id
-      const assetId = e.dataTransfer.getData("momo/asset-id") || getNativeDragAsset() || "";
-      if (assetId) {
-        const it = useAssets.getState().items.find((x) => x.id === assetId);
-        if (!it) return;
-        if (it.kind !== "image" && it.kind !== "video" && it.kind !== "audio") {
+      // 从资产库拖出的资产 → 节点（读成 dataURL，与其余图片来源约定一致）
+      // Tauri 下资产卡走原生拖拽（HTML5 拿不到自定义数据），从拖拽状态里补回资产 id；
+      // 多选拖拽时负载是逗号拼接的 id 列表，逐个建节点、阶梯排开
+      const rawAssetIds = e.dataTransfer.getData("momo/asset-id") || getNativeDragAsset() || "";
+      const assetIds = rawAssetIds.split(",").filter(Boolean);
+      if (assetIds.length) {
+        const all = useAssets.getState().items;
+        const list = assetIds
+          .map((id) => all.find((x) => x.id === id))
+          .filter((x): x is NonNullable<typeof x> => !!x);
+        if (!list.length) return;
+        const bad = list.filter((it) => it.kind !== "image" && it.kind !== "video" && it.kind !== "audio");
+        if (bad.length === list.length) {
           toast("目前仅支持把图片/视频/音频资产拖入画布", "err");
           return;
         }
         try {
-          if (it.kind === "video") {
-            // 视频资产 → 视频节点（直接用磁盘文件的 asset: URL，重启依然有效）
-            const src = assetUrl(it.path);
-            autoLink(addNode("video", pos, { src, name: it.name, status: "done", dur: await videoDuration(src) }));
-          } else if (it.kind === "audio") {
-            autoLink(addNode("audio", pos, { src: assetUrl(it.path), name: it.name, status: "done" }));
-          } else {
-            const src = await assetToDataUrl(it.path, it.mime);
-            autoLink(addNode("image", pos, { src, name: it.name, status: "done" }));
+          let placed = 0;
+          for (const it of list) {
+            if (it.kind !== "image" && it.kind !== "video" && it.kind !== "audio") continue;
+            const p = { x: pos.x + placed * 48, y: pos.y + placed * 48 };
+            if (it.kind === "video") {
+              // 视频资产 → 视频节点（直接用磁盘文件的 asset: URL，重启依然有效）
+              const src = assetUrl(it.path);
+              autoLink(addNode("video", p, { src, name: it.name, status: "done", dur: await videoDuration(src) }));
+            } else if (it.kind === "audio") {
+              autoLink(addNode("audio", p, { src: assetUrl(it.path), name: it.name, status: "done" }));
+            } else {
+              const src = await assetToDataUrl(it.path, it.mime);
+              autoLink(addNode("image", p, { src, name: it.name, status: "done" }));
+            }
+            placed++;
           }
+          if (bad.length) toast(`已跳过 ${bad.length} 个非图片/视频/音频资产`, "info");
           // 落到画布成功 → 收起资产库，让用户看到新节点
           useAssets.getState().setOpen(false);
         } catch (err) {

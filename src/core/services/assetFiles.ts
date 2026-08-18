@@ -248,18 +248,32 @@ export function assetUrl(path: string): string {
 /** 资产文件 → dataURL（拖入画布建图片节点用；节点 src 全程按 dataURL 约定） */
 export async function assetToDataUrl(path: string, mime?: string): Promise<string> {
   if (path.startsWith("data:")) return path;
-  let blob: Blob;
-  if (isTauri && !path.startsWith("blob:") && !path.startsWith("http")) {
-    const { readFile } = await import("@tauri-apps/plugin-fs");
-    const bytes = await readFile(path);
-    blob = new Blob([new Uint8Array(bytes)], { type: mime ?? mimeFromExt(path.split(".").pop() ?? "") });
-  } else {
-    blob = await (await fetch(path)).blob();
-  }
+  const blob = await assetToBlob(path, mime);
   return await new Promise<string>((res, rej) => {
     const r = new FileReader();
     r.onload = () => res(r.result as string);
     r.onerror = () => rej(new Error("读取资产文件失败"));
     r.readAsDataURL(blob);
   });
+}
+
+/** 资产文件 → Blob（asset:// 协议在 WebView2 里不支持视频流式播放的 Range 请求，播放一律转 blob URL） */
+export async function assetToBlob(path: string, mime?: string): Promise<Blob> {
+  if (isTauri && !path.startsWith("blob:") && !path.startsWith("http") && !path.startsWith("data:")) {
+    const { readFile } = await import("@tauri-apps/plugin-fs");
+    const bytes = await readFile(path);
+    return new Blob([new Uint8Array(bytes)], { type: mime ?? mimeFromExt(path.split(".").pop() ?? "") });
+  }
+  return await (await fetch(path)).blob();
+}
+
+/** 资产文件 → blob URL（视频/音频预览与播放专用；组件卸载时自行 revokeObjectURL） */
+const blobUrlCache = new Map<string, string>();
+export async function assetToBlobUrl(path: string, mime?: string): Promise<string> {
+  if (path.startsWith("blob:")) return path;
+  const hit = blobUrlCache.get(path);
+  if (hit) return hit;
+  const url = URL.createObjectURL(await assetToBlob(path, mime));
+  blobUrlCache.set(path, url);
+  return url;
 }

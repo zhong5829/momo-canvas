@@ -12,7 +12,7 @@ import { generateImage } from "./services/imageGen";
 import { generateVideo } from "./services/videoGen";
 import { generateAudio } from "./services/audioGen";
 import { webSearch, searchContext } from "./services/webSearch";
-import { runComfyTemplate, effectiveParams } from "./services/comfy";
+import { runComfyTemplate, effectiveParams, freeComfyMemory } from "./services/comfy";
 import { autoSaveImage } from "./services/imageSaver";
 import { chatCaps, familyMaxCount, familyMaxRef, gptSize, imageFamily, nearestAspect, parseRatio } from "./modelMeta";
 import { videoFamily, videoMeta } from "./videoMeta";
@@ -533,6 +533,8 @@ function collectToLibrary(
     model?: string;
     gen?: AssetGenMeta;
     nodeId?: string;
+    /** 生成耗时（毫秒），资产卡角标显示用 */
+    durationMs?: number;
     group?: {
       groupId?: string;
       groupLabel?: string;
@@ -550,7 +552,7 @@ function collectToLibrary(
     const group = baseGroup
       ? { ...baseGroup, groupSlot: baseGroup.groupSlot ?? `result:${index}` }
       : undefined;
-    void useAssets.getState().collect({ src, kind, prompt: meta.prompt, model: meta.model, gen: meta.gen, nodeId: meta.nodeId, group });
+    void useAssets.getState().collect({ src, kind, prompt: meta.prompt, model: meta.model, gen: meta.gen, nodeId: meta.nodeId, durationMs: meta.durationMs, group });
   }
 }
 
@@ -790,6 +792,7 @@ export async function runImageGen(id: string) {
       prompt,
       model: usedCard.name,
       nodeId: id,
+      durationMs: Date.now() - t0,
       gen: {
         nodeKind: "imageGen",
         prompt: (data.prompt ?? "").trim() || prompt,
@@ -1008,14 +1011,15 @@ export async function runEnhanceLocal(id: string) {
         qualityGate, productionReady, qualityMessage, timedOut: false,
         analysisMapPath: result.analysisPath ?? undefined,
         vectorGuidePath: result.vectorGuidePath ?? undefined,
-        report: `${result.pipeline}${detailNote} · ${qualityMessage} · Tile ${result.tileSizeUsed}×${result.tiles} · 显存估算${result.estimatedVramMb}MB · ${(result.elapsedMs / 1000).toFixed(1)}s · ${result.width}×${result.height}${qLine}${assetLine}${faceLine}`,
+        // 节点不再显示底部报告行（关键信息已有分辨率/保真角标），完整诊断保留在数据里备查
+        reportDetail: `${result.pipeline}${detailNote} · ${qualityMessage} · Tile ${result.tileSizeUsed}×${result.tiles} · 显存估算${result.estimatedVramMb}MB · ${(result.elapsedMs / 1000).toFixed(1)}s · ${result.width}×${result.height}${qLine}${assetLine}${faceLine}`,
       });
       // 只有通过生产门禁的结果自动入库；警告/失败结果仍保留在节点，可预览或人工确认后保存。
       if (productionReady) {
         try {
           const { assetToDataUrl } = await import("./services/assetFiles");
           const dataUrl = await assetToDataUrl(result.outPath);
-          collectToLibrary("image", [dataUrl], { prompt: `超清放大 ${result.width}×${result.height}`, model: main.model.displayName, nodeId: id });
+          collectToLibrary("image", [dataUrl], { prompt: `超清放大 ${result.width}×${result.height}`, model: main.model.displayName, nodeId: id, durationMs: result.elapsedMs });
         } catch (e) {
           console.warn("[超清放大] 资产库收录失败", e);
         }
@@ -1155,7 +1159,9 @@ export async function runVectorize(id: string) {
     upd(id, {
       status: "done", result: url, svg: result.svg, resultW: result.width, resultH: result.height,
       pathCount: result.pathCount, productionReady: result.qualityPassed ?? undefined, qualityScore: result.score ?? undefined, progress: undefined, progressPct: 100,
-      report: `${result.pathCount} 条路径 · ${result.anchors} 锚点(预算${budgetPct}%) · ${result.width}×${result.height} · ${(result.elapsedMs / 1000).toFixed(1)}s${result.shapeCount ? ` · ${result.shapeCount} 图元` : ""}${candLine}${autoNote}${usedGuide ? " · 保结构引导+源图回评" : ""}${gateLine}${hintLine}`,
+      // 节点底部只放一行关键指标；完整诊断收进 reportDetail 悬停查看
+      report: `${result.pathCount} 路径 · ${result.width}×${result.height} · ${(result.elapsedMs / 1000).toFixed(1)}s`,
+      reportDetail: `${result.pathCount} 条路径 · ${result.anchors} 锚点(预算${budgetPct}%) · ${result.width}×${result.height} · ${(result.elapsedMs / 1000).toFixed(1)}s${result.shapeCount ? ` · ${result.shapeCount} 图元` : ""}${candLine}${autoNote}${usedGuide ? " · 保结构引导+源图回评" : ""}${gateLine}${hintLine}`,
     });
     // 不自动收录资产库：由面板「收入资产库」按钮按需入「矢量」分类
     notifyDone("智能矢量");
@@ -1380,6 +1386,7 @@ export async function runVideoGen(id: string) {
         prompt,
         model: usedCard.name,
         nodeId: id,
+        durationMs: Date.now() - t0,
         gen: { nodeKind: "videoGen", prompt: (data.prompt ?? "").trim() || prompt, modelId: modelKey(usedCard.id, usedCard.model), lang: data.lang },
       });
       savedUrls.push(saved && isTauri ? assetUrl(saved.path) : url);
@@ -1476,6 +1483,15 @@ export async function runComfy(id: string) {
   } catch (e) {
     upd(id, { status: "error", error: errMsg(e), progress: undefined, progressPct: undefined });
     pushError("ComfyUI", errMsg(e));
+  } finally {
+    // 运行结束后按节点开关清理显存（成功/失败都清——失败时显存可能已被占用）
+    if (data.freeAfter) {
+      const host = useSettings.getState().settings.comfy.host;
+      if (host) {
+        const r = await freeComfyMemory(host);
+        if (!r.ok) console.warn("[ComfyUI] 清理显存失败：", r.err);
+      }
+    }
   }
 }
 

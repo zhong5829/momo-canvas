@@ -5,14 +5,14 @@
  *  - 查看完整指令、变量定义
  *  - 内置 Skill 不可删除（只能禁用），可恢复默认
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Modal, Row } from "../../ui/kit";
 import { useSkills } from "../../core/stores/skillStore";
 import { useUi } from "../../core/stores/uiStore";
 import { toast } from "../../core/stores/uiStore";
-import { importSkillMd } from "../../core/skillImport";
+import { importSkillMd, importSkillPackage, importClaudeSkillZip } from "../../core/skillImport";
 import { errMsg } from "../../core/utils";
-import { IcWand, IcStar, IcTrash, IcUpload } from "../../ui/icons";
+import { IcWand, IcStar, IcTrash, IcUpload, IcCheck } from "../../ui/icons";
 import type { MomoSkill, SkillContext } from "../../core/skillTypes";
 
 const CONTEXT_LABEL: Record<SkillContext, string> = {
@@ -38,15 +38,31 @@ export function SkillManager() {
   const open = useUi((s) => s.skillMgrOpen);
   const close = () => useUi.getState().setSkillMgrOpen(false);
   const skills = useSkills((s) => s.skills);
+  const loaded = useSkills((s) => s.loaded);
   const toggleEnabled = useSkills((s) => s.toggleEnabled);
   const toggleStarred = useSkills((s) => s.toggleStarred);
   const remove = useSkills((s) => s.remove);
   const install = useSkills((s) => s.install);
   const [viewing, setViewing] = useState<MomoSkill | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<{ name: string; description: string; instructions: string } | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // 打开管理器时确保 store 已加载（未加载就导入会把内置 Skill 与已存数据整体覆盖落盘）
+  useEffect(() => {
+    if (open && !loaded) void useSkills.getState().init();
+  }, [open, loaded]);
+
   if (!open) return null;
+
+  /** 打开详情（同时退出编辑态） */
+  const openView = (s: MomoSkill | null) => {
+    setViewing(s);
+    setEditing(false);
+    setDraft(null);
+  };
 
   /** 导入文件：SKILL.md 直接解析；.momoskill 用 JSZip 解压后调 importSkillPackage */
   const onFiles = async (files: FileList) => {
@@ -60,7 +76,20 @@ export function SkillManager() {
           if (r.warnings.length) setWarnings((w) => [...w, ...r.warnings]);
           toast(`已导入 Skill「${r.skill.name}」`, "ok");
         } else if (/\.momoskill$/i.test(f.name) || /\.zip$/i.test(f.name)) {
-          toast(".momoskill 完整包导入将在后续版本支持，当前请导入单文件 SKILL.md", "err");
+          // JSZip 懒加载解压成「路径 → 内容」映射；.momoskill 走完整包，普通 zip 按 Claude 风格找 SKILL.md
+          const JSZip = (await import("jszip")).default;
+          const zip = await JSZip.loadAsync(await f.arrayBuffer());
+          const files = new Map<string, Uint8Array>();
+          for (const [path, entry] of Object.entries(zip.files)) {
+            if (entry.dir) continue;
+            files.set(path, await entry.async("uint8array"));
+          }
+          const r = /\.momoskill$/i.test(f.name) ? importSkillPackage(files) : importClaudeSkillZip(files);
+          install(r.skill);
+          if (r.warnings.length) setWarnings((w) => [...w, ...r.warnings]);
+          toast(`已导入 Skill「${r.skill.name}」，请在详情里确认适用位置`, "ok");
+          // 打开详情视图让用户确认/勾选适用位置（导入向导轻量版）
+          openView(r.skill);
         } else {
           toast(`不支持的文件类型：${f.name}（支持 .md 和 .momoskill）`, "err");
         }
@@ -72,10 +101,26 @@ export function SkillManager() {
 
   return (
     <Modal
-      title={viewing ? `查看 Skill · ${viewing.name}` : "Skill 管理"}
-      onClose={() => (viewing ? setViewing(null) : close())}
+      title={viewing ? `${editing ? "编辑" : "查看"} Skill · ${viewing.name}` : "Skill 管理"}
+      onClose={() => (viewing ? openView(null) : close())}
       width={viewing ? 720 : 880}
     >
+      <div
+        className={`skill-drop${dragOver ? " over" : ""}`}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          if (e.dataTransfer.files?.length) void onFiles(e.dataTransfer.files);
+        }}
+      >
+        {dragOver ? <div className="skill-drop-mask">松开以导入 Skill（.md / .zip / .momoskill）</div> : null}
       {warnings.length > 0 ? (
         <div className="sec-desc" style={{ marginBottom: 8, color: "var(--warn)" }}>
           {warnings.map((w, i) => (
@@ -85,26 +130,99 @@ export function SkillManager() {
       ) : null}
 
       {viewing ? (
-        /* ---- 查看详情 ---- */
+        /* ---- 查看 / 编辑详情 ---- */
         <div className="nodrag" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <Row gap={8}>
             <span className="kind-ic" style={{ background: "var(--accent-soft, rgba(91,140,255,.15))" }}>
               <IcWand size={14} />
             </span>
-            <b style={{ fontSize: 15 }}>{viewing.name}</b>
+            {editing && draft ? (
+              <input
+                className="input sm nodrag"
+                style={{ minWidth: 220 }}
+                value={draft.name}
+                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              />
+            ) : (
+              <b style={{ fontSize: 15 }}>{viewing.name}</b>
+            )}
             <span className="sec-desc">v{viewing.version}</span>
             <span className="sec-desc">· {PHASE_LABEL[viewing.phase] ?? viewing.phase}</span>
             <span className="sec-desc">· {viewing.source === "builtin" ? "内置" : "导入"}</span>
+            <span className="spacer" style={{ flex: 1 }} />
+            {editing && draft ? (
+              <>
+                <button
+                  className="btn sm primary"
+                  onClick={() => {
+                    if (!draft.name.trim()) {
+                      toast("名称不能为空", "err");
+                      return;
+                    }
+                    const next = { ...viewing, name: draft.name.trim(), description: draft.description.trim(), instructions: draft.instructions };
+                    install(next);
+                    setViewing(next);
+                    setEditing(false);
+                    setDraft(null);
+                    toast("已保存 Skill 修改", "ok");
+                  }}
+                >
+                  保存
+                </button>
+                <button className="btn sm" onClick={() => { setEditing(false); setDraft(null); }}>
+                  取消
+                </button>
+              </>
+            ) : (
+              <button
+                className="btn sm"
+                title="编辑名称、描述与指令正文"
+                onClick={() => {
+                  setDraft({ name: viewing.name, description: viewing.description, instructions: viewing.instructions });
+                  setEditing(true);
+                }}
+              >
+                编辑
+              </button>
+            )}
           </Row>
-          {viewing.description ? <div className="sec-desc">{viewing.description}</div> : null}
+          {editing && draft ? (
+            <input
+              className="input sm nodrag"
+              placeholder="一句话描述（这个 Skill 什么时候用）"
+              value={draft.description}
+              onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+            />
+          ) : viewing.description ? (
+            <div className="sec-desc">{viewing.description}</div>
+          ) : null}
           <div>
-            <div className="sec-desc" style={{ marginBottom: 4 }}>适用位置</div>
+            <div className="sec-desc" style={{ marginBottom: 4 }}>适用位置（点击切换，即改即存，决定 Skill 出现在哪些入口）</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {viewing.contexts.map((c) => (
-                <span key={c} className="tpl-ctx" style={{ fontSize: 12, padding: "2px 8px", borderRadius: 99, background: "var(--hover)" }}>
-                  {CONTEXT_LABEL[c] ?? c}
-                </span>
-              ))}
+              {(Object.keys(CONTEXT_LABEL) as SkillContext[]).map((c) => {
+                const on = viewing.contexts.includes(c);
+                return (
+                  <button
+                    type="button"
+                    key={c}
+                    className={`skill-ctx${on ? " on" : ""}`}
+                    aria-pressed={on}
+                    onClick={() => {
+                      const contexts = on ? viewing.contexts.filter((x) => x !== c) : [...viewing.contexts, c];
+                      if (!contexts.length) {
+                        toast("至少保留一个适用位置", "err");
+                        return;
+                      }
+                      const next = { ...viewing, contexts };
+                      install(next);
+                      setViewing(next);
+                    }}
+                  >
+                    <span className="skill-ctx-box">{on ? <IcCheck size={10} /> : null}</span>
+                    {CONTEXT_LABEL[c]}
+                  </button>
+                );
+              })}
             </div>
           </div>
           {viewing.variables.length ? (
@@ -121,9 +239,19 @@ export function SkillManager() {
           ) : null}
           <div>
             <div className="sec-desc" style={{ marginBottom: 4 }}>指令</div>
-            <pre style={{ whiteSpace: "pre-wrap", fontSize: 12.5, lineHeight: 1.6, background: "var(--panel)", padding: 12, borderRadius: "var(--r-md)", maxHeight: 360, overflow: "auto" }}>
-              {viewing.instructions || "（空）"}
-            </pre>
+            {editing && draft ? (
+              <textarea
+                className="textarea nodrag nowheel"
+                rows={14}
+                style={{ fontSize: 12.5, lineHeight: 1.6 }}
+                value={draft.instructions}
+                onChange={(e) => setDraft({ ...draft, instructions: e.target.value })}
+              />
+            ) : (
+              <pre style={{ whiteSpace: "pre-wrap", fontSize: 12.5, lineHeight: 1.6, background: "var(--panel)", padding: 12, borderRadius: "var(--r-md)", maxHeight: 360, overflow: "auto" }}>
+                {viewing.instructions || "（空）"}
+              </pre>
+            )}
           </div>
         </div>
       ) : (
@@ -142,11 +270,15 @@ export function SkillManager() {
               onChange={(e) => e.target.files && onFiles(e.target.files)}
             />
             <span className="sec-desc">
-              支持 SKILL.md（单文件）和 .momoskill（完整包）；当前版本不执行脚本
+              支持 SKILL.md（单文件）、Skill zip（Claude 风格）和 .momoskill（完整包）；可把文件直接拖进本窗口导入；当前版本不执行脚本
             </span>
           </Row>
 
-          {skills.length === 0 ? (
+          {!loaded ? (
+            <div className="sec-desc" style={{ padding: "24px 0", textAlign: "center" }}>
+              正在加载 Skill 列表…
+            </div>
+          ) : skills.length === 0 ? (
             <div className="sec-desc" style={{ padding: "24px 0", textAlign: "center" }}>
               还没有 Skill。导入一个 SKILL.md 或点击齿轮试试内置 Skill。
             </div>
@@ -158,7 +290,7 @@ export function SkillManager() {
                   key={s.id}
                   className="tpl-row"
                   style={{ opacity: s.enabled ? 1 : 0.55, cursor: "pointer" }}
-                  onClick={() => setViewing(s)}
+                  onClick={() => openView(s)}
                 >
                   <span className="tn" style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
                     <button
@@ -215,6 +347,7 @@ export function SkillManager() {
           )}
         </div>
       )}
+      </div>
     </Modal>
   );
 }

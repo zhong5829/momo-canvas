@@ -5,7 +5,7 @@ import { EditSurface } from "../EditSurface";
 import { IcCopy, IcDice, IcDownload, IcFlow, IcLoading, IcRows } from "../../../ui/icons";
 import { Switch } from "../../../ui/kit";
 import { useBoard } from "../../../core/stores/boardStore";
-import { useComfy } from "../../../core/stores/comfyStore";
+import { useComfyTemplates } from "../../../core/stores/comfyStore";
 import { useSettings } from "../../../core/stores/settingsStore";
 import { toast, useUi } from "../../../core/stores/uiStore";
 import { saveImageAs } from "../../../core/services/imageSaver";
@@ -18,7 +18,7 @@ import type { ComfyData, ComfyExposedParam } from "../../../core/types";
 export const ComfyNode = memo(function ComfyNode({ id, data, selected }: NodeProps) {
   const d = data as ComfyData;
   const upd = useBoard((s) => s.updateData);
-  const templates = useComfy((s) => s.templates);
+  const templates = useComfyTemplates();
   const setLightbox = useUi((s) => s.setLightbox);
   const running = d.status === "running";
   const tpl = templates.find((t) => t.id === d.templateId);

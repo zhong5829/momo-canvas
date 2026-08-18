@@ -16,7 +16,7 @@ pnpm build          # tsc && vite build，仅前端产物，可作完整验证
 pnpm tauri build    # 打包发行版 —— 仅在用户明确要求时执行
 ```
 
-开发闭环：`.claude/settings.json` 配置了 Stop hook（`.claude/hooks/restart-app.ps1`），每轮结束时自动确保 dev 应用在跑（健康实例不会被杀，Vite HMR / tauri dev 自身热更新即可生效；日志在 `.claude/dev-server.log`）。**不要手动启动 `pnpm tauri dev`**，改完代码结束回合即可看到效果。
+开发闭环：Stop hook（`.claude/hooks/restart-app.ps1`）**当前已被用户停用**（`.claude/settings.json` hooks 已清空）——用户的 dev 实例常驻，修改全部靠 Vite HMR / tauri dev 热更新生效，不要重启也不要手动启动 `pnpm tauri dev`。
 
 ## 架构（分层，依赖只向下）
 

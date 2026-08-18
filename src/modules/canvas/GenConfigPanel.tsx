@@ -689,14 +689,13 @@ export function GenConfigPanel() {
                 随机种子
                 <span className="gp-hint">锁定后同提示词+同参数可复现（不支持的家族会被忽略）</span>
               </div>
-              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <div className="gp-seed">
                 <input
                   className="input nodrag"
                   type="number"
                   placeholder="随机"
                   value={d.seed ?? ""}
                   onChange={(e) => patch({ seed: e.target.value ? Number(e.target.value) : undefined })}
-                  style={{ width: 130 }}
                 />
                 <button
                   className="btn sm nodrag"

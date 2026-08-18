@@ -8,53 +8,37 @@
  *  - Take 列表（浏览/采用/备注/星标）
  *  - 手动导入结果文件绑定到 Take（实际生成队列在阶段 11 实现）
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useDirector } from "../../core/stores/directorStore";
-import { useComfy } from "../../core/stores/comfyStore";
-import { useSettings } from "../../core/stores/settingsStore";
 import { useAssets } from "../../core/stores/assetStore";
-import { toast } from "../../core/stores/uiStore";
+import { toast, useUi } from "../../core/stores/uiStore";
 import { approveTake, createTake, projectProgress } from "../../core/directorEngine";
 import { runBatch, collectBatchTasks, cancelBatch, type BatchOp } from "../../core/directorQueue";
-import { assetUrl } from "../../core/services/assetFiles";
-import { RefSlotsCard } from "./RefSlotsCard";
-import { uid } from "../../core/utils";
-import { IcStar, IcCheck, IcUpload, IcLoading, IcZap, IcFilmFrame, IcWand, IcClapper, IcPlus } from "../../ui/icons";
-import type { DirectorProject, DirectorSegment, DirectorTake, DirectorRecipe } from "../../core/types";
-
-/** 配方模式徽章文案 */
-const MODE_LABEL: Record<DirectorRecipe["mode"], string> = {
-  t2v: "文生视频",
-  i2v: "图生视频",
-  fl2v: "首尾帧",
-  r2v: "多参考",
-  v2v: "视频重绘",
-  t2i: "文生图",
-  i2i: "图生图",
-};
+import { assetUrl, assetToBlobUrl } from "../../core/services/assetFiles";
+import { extractAudioWav } from "../../core/videoEdit";
+import { RecipeSelect } from "./RecipeSelect";
+import { PopSelect, PopLayer } from "../../ui/PopSelect";
+import { Thumb } from "../../ui/Thumb";
+import { ScrubVideoThumb, fmtDur } from "../../ui/VideoThumb";
+import { IcStar, IcCheck, IcUpload, IcLoading, IcZap, IcFilmFrame, IcClapper, IcRefresh, IcClose, IcMic } from "../../ui/icons";
+import type { DirectorProject, DirectorSegment, DirectorTake } from "../../core/types";
 
 export function GenerationPage({ project }: { project: DirectorProject }) {
   const updateProject = useDirector((s) => s.updateProject);
-  const templates = useComfy((s) => s.templates);
   // 审核看板：片段列表带最新 Take 缩略图（资产库里的封面）
   const assets = useAssets((s) => s.items);
-  // 订阅稳定引用 + useMemo 派生：此前 selector 内 map 出新对象数组，useShallow 比较项引用永远失败，
-  // getSnapshot 每次调用都返回新引用 → React 判定快照未缓存 → 无限重渲染（Maximum update depth exceeded）
-  const providers = useSettings((s) => s.settings.models.providers);
-  const videoModels = useMemo(
-    () =>
-      providers.flatMap((p) =>
-        (p.models.video?.models ?? []).map((m) => ({ key: `${p.id}::${m}`, label: `${p.name} · ${m}` })),
-      ),
-    [providers],
-  );
   const allSegs = project.scenes.flatMap((s) => s.segments.map((seg) => ({ seg, scene: s })));
   const [selSegId, setSelSegId] = useState<string | null>(allSegs[0]?.seg.id ?? null);
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchProgress, setBatchProgress] = useState("");
   const [batchDone, setBatchDone] = useState(0);
   const [batchTotal, setBatchTotal] = useState(0);
+  // 当前片段细粒度进度：ComfyUI 报节点/步数百分比（pct），远程任务为流动动画（pct 无值）
+  const [batchPct, setBatchPct] = useState<number | undefined>();
+  const [batchMsg, setBatchMsg] = useState("");
   const [batchOp, setBatchOp] = useState<BatchOp>("missing");
+  // 片段多选勾选：批量范围「勾选的片段」一起重新生成（无勾选时退回当前点选片段）
+  const [checked, setChecked] = useState<Set<string>>(new Set());
 
   // B2 修复：selSegId 失效（重新拆分后旧 id 找不到）时回落到首个
   useEffect(() => {
@@ -71,42 +55,38 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
   const progress = projectProgress(project);
   const failedCount = allSegs.reduce((n, x) => n + (x.seg.takes ?? []).filter((t) => t.status === "error").length, 0);
 
-  const addRecipe = () => {
-    const recipe: DirectorRecipe = {
-      id: uid(6),
-      name: "新配方",
-      engine: "comfy",
-      output: "video",
-      mode: "i2v",
-      defaultParams: {},
-    };
-    updateProject(project.id, { recipes: [...project.recipes, recipe] });
-  };
-  const updateRecipe = (id: string, patch: Partial<DirectorRecipe>) => {
-    updateProject(project.id, {
-      recipes: project.recipes.map((r) => (r.id === id ? { ...r, ...patch } : r)),
-    });
-  };
-  const removeRecipe = (id: string) => {
-    updateProject(project.id, { recipes: project.recipes.filter((r) => r.id !== id) });
-  };
+  // 应用内确认卡片（替代 window.confirm——WebView2 的原生确认框会掉到窗口后面，难关）
+  const [ask, setAsk] = useState<{ text: string; onOk: () => void } | null>(null);
+  const askDialog = (text: string, onOk: () => void) => setAsk({ text, onOk });
 
-  const doBatch = async (op: BatchOp) => {
-    const selectedIds = op === "selected" && selSegId ? [selSegId] : undefined;
+  const doBatch = (op: BatchOp) => {
+    const selectedIds =
+      op === "selected" ? (checked.size ? [...checked] : selSegId ? [selSegId] : undefined) : undefined;
     const tasks = collectBatchTasks(project, op, selectedIds);
     if (!tasks.length) {
       toast(op === "missing" ? "没有缺失的片段" : op === "failed" ? "没有失败的任务" : op === "modified" ? "没有已修改的片段" : "请先选中要生成的片段", "info");
       return;
     }
-    if (!confirm(`即将生成 ${tasks.length} 个视频片段（本地 ComfyUI 串行，不产生 API 费用；若配方使用远程计费接口则按其计费）。确认开始？`)) return;
+    askDialog(
+      `即将生成 ${tasks.length} 个视频片段（本地 ComfyUI 串行，不产生 API 费用；若配方使用远程计费接口则按其计费）。` +
+        (project.tailFrameRelay ? "已开启尾帧接力：每段完成后会抽其尾帧，自动作为下一段的参考。" : "") +
+        "确认开始？",
+      () => void executeBatch(op, selectedIds),
+    );
+  };
+
+  const executeBatch = async (op: BatchOp, selectedIds?: string[]) => {
     setBatchBusy(true);
     setBatchDone(0);
-    setBatchTotal(tasks.length);
+    const n = collectBatchTasks(project, op, selectedIds).length;
+    setBatchTotal(n);
     try {
-      const { done, failed, cancelled } = await runBatch(project.id, op, selectedIds, (d, t, name) => {
+      const { done, failed, cancelled } = await runBatch(project.id, op, selectedIds, (d, t, name, detail) => {
         setBatchDone(d + 1);
         setBatchTotal(t);
         setBatchProgress(name ? `(${d + 1}/${t}) ${name}` : "");
+        setBatchPct(detail?.pct);
+        setBatchMsg(detail?.msg ?? "");
       });
       const msg = cancelled
         ? `批量已取消：成功 ${done}，失败 ${failed}，已取消 ${cancelled}`
@@ -117,14 +97,14 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
     } finally {
       setBatchBusy(false);
       setBatchProgress("");
+      setBatchPct(undefined);
+      setBatchMsg("");
     }
   };
 
   if (!allSegs.length) {
     return (
       <div className="ds-page">
-        {/* 没有片段时也可以先配参考图（片段拆分后自动生效） */}
-        <RefSlotsCard project={project} />
         <div className="ds-empty">
           <span className="ds-card-ic">
             <IcFilmFrame size={18} />
@@ -158,55 +138,80 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
         </div>
       </div>
 
-      {/* 参考图卡：上游图片的顺序与接入点（方案 §7.7 素材槽） */}
-      <RefSlotsCard project={project} />
-
-      {/* 批量生成卡 */}
-      <div className="ds-card">
-        <div className="ds-card-head">
-          <span className="ds-card-ic">
-            <IcZap size={16} />
-          </span>
-          <div>
-            <div className="ds-card-title">批量生成</div>
-            <div className="ds-card-desc">本地串行生成视频片段，缺片/失败可一键补齐</div>
-          </div>
-        </div>
-        <div className="ds-card-body">
+      {/* 批量生成：单行工具条（选项少，不占纵向空间） */}
+      <div className="ds-card ds-batchbar">
+        <div className="ds-batchbar-row">
           {batchBusy ? (
-            <div className="dsg-batch-busy">
-              <div className="dsg-batch-row">
+            <div className="dsg-batch-live nodrag">
+              <div className="dsg-batch-live-head">
                 <span className="ds-card-desc dsg-batch-progress">
-                  <IcLoading size={13} /> {batchProgress}
+                  <IcLoading size={13} /> {batchProgress || "生成中"}
                 </span>
-                <button className="btn sm danger" onClick={() => { cancelBatch(); }}>
+                <span className="ds-opt-hint">
+                  总进度 {batchDone}/{batchTotal}
+                  {batchPct !== undefined ? ` · 当前片段 ${batchPct}%` : ""}
+                </span>
+                <span className="spacer" />
+                <button className="btn sm danger" onClick={() => cancelBatch()}>
                   取消批量
                 </button>
               </div>
-              {/* 队列进度条：批量任务的可视化状态 */}
-              <div className="progress-bar" title={`队列进度 ${batchDone}/${batchTotal}`}>
+              <div className="dsg-bar" title={`批量总进度 ${batchDone}/${batchTotal}`}>
                 <i style={{ width: `${batchTotal ? Math.round((batchDone / batchTotal) * 100) : 0}%` }} />
               </div>
-              <div className="ds-card-desc" style={{ marginTop: 4 }}>
-                队列：{batchDone}/{batchTotal} 个片段 · 本地串行生成中
+              <div
+                className={`dsg-bar sub${batchPct === undefined ? " indet" : ""}`}
+                title={batchMsg || "当前片段进度（ComfyUI 报节点/步数百分比；远程任务为不确定进度）"}
+              >
+                <i style={batchPct !== undefined ? { width: `${batchPct}%` } : undefined} />
+              </div>
+              <div className="dsg-sub-msg" title={batchMsg}>
+                {batchMsg || "当前片段生成中…"}
               </div>
             </div>
           ) : (
-            <div className="dsg-batch-row">
-              <select
-                className="input sm nodrag dsg-batch-scope"
+            <>
+              <PopSelect
+                className="dsg-batch-scope"
+                title="批量范围"
                 value={batchOp}
-                onChange={(e) => setBatchOp(e.target.value as BatchOp)}
-              >
-                <option value="missing">缺失片段</option>
-                <option value="modified">已修改片段</option>
-                <option value="failed">失败任务</option>
-                <option value="selected">当前选中片段</option>
-              </select>
+                triggerIcon
+                options={[
+                  { value: "missing", label: "缺失片段", icon: <IcFilmFrame size={14} /> },
+                  { value: "modified", label: "已修改片段", icon: <IcRefresh size={14} /> },
+                  { value: "failed", label: "失败任务", icon: <IcClose size={14} /> },
+                  { value: "selected", label: checked.size ? `勾选的片段（${checked.size}）` : "勾选/当前选中片段", icon: <IcCheck size={14} /> },
+                ]}
+                onChange={(v) => setBatchOp(v as BatchOp)}
+              />
               <button className="btn sm primary" onClick={() => doBatch(batchOp)}>
                 <IcZap size={14} /> 开始批量生成
               </button>
-            </div>
+              <label
+                className="ds-opt"
+                title="每段生成结束后调用 ComfyUI /free 卸载模型并释放显存；H3 等大工作流防显存堆积，代价是下一段重新加载模型"
+              >
+                <input
+                  type="checkbox"
+                  className="nodrag"
+                  checked={!!project.freeMemBetween}
+                  onChange={(e) => updateProject(project.id, { freeMemBetween: e.target.checked })}
+                />
+                <span className="ds-opt-hint">每段后清显存</span>
+              </label>
+              <label
+                className="ds-opt"
+                title="批量生成连贯性：上一段生成完成后自动抽取其尾帧，作为下一段的首帧/首张参考图（本段显式首帧优先），与本段参考图一起投喂，保证跨段画面衔接；关闭则各段独立生成"
+              >
+                <input
+                  type="checkbox"
+                  className="nodrag"
+                  checked={!!project.tailFrameRelay}
+                  onChange={(e) => updateProject(project.id, { tailFrameRelay: e.target.checked })}
+                />
+                <span className="ds-opt-hint">尾帧接力</span>
+              </label>
+            </>
           )}
         </div>
       </div>
@@ -229,12 +234,31 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
               // 看板缩略图：最新完成的 Take 封面（从资产库解析）
               const latestDone = [...(seg.takes ?? [])].reverse().find((t) => t.status === "done" && t.assetId);
               const thumb = latestDone ? assets.find((a) => a.id === latestDone.assetId)?.thumb : undefined;
+              const on = checked.has(seg.id);
               return (
-                <button
+                <div
                   key={seg.id}
+                  role="button"
+                  tabIndex={0}
                   className={`ds-seg-pick ${selSegId === seg.id ? "on" : ""}`}
                   onClick={() => setSelSegId(seg.id)}
+                  onKeyDown={(e) => e.key === "Enter" && setSelSegId(seg.id)}
                 >
+                  <input
+                    type="checkbox"
+                    className="nodrag ds-seg-check"
+                    title="勾选后可用批量范围「勾选的片段」一起重新生成"
+                    checked={on}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) =>
+                      setChecked((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(seg.id);
+                        else next.delete(seg.id);
+                        return next;
+                      })
+                    }
+                  />
                   <span className="ds-seg-pick-n">{i + 1}</span>
                   {thumb ? (
                     <img className="ds-seg-thumb" src={assetUrl(thumb)} alt="" loading="lazy" />
@@ -245,13 +269,13 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
                   )}
                   <span className="ds-seg-pick-name">{scene.location} · {seg.summary.slice(0, 20)}</span>
                   {approved ? <span className="ds-badge ok">✓</span> : seg.takes?.length ? <span className="ds-badge">{seg.takes.length}</span> : <span className="ds-badge warn">缺</span>}
-                </button>
+                </div>
               );
             })}
           </div>
         </div>
 
-        {/* 右：Take 卡 + 配方卡 */}
+        {/* 右：Take 卡（配方管理已收进配方下拉的「管理配方…」弹窗） */}
         <div className="ds-side">
           {sel ? (
             <TakeManager project={project} segment={sel.seg} />
@@ -263,95 +287,19 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
               </div>
             </div>
           )}
-
-          {/* 配方卡（默认折叠，点击展开编辑） */}
-          <div className="ds-card">
-            <div className="ds-card-head">
-              <span className="ds-card-ic">
-                <IcWand size={16} />
-              </span>
-              <div>
-                <div className="ds-card-title">生成配方</div>
-                <div className="ds-card-desc">把「想做什么」与「具体怎么调用」隔离，点击展开编辑</div>
-              </div>
-              <div className="ds-card-acts">
-                <button className="btn sm" onClick={addRecipe}>
-                  <IcPlus size={13} /> 新增配方
-                </button>
-              </div>
-            </div>
-            <div className="ds-card-body">
-              {project.recipes.length ? (
-                project.recipes.map((r) => (
-                  <details key={r.id} className="ds-recipe">
-                    <summary className="ds-recipe-summary">
-                      <b>{r.name}</b>
-                      <span className="dsg-recipe-badges">
-                        <span className="ds-badge">{r.engine === "comfy" ? "本地 ComfyUI" : "远程 API"}</span>
-                        <span className="ds-badge">{r.output === "video" ? "视频" : "图片"}</span>
-                        <span className="ds-badge">{MODE_LABEL[r.mode]}</span>
-                      </span>
-                    </summary>
-                    <div className="ds-recipe-edit nodrag">
-                      <label className="ds-threed-field">
-                        名称
-                        <input className="input sm" value={r.name} onChange={(e) => updateRecipe(r.id, { name: e.target.value })} />
-                      </label>
-                      <label className="ds-threed-field">
-                        引擎
-                        <select className="input sm" value={r.engine} onChange={(e) => updateRecipe(r.id, { engine: e.target.value as "comfy" | "provider" })}>
-                          <option value="comfy">本地 ComfyUI</option>
-                          <option value="provider">远程 API</option>
-                        </select>
-                      </label>
-                      <label className="ds-threed-field">
-                        输出
-                        <select className="input sm" value={r.output} onChange={(e) => updateRecipe(r.id, { output: e.target.value as "image" | "video" })}>
-                          <option value="image">图片</option>
-                          <option value="video">视频</option>
-                        </select>
-                      </label>
-                      <label className="ds-threed-field">
-                        模式
-                        <select className="input sm" value={r.mode} onChange={(e) => updateRecipe(r.id, { mode: e.target.value as DirectorRecipe["mode"] })}>
-                          <option value="t2v">文生视频</option>
-                          <option value="i2v">图生视频</option>
-                          <option value="fl2v">首尾帧视频</option>
-                          <option value="r2v">多参考视频</option>
-                          <option value="t2i">文生图</option>
-                          <option value="i2i">图生图</option>
-                        </select>
-                      </label>
-                      {r.engine === "comfy" ? (
-                        <label className="ds-threed-field">
-                          ComfyUI 模板
-                          <select className="input sm" value={r.templateId ?? ""} onChange={(e) => updateRecipe(r.id, { templateId: e.target.value || undefined })}>
-                            <option value="">（选择模板）</option>
-                            {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                          </select>
-                        </label>
-                      ) : (
-                        <label className="ds-threed-field">
-                          远程视频模型
-                          <select className="input sm" value={r.providerModelKey ?? ""} onChange={(e) => updateRecipe(r.id, { providerModelKey: e.target.value || undefined })}>
-                            <option value="">（选择模型）</option>
-                            {videoModels.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
-                          </select>
-                        </label>
-                      )}
-                      <button className="btn sm danger" onClick={() => removeRecipe(r.id)}>删除配方</button>
-                    </div>
-                  </details>
-                ))
-              ) : (
-                <div className="ds-empty">
-                  <div className="ds-empty-title">还没有配方</div>
-                  <div className="ds-empty-desc">配方把「用户想做什么」与「具体怎么调用」隔离（方案 §7.5），点右上角「新增配方」创建。</div>
-                </div>
-              )}
+  
+      {ask ? (
+        <div className="ds-ask" onMouseDown={(e) => { if (e.target === e.currentTarget) setAsk(null); }}>
+          <div className="ds-ask-card">
+            <div className="ds-ask-text">{ask.text}</div>
+            <div className="ds-ask-row">
+              <button className="btn sm" onClick={() => setAsk(null)}>取消</button>
+              <button className="btn sm primary" onClick={() => { const f = ask.onOk; setAsk(null); f(); }}>确认开始</button>
             </div>
           </div>
         </div>
+      ) : null}
+      </div>
       </div>
     </div>
   );
@@ -360,11 +308,26 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
 function TakeManager({ project, segment }: { project: DirectorProject; segment: DirectorSegment }) {
   const updateProject = useDirector((s) => s.updateProject);
   const collect = useAssets((s) => s.collect);
+  const assets = useAssets((s) => s.items);
   const fileRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
+  const [regenBusy, setRegenBusy] = useState(false);
 
   const takes = segment.takes ?? [];
   const approved = segment.approvedTakeId;
+  // 正在生成：以 store 里 Take 的真实状态为准（切页不丢）
+  const running = takes.some((t) => t.status === "running" || t.status === "queued");
+
+  /** 按当前提示词与参考素材重新生成本段（产出一个新版本 Take） */
+  const regen = async () => {
+    setRegenBusy(true);
+    try {
+      const r = await runBatch(project.id, "selected", [segment.id]);
+      if (r.done || r.failed) toast(`生成结束：完成 ${r.done}${r.failed ? ` · 失败 ${r.failed}` : ""}`, r.failed ? "info" : "ok");
+    } finally {
+      setRegenBusy(false);
+    }
+  };
 
   const importResult = async (kind: "image" | "video", files: FileList) => {
     setImporting(true);
@@ -395,6 +358,18 @@ function TakeManager({ project, segment }: { project: DirectorProject; segment: 
   };
 
   const setApproved = (takeId: string) => approveTake(project.id, segment.id, takeId);
+  /** 取消采用：清掉采用标记回到未选片状态（版本保留，可重新采用别的） */
+  const unsetApproved = () => {
+    const scenes = project.scenes.map((s) => ({
+      ...s,
+      segments: s.segments.map((seg) =>
+        seg.id === segment.id
+          ? { ...seg, approvedTakeId: null, takes: (seg.takes ?? []).map((t) => ({ ...t, approved: false })) }
+          : seg,
+      ),
+    }));
+    updateProject(project.id, { scenes });
+  };
   const toggleStar = (takeId: string) => {
     const scenes = project.scenes.map((s) => ({
       ...s,
@@ -406,8 +381,8 @@ function TakeManager({ project, segment }: { project: DirectorProject; segment: 
     }));
     updateProject(project.id, { scenes });
   };
+  const [askDel, setAskDel] = useState<string | null>(null);
   const removeTake = (takeId: string) => {
-    if (!confirm("删除这个版本？（已采用的需先取消采用）")) return;
     const scenes = project.scenes.map((s) => ({
       ...s,
       segments: s.segments.map((seg) =>
@@ -433,36 +408,50 @@ function TakeManager({ project, segment }: { project: DirectorProject; segment: 
           <div className="ds-card-title">版本 Takes</div>
           <div className="ds-card-desc">{segment.summary.slice(0, 30)} · {segment.durationSec}s · {takes.length} 个版本</div>
         </div>
+        <span className="ds-card-acts">
+          <button
+            className="btn sm primary"
+            title="按当前提示词与参考素材重新生成本段（产出一个新版本）"
+            disabled={running || regenBusy}
+            onClick={() => void regen()}
+          >
+            {running || regenBusy ? <IcLoading size={13} /> : <IcRefresh size={13} />} 重新生成
+          </button>
+        </span>
       </div>
       <div className="ds-card-body">
-        {/* 片段级配方选择（P0-3 修复） */}
-        <label className="ds-threed-field nodrag">
-          本片段使用的配方
-          <select
-            className="input sm"
-            value={segment.recipeId ?? ""}
-            onChange={(e) => {
-              const scenes = project.scenes.map((s) => ({
-                ...s,
-                segments: s.segments.map((seg) => (seg.id === segment.id ? { ...seg, recipeId: e.target.value || undefined } : seg)),
-              }));
-              useDirector.getState().updateProject(project.id, { scenes });
-            }}
-          >
-            <option value="">（项目默认 / 无配方）</option>
-            {project.recipes.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-          </select>
-        </label>
+        {/* 片段级配方选择：模板直选自动建配方 */}
+        <div className="dsg-take-recipe nodrag">
+          <span className="ds-card-desc">本片段配方</span>
+          <RecipeSelect project={project} target="segment" segmentId={segment.id} />
+        </div>
         {takes.length ? (
           <div className="ds-takes">
-            {takes.map((t) => (
-              <TakeCard key={t.id} take={t} approved={approved === t.id} onApprove={() => setApproved(t.id)} onStar={() => toggleStar(t.id)} onRemove={() => removeTake(t.id)} />
-            ))}
+            {takes.map((t) => {
+              const asset = t.assetId ? assets.find((a) => a.id === t.assetId) : undefined;
+              return (
+                <TakeCard
+                  key={t.id}
+                  take={t}
+                  projectId={project.id}
+                  segmentId={segment.id}
+                  segmentName={segment.summary}
+                  assetKind={asset?.kind}
+                  assetPath={asset?.path}
+                  assetName={asset?.name}
+                  approved={approved === t.id}
+                  onApprove={() => setApproved(t.id)}
+                  onUnapprove={unsetApproved}
+                  onStar={() => toggleStar(t.id)}
+                  onRemove={() => setAskDel(t.id)}
+                />
+              );
+            })}
           </div>
         ) : (
           <div className="ds-empty">
             <div className="ds-empty-title">还没有版本</div>
-            <div className="ds-empty-desc">用上方「批量生成」跑一遍，或手动导入外部生成结果。</div>
+            <div className="ds-empty-desc">用上方「开始批量生成」跑一遍，或手动导入外部生成结果。</div>
           </div>
         )}
       </div>
@@ -483,38 +472,198 @@ function TakeManager({ project, segment }: { project: DirectorProject; segment: 
         </button>
         <span className="spacer" />
         <span className="ds-card-desc">生成队列后续版本接入，当前可手动导入</span>
-      </div>
+      
+      {askDel ? (
+        <div className="ds-ask" onMouseDown={(e) => { if (e.target === e.currentTarget) setAskDel(null); }}>
+          <div className="ds-ask-card">
+            <div className="ds-ask-text">删除这个版本？（已采用的需先取消采用）</div>
+            <div className="ds-ask-row">
+              <button className="btn sm" onClick={() => setAskDel(null)}>取消</button>
+              <button className="btn sm danger" onClick={() => { removeTake(askDel); setAskDel(null); }}>删除</button>
+            </div>
+          </div>
+        </div>
+      ) : null}</div>
     </div>
   );
 }
 
-function TakeCard({ take, approved, onApprove, onStar, onRemove }: {
+/** 资产路径 → 可播 URL：视频走 blob URL（WebView2 的 asset:// 不支持视频 Range 流式播放） */
+function usePlayableUrl(path?: string): string | undefined {
+  const [u, setU] = useState<string | undefined>(() =>
+    path && !/^[a-z]+:/i.test(path) ? undefined : path,
+  );
+  useEffect(() => {
+    let on = true;
+    if (!path) {
+      setU(undefined);
+      return;
+    }
+    if (/^(blob:|data:|https?:)/i.test(path)) {
+      setU(path);
+      return;
+    }
+    void assetToBlobUrl(path)
+      .then((x) => {
+        if (on) setU(x);
+      })
+      .catch(() => setU(path)); // 转换失败退回 asset://（浏览器预览模式本来就能播）
+    return () => {
+      on = false;
+    };
+  }, [path]);
+  return u;
+}
+
+function TakeCard({ take, projectId, segmentId, segmentName, assetKind, assetPath, assetName, approved, onApprove, onUnapprove, onStar, onRemove }: {
   take: DirectorTake;
+  projectId: string;
+  segmentId: string;
+  segmentName: string;
+  assetKind?: "image" | "video" | "audio" | "other" | "pdf" | "vector";
+  assetPath?: string;
+  assetName?: string;
   approved: boolean;
   onApprove: () => void;
+  onUnapprove: () => void;
   onStar: () => void;
   onRemove: () => void;
 }) {
+  const isVideo = take.kind === "video" || assetKind === "video";
+  const playUrl = usePlayableUrl(isVideo ? assetPath : undefined);
+  // 提取声音：区间弹窗（提取 WAV 入资产库，拖到其他片段的音频参考格统一声线）
+  const [sndOpen, setSndOpen] = useState(false);
+  const [sndBusy, setSndBusy] = useState(false);
+  const [sndFrom, setSndFrom] = useState("0");
+  const [sndTo, setSndTo] = useState("");
+  const sndAnchor = useRef<HTMLButtonElement>(null);
+
+  const extractVoice = async () => {
+    if (!playUrl) return;
+    const from = Number(sndFrom) || 0;
+    const to = sndTo.trim() === "" ? undefined : Number(sndTo);
+    if (to !== undefined && (!Number.isFinite(to) || to <= from)) {
+      toast("结束秒需大于开始秒（留空 = 提取到片尾）", "err");
+      return;
+    }
+    setSndBusy(true);
+    try {
+      const wav = await extractAudioWav(playUrl, from, to);
+      const dataUrl = await new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result as string);
+        r.onerror = () => rej(new Error("读取失败"));
+        r.readAsDataURL(wav);
+      });
+      const asset = await useAssets.getState().collect({
+        src: dataUrl,
+        kind: "audio",
+        name: `${segmentName.slice(0, 10)} 声线`,
+        director: { projectId, segmentId, role: "reference" },
+      });
+      if (asset) toast(`声音已提取入库（${(wav.size / 1024).toFixed(0)}KB，在资产库 →「导演台参考」分类）——到分镜页把「${asset.name}」加进其他片段的音频参考格即可统一声线`, "ok");
+      setSndOpen(false);
+    } catch (e) {
+      toast(`提取声音失败：${e instanceof Error ? e.message : String(e)}`, "err");
+    } finally {
+      setSndBusy(false);
+    }
+  };
+
+  // 预览区：视频 = 悬停擦洗缩略图（blob URL 可播放，点击灯箱），图片 = 缩略图（点击灯箱放大）
+  const preview =
+    assetPath && take.status === "done" ? (
+      isVideo ? (
+        playUrl ? (
+          <ScrubVideoThumb src={playUrl} className="ds-take-media" />
+        ) : (
+          <div className="ds-take-media empty">
+            <IcLoading size={14} />
+          </div>
+        )
+      ) : (
+        <Thumb
+          src={assetUrl(assetPath)}
+          className="ds-take-media"
+          title={`${assetName ?? "生成结果"}（点击放大）`}
+          onClick={() => useUi.getState().setLightbox(assetUrl(assetPath), null, "image")}
+        />
+      )
+    ) : (
+      <div className="ds-take-media empty" title={take.error ?? undefined}>
+        <span>{take.status === "running" ? "生成中…" : take.status === "queued" ? "排队中" : take.status === "error" ? "失败" : "无预览"}</span>
+      </div>
+    );
+  // 真实生成耗时：优先 startedAt（不含排队等待）；旧数据无 startedAt 时退回 createdAt
+  const genSec =
+    take.finishedAt && take.finishedAt > (take.startedAt ?? take.createdAt)
+      ? Math.round((take.finishedAt - (take.startedAt ?? take.createdAt)) / 1000)
+      : 0;
   return (
     <div className={`ds-take ${approved ? "approved" : ""}`}>
+      {/* 收藏星标：卡片左上角悬浮（不占底部操作行宽度） */}
+      <button className={`icon-btn dsg-star ds-take-star ${take.starred ? "on" : ""}`} aria-label="星标" title="星标收藏" onClick={onStar}>
+        <IcStar size={13} />
+      </button>
+      <div className="ds-take-thumb">{preview}</div>
       <div className="ds-take-head">
-        <span className="ds-badge">{take.kind === "video" ? "视频" : "图片"} · {take.target}</span>
-        {take.status === "done" ? <span className="ds-badge ok">成功</span> : <span className="ds-badge warn">{take.status}</span>}
-        {approved ? <span className="ds-badge ok">✓ 采用</span> : null}
+        <span className="ds-badge">{take.kind === "video" ? "视频" : "图片"}</span>
+        {genSec > 0 ? (
+          <span className="ds-badge" title={`生成耗时 ${genSec} 秒（不含排队等待）`}>
+            ⏱ {fmtDur(genSec)}
+          </span>
+        ) : null}
+        {take.status === "done" ? (
+          approved ? (
+            <span className="ds-badge ok">✓ 采用</span>
+          ) : null
+        ) : (
+          <span className="ds-badge warn">{take.status === "running" ? "生成中" : take.status === "error" ? "失败" : take.status}</span>
+        )}
       </div>
-      {take.error ? <div className="ds-card-desc dsg-err">{take.error}</div> : null}
-      {take.note ? <div className="ds-card-desc">{take.note}</div> : null}
+      {take.error ? (
+        <div className="ds-card-desc dsg-err" title={take.error}>
+          {take.error.slice(0, 60)}
+        </div>
+      ) : null}
       <div className="ds-take-actions-row">
-        <button className={`icon-btn dsg-star ${take.starred ? "on" : ""}`} aria-label="星标" title="星标" onClick={onStar}>
-          <IcStar size={14} />
-        </button>
-        {!approved && take.status === "done" ? (
-          <button className="btn sm primary" onClick={onApprove}>
-            <IcCheck size={14} /> 采用
+        {isVideo && take.status === "done" && playUrl ? (
+          <button ref={sndAnchor} className="icon-btn" title="提取人物声音（可选区间，入资产库后拖到其他片段的音频参考格）" onClick={() => setSndOpen((v) => !v)}>
+            {sndBusy ? <IcLoading size={14} /> : <IcMic size={14} />}
           </button>
+        ) : null}
+        {take.status === "done" ? (
+          approved ? (
+            <button className="btn sm ghost" title="取消采用，回到未选片状态（版本保留）" onClick={onUnapprove}>
+              取消采用
+            </button>
+          ) : (
+            <button className="btn sm primary" onClick={onApprove}>
+              <IcCheck size={14} /> 采用
+            </button>
+          )
         ) : null}
         <button className="icon-btn danger" aria-label="删除" title="删除" onClick={onRemove}>✕</button>
       </div>
+      {sndOpen ? (
+        <PopLayer anchorRef={sndAnchor} onClose={() => setSndOpen(false)} className="ds-snd-pop">
+          <div className="ds-snd-title">提取人物声音（统一声线用）</div>
+          <div className="ds-snd-row nodrag">
+            <label>
+              开始秒
+              <input className="input sm" value={sndFrom} onChange={(e) => setSndFrom(e.target.value)} placeholder="0" />
+            </label>
+            <label>
+              结束秒
+              <input className="input sm" value={sndTo} onChange={(e) => setSndTo(e.target.value)} placeholder="片尾" />
+            </label>
+          </div>
+          <div className="ds-snd-hint">截取说话最清晰的一小段即可；提取后到分镜页，用片段「音频参考」格的挑选（或资产库 →「导演台参考」分类）把这条声音加进其他片段（REF2VA 的 Audio N），人物声线就跟这一段对齐。</div>
+          <button className="btn sm primary" disabled={sndBusy} onClick={() => void extractVoice()}>
+            {sndBusy ? <IcLoading size={13} /> : <IcMic size={13} />} 提取并入库
+          </button>
+        </PopLayer>
+      ) : null}
     </div>
   );
 }

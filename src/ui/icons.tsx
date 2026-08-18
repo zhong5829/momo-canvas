@@ -119,6 +119,16 @@ export const IcZap = (p: IconProps) => (
   </I>
 );
 
+/* 清理：扫帚 */
+export const IcBroom = (p: IconProps) => (
+  <I {...p}>
+    <path d="M20.5 3.5l-7.8 7.8" />
+    <path d="M13.2 10.8l1.6 1.6-4.5 4.5c-1 1-2.5 1.1-3.5.2l-.7-.7c-.9-.9-.8-2.5.2-3.5z" />
+    <path d="M6.4 19.1l-2.4 2.4" />
+    <path d="M9 20.2l-1.6 2.1" />
+  </I>
+);
+
 /* 专业：钻石 */
 export const IcDiamond = (p: IconProps) => (
   <I {...p}>
@@ -603,6 +613,13 @@ export const IcCursor = (p: IconProps) => (
   </I>
 );
 
+export const IcEye = (p: IconProps) => (
+  <I {...p}>
+    <path d="M2.5 12c1.5-3.2 4.9-6.1 9.5-6.1s8 2.9 9.5 6.1c-1.5 3.2-4.9 6.1-9.5 6.1S4 15.2 2.5 12Z" />
+    <circle cx="12" cy="12" r="2.6" />
+  </I>
+);
+
 export const IcEyeOff = (p: IconProps) => (
   <I {...p}>
     <path d="M4 4.5 20 19.5" />
@@ -732,3 +749,4 @@ export const IcPose = (p: IconProps) => (
     <path d="M12 9.6v5M12 14.6l-2.8 4.2M12 14.6l2.8 4.2M7 4.8c1.6 2 3.2 3 5 3s3.4-1 5-3" />
   </I>
 );
+

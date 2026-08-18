@@ -1873,9 +1873,10 @@
 }
 :is(.gen-panel, .gp-scope) .gp-hint,
 .ne-pop .gp-hint {
-  font-size: 12.5px;
+  font-size: 11.5px;
   color: var(--text-3);
-  font-weight: 500;
+  font-weight: 400;
+  line-height: 1.5;
 }
 :is(.gen-panel, .gp-scope) .gp-grid {
   display: grid;
@@ -1979,18 +1980,18 @@
   background: var(--grad-brand-soft);
   color: var(--accent);
 }
-.gen-panel .gp-wh {
+:is(.gen-panel, .gp-scope) .gp-wh {
   display: flex;
   gap: 8px;
   margin-bottom: 7px;
 }
 /* 自定义行紧跟分区标题，不再单独留标签位 */
-.gen-panel .gp-wh.inline {
+:is(.gen-panel, .gp-scope) .gp-wh.inline {
   align-items: center;
   margin: 0;
 }
 /* 视频面板：选项复选行（生成音频 / 尾帧过渡） */
-.gen-panel .gp-opts {
+:is(.gen-panel, .gp-scope) .gp-opts {
   display: flex;
   gap: 14px;
   flex-wrap: wrap;
@@ -2001,14 +2002,17 @@
   gap: 4px;
 }
 .ratio-pair .input {
-  width: 62px;
+  width: 56px;
+  min-height: 26px;
+  padding: 3px 8px;
+  font-size: 12.5px;
 }
 .ratio-pair i {
   font-style: normal;
   font-weight: 700;
   color: var(--text-3);
 }
-.gen-panel .gp-wh label {
+:is(.gen-panel, .gp-scope) .gp-wh label {
   flex: 1;
   display: flex;
   align-items: center;
@@ -2017,16 +2021,37 @@
   font-weight: 600;
   color: var(--text-3);
 }
-.gen-panel .gp-wh .input {
+:is(.gen-panel, .gp-scope) .gp-wh .input {
   min-height: 26px;
   padding: 3px 8px;
   font-size: 12.5px;
 }
-.gen-panel .gp-foot {
-  font-size: 12.5px;
+:is(.gen-panel, .gp-scope) .gp-foot {
+  font-size: 11.5px;
   color: var(--text-3);
   line-height: 1.5;
   margin-top: auto;
+}
+/* 随机种子行：输入框与其他控件同高（26-28px 小号） */
+:is(.gen-panel, .gp-scope) .gp-seed {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+:is(.gen-panel, .gp-scope) .gp-seed .input {
+  flex: 1;
+  min-height: 28px;
+  padding: 3px 10px;
+  font-size: 12.5px;
+}
+/* 参数浮层 / 节点编辑浮层内的下拉：小号精致样式（全局 38px 默认只留给设置页大表单）。
+   新功能在浮层里用 PopSelect 即自动命中，不要再叠内联样式。 */
+:is(.gp-scope, .ne-pop) .pop-trigger {
+  min-height: 30px;
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  gap: 6px;
 }
 
 /* ============ 左侧工具栏 ============ */
@@ -3531,7 +3556,7 @@
 }
 
 /* 视频面板：复选行 */
-.gen-panel .gp-check {
+:is(.gen-panel, .gp-scope) .gp-check {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -3540,7 +3565,7 @@
   color: var(--text-2);
   cursor: pointer;
 }
-.gen-panel .gp-check input[type="checkbox"] {
+:is(.gen-panel, .gp-scope) .gp-check input[type="checkbox"] {
   width: 15px;
   height: 15px;
   accent-color: var(--accent);
@@ -3548,10 +3573,15 @@
 }
 
 /* 视频面板：时长（预设 + 滑块 + 自定义） */
-.gen-panel .gp-dur {
+:is(.gen-panel, .gp-scope) .gp-dur {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+:is(.gen-panel, .gp-scope) .gp-dur .input {
+  min-height: 26px;
+  padding: 3px 8px;
+  font-size: 12.5px;
 }
 
 /* 分镜节点 */
@@ -3814,6 +3844,13 @@
   color: var(--text-3);
   font-size: 12.5px;
   background: var(--input-bg);
+}
+/* 空态提示文字：限宽两行居中，不贴边 */
+.gen-empty span {
+  max-width: 220px;
+  padding: 0 12px;
+  text-align: center;
+  line-height: 1.6;
 }
 .gen-empty.sm {
   min-height: 56px;

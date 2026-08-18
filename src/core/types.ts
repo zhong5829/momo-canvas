@@ -157,6 +157,8 @@ export type ImageGenData = {
   creativity?: number;
   /** Nano Banana：宽高比（auto/1:1/16:9…） */
   aspect?: string;
+  /** 目标像素（百万）：与 aspect 一起换算宽高写入工作流（模板的 megapixels/宽/高参数） */
+  resolutionMP?: number;
   /** Nano Banana：分辨率档（1K/2K/4K） */
   resolution?: string;
   /** GPT Image：质量（auto/high/medium/low） */
@@ -230,7 +232,10 @@ export type EnhanceLocalData = {
   qualityMessage?: string;
   /** 是否由运行看门狗自动停止，而非用户主动取消 */
   timedOut?: boolean;
+  /** 节点底部一行摘要：只放关键指标（分辨率 · 耗时），详见 reportDetail 悬停 */
   report?: string;
+  /** 完整运行报告（管线/门禁/Tile/显存等），节点摘要不展示，悬停 title 查看 */
+  reportDetail?: string;
   /** analysisMap JSON 资产路径（内容分析契约，供矢量化节点复用） */
   analysisMapPath?: string;
   /** vectorGuide PNG 资产路径（保结构引导图契约） */
@@ -274,7 +279,10 @@ export type VectorizeData = {
   /** 重渲染质量门禁：true=可直接进入生产后期；false=建议人工复核/改用高保真档 */
   productionReady?: boolean;
   qualityScore?: number;
+  /** 节点底部一行摘要：只放关键指标，详见 reportDetail 悬停 */
   report?: string;
+  /** 完整运行报告（路径/锚点/门禁等），悬停 title 查看 */
+  reportDetail?: string;
 };
 
 /** 生成节点的「历次结果」条目：每次成功出图/出片时快照一份，可回溯「第 N 次那版最好」 */
@@ -364,6 +372,8 @@ export type ComfyData = {
    * 精确指定「哪张上游图进哪个入口」（深度图口 / 图生图口…）；未映射的入口走默认顺序分配（旧行为零回归）。
    */
   imageSlotMap?: Record<string, string>;
+  /** 运行结束后自动清理 ComfyUI 显存（/free：卸载模型+释放缓存；大工作流防堆积，代价是下次运行重新加载模型） */
+  freeAfter?: boolean;
   results: string[];
   picked: number;
   /** 工作流的文本输出（ShowText 等节点），多段用空行分隔 */
@@ -817,7 +827,11 @@ export type SaveCfg = {
   /** PNG 保存时嵌入元信息（提示词/模型/seed/时间，iTXt 文本块，不重编码图像） */
   embedMeta: boolean;
 };
-export type ComfyCfg = { host: string };
+export type ComfyCfg = {
+  host: string;
+  /** ComfyUI 的用户工作流目录（如 …/ComfyUI/user/default/workflows）：模板往返编辑的落点 */
+  workflowDir?: string;
+};
 export type ThemeName = "light" | "dark" | "black";
 
 /* ---------------- 音效提醒 ---------------- */
@@ -1396,6 +1410,8 @@ export type AssetItem = {
   fav?: boolean;
   /** 回收站时间戳：非空 = 在回收站里（删除不再直接删文件，等彻底清理） */
   deletedAt?: number;
+  /** 生成耗时（毫秒，画布生成物才有；老资产无此字段，卡片角标判空） */
+  durationMs?: number;
   createdAt: number;
 };
 
@@ -1473,6 +1489,10 @@ export type DirectorSegment = {
   recipeId?: string;
   /** 片段级提示词覆盖 */
   promptOverride?: string;
+  /** 最终提示词覆盖（编辑「预览最终提示词」所得的整段最终文本）：生成时跳过风格/Skill/负向的自动拼接，只前置参考素材编号说明 */
+  promptFinalOverride?: string;
+  /** 该片段的剧本原文（规则切段时留存，供 AI 精读/重拆取全文；直录段不用——原文即 promptOverride） */
+  scriptText?: string;
 };
 
 /** 场景（同一地点/时间/戏剧事件，方案 §5） */
@@ -1489,6 +1509,13 @@ export type DirectorSlotValue = {
   semantic: ComfySemantic;
   /** 绑定的资产 id 列表（多参考时有序） */
   assetIds: string[];
+  /**
+   * 是否上游自动同步产物。缺省视为 true（旧数据槽位全是同步产物，断开上游会被清理）；
+   * 手动添加的槽位必须显式设为 false，同步清理时保留。
+   */
+  auto?: boolean;
+  /** 展示名（refsNote 编号说明里替代语义默认名；尾帧接力的虚拟槽用它标「上一段尾帧」） */
+  label?: string;
 };
 
 /** 生成配方（方案 §7.5 / §20.1） */
@@ -1534,6 +1561,10 @@ export type DirectorTake = {
   paramSnapshot?: Record<string, unknown>;
   workflowFingerprint?: string;
   createdAt: number;
+  /** 开始执行时刻（区别于 createdAt 的入队时刻；耗时展示用它算，排队等待不计入） */
+  startedAt?: number;
+  /** 结束时间戳（done/error/cancelled 时写入；与 startedAt 差值即生成耗时，版本卡展示用） */
+  finishedAt?: number;
   /** 是否标记采用（进入时间线） */
   approved?: boolean;
   /** 星标/备注 */
@@ -1637,6 +1668,10 @@ export type DirectorProject = {
   targetDurationSec: number;
   /** 画幅，如 "16:9" */
   aspect: string;
+  /** 目标像素（百万）：与 aspect 换算宽高，写入工作流的 megapixels/宽/高参数；缺省 1.0 */
+  resolutionMP?: number;
+  /** 成片检查·高清放大的参数覆盖：模板 id → 参数键值（未填的用模板默认值） */
+  upscaleParams?: Record<string, Record<string, string | number | boolean>>;
   /** 剧本/故事文本 */
   script: string;
   /** 剧本导入设置（方案 §20.2） */
@@ -1659,6 +1694,12 @@ export type DirectorProject = {
   refSemMemory?: Record<string, ComfySemantic>;
   /** 项目级规则 */
   ruleSet?: DirectorRuleSet;
+  /** 批量生成时每段结束后自动清理 ComfyUI 显存（大工作流防显存堆积，代价是下一段重新加载模型） */
+  freeMemBetween?: boolean;
+  /** 尾帧接力（批量生成连贯性开关）：上一段生成完成后自动抽尾帧，作为下一段的首帧/首张参考图（本段显式首帧优先），保证跨段画面衔接；关闭则各段独立生成 */
+  tailFrameRelay?: boolean;
+  /** 项目默认生成配方 id（分镜页批量工具条选定；片段 recipeId > 项目默认 > 远程默认模型） */
+  defaultRecipeId?: string;
   /** 时间线（采用版本顺序） */
   timeline: DirectorTimelineEntry[];
   /** 音频轨道（对白/旁白/音效/环境音/音乐，方案 §23.5） */

@@ -14,7 +14,7 @@ import { useAssets } from "./stores/assetStore";
 import { useDirector } from "./stores/directorStore";
 import { assetToDataUrl } from "./services/assetFiles";
 import { hashDataUrl } from "./utils";
-import type { ComfySemantic, DirectorProject, DirectorSegment, DirectorSlotValue } from "./types";
+import type { AssetKind, ComfySemantic, DirectorProject, DirectorSegment, DirectorSlotValue } from "./types";
 
 // hashDataUrl 已从 utils 导入（头/中/尾三段指纹，同尺寸图片不会撞签名）
 export { hashDataUrl };
@@ -31,21 +31,37 @@ export const REF_SEMANTICS: Array<{ value: ComfySemantic; label: string }> = [
   { value: "lighting", label: "光线参考" },
 ];
 
+/** 视频/音频参考的语义标签（分镜卡片的视/音槽用，不进图片接入点下拉） */
+export const MEDIA_SEMANTIC_LABEL: Partial<Record<ComfySemantic, string>> = {
+  referenceVideo: "视频参考",
+  referenceAudio: "音频参考",
+};
+
 /** 单例语义：首帧/尾帧只生效第一张，且片段槽可覆盖全局同名单例槽 */
 const SINGLETON_SEMANTICS = new Set<ComfySemantic>(["firstFrame", "lastFrame"]);
 
+/** 画布上游媒体集合（collectUpstream 的三类产物，均为 dataURL） */
+export type UpstreamMedia = { images: string[]; videos?: string[]; audios?: string[] };
+
+/** 上游三类素材的收录配置：资产类型 + 默认语义槽 */
+const MEDIA_CONF: Array<{ key: keyof UpstreamMedia; kind: AssetKind; semantic: ComfySemantic; name: string }> = [
+  { key: "images", kind: "image", semantic: "referenceImage", name: "导演台参考图" },
+  { key: "videos", kind: "video", semantic: "referenceVideo", name: "导演台参考视频" },
+  { key: "audios", kind: "audio", semantic: "referenceAudio", name: "导演台参考音频" },
+];
+
 /**
- * 把画布上游图片同步进项目素材槽：
- *  - 上游图收录为资产（内容哈希去重），新图追加全局槽尾部（默认「参考图」接入点）
- *  - 已在槽位中的图保持原顺序/语义/作用域不变
- *  - 上游断开的图从全局槽与所有片段槽移除（资产本身保留在资产库）
+ * 把画布上游素材同步进项目素材槽：
+ *  - 上游图/视/音收录为资产（内容哈希去重），新素材追加全局槽尾部（按类型给默认接入点）
+ *  - 已在槽位中的素材保持原顺序/语义/作用域不变
+ *  - 上游断开的同步槽素材从全局槽与所有片段槽移除；手动槽（auto=false）整槽保留
  *  - refExcluded 里的资产不再自动加入（用户在导演台手动排除的）
  */
-export function syncRefSlots(projectId: string, upstreamImages: string[]): Promise<void> {
+export function syncRefSlots(projectId: string, upstream: UpstreamMedia): Promise<void> {
   // 并发安全：DirectorNode 与 RefSlotsCard 各有一份同步 effect，同一项目的同步按调用顺序串行——
   // 否则两个调用都在 collect 的 await 让出期间读不到对方刚落盘的资产，会重复收录 + 重复建槽
   const prev = syncLocks.get(projectId) ?? Promise.resolve();
-  const next = prev.then(() => doSyncRefSlots(projectId, upstreamImages));
+  const next = prev.then(() => doSyncRefSlots(projectId, upstream));
   // 吞掉链上异常，不让一次失败卡死后续同步
   syncLocks.set(projectId, next.catch(() => {}));
   return next;
@@ -54,49 +70,54 @@ export function syncRefSlots(projectId: string, upstreamImages: string[]): Promi
 /** 每项目一条同步链（模块级，跨组件共享） */
 const syncLocks = new Map<string, Promise<void>>();
 
-async function doSyncRefSlots(projectId: string, upstreamImages: string[]): Promise<void> {
+async function doSyncRefSlots(projectId: string, upstreamMedia: UpstreamMedia): Promise<void> {
   const proj = useDirector.getState().getById(projectId);
   if (!proj) return;
-  // 1) 上游图 → 资产 id（contentHash 命中即复用，不重复收录落盘；同一张图被两个上游节点引用时只留一份）
-  const ids: string[] = [];
+  // 1) 上游图/视/音 → 资产 id（contentHash 命中即复用，不重复收录落盘；同一素材被两个上游节点引用时只留一份）
+  const entries: Array<{ id: string; semantic: ComfySemantic }> = [];
   const seen = new Set<string>();
-  for (const src of upstreamImages) {
-    const h = hashDataUrl(src);
-    // 每次查找前重读 items：本循环内 collect 落盘的资产要对后续查找可见（旧快照会 miss 导致重复收录）
-    const hit = useAssets.getState().items.find((i) => i.contentHash === h);
-    const a = hit ?? (await useAssets.getState().collect({
-      src,
-      kind: "image",
-      name: "导演台参考图",
-      contentHash: h,
-      director: { projectId, role: "reference" },
-    }));
-    if (a && !seen.has(a.id)) {
-      seen.add(a.id);
-      ids.push(a.id);
+  for (const conf of MEDIA_CONF) {
+    for (const src of upstreamMedia[conf.key] ?? []) {
+      const h = hashDataUrl(src);
+      // 每次查找前重读 items：本循环内 collect 落盘的资产要对后续查找可见（旧快照会 miss 导致重复收录）
+      const hit = useAssets.getState().items.find((i) => i.contentHash === h);
+      const a =
+        hit ??
+        (await useAssets.getState().collect({
+          src,
+          kind: conf.kind,
+          name: conf.name,
+          contentHash: h,
+          director: { projectId, role: "reference" },
+        }));
+      if (a && !seen.has(a.id)) {
+        seen.add(a.id);
+        entries.push({ id: a.id, semantic: conf.semantic });
+      }
     }
   }
   // 2) 对账（重读项目：collect 是异步的，期间项目可能已被更新）
   const cur = useDirector.getState().getById(projectId);
   if (!cur) return;
-  const upstream = new Set(ids);
+  const upstream = new Set(entries.map((e) => e.id));
   const excluded = new Set(cur.refExcluded ?? []);
+  // 手动槽（auto === false）整槽保留；同步槽只留仍在上游的资产
   const prune = (slots: DirectorSlotValue[]) =>
     slots
-      .map((s) => ({ ...s, assetIds: s.assetIds.filter((id) => upstream.has(id)) }))
+      .map((s) => (s.auto === false ? s : { ...s, assetIds: s.assetIds.filter((id) => upstream.has(id)) }))
       .filter((s) => s.assetIds.length > 0);
   const keptGlobal = prune(cur.globalSlots ?? []);
-  // 已在任意槽位（全局或片段）里的图不重复追加
+  // 已在任意槽位（全局或片段）里的素材不重复追加
   const inSlots = new Set<string>();
   for (const s of keptGlobal) for (const id of s.assetIds) inSlots.add(id);
   for (const sc of cur.scenes)
     for (const seg of sc.segments)
       for (const s of seg.slots ?? []) for (const id of s.assetIds) inSlots.add(id);
-  // 新图接入点取语义记忆（断开重连恢复原配置），无记忆默认「参考图」
+  // 新素材接入点取语义记忆（断开重连恢复原配置），无记忆按素材类型默认
   const semMemory = cur.refSemMemory ?? {};
-  const added: DirectorSlotValue[] = ids
-    .filter((id) => !inSlots.has(id) && !excluded.has(id))
-    .map((id) => ({ semantic: semMemory[id] ?? ("referenceImage" as ComfySemantic), assetIds: [id] }));
+  const added: DirectorSlotValue[] = entries
+    .filter((e) => !inSlots.has(e.id) && !excluded.has(e.id))
+    .map((e) => ({ semantic: semMemory[e.id] ?? e.semantic, assetIds: [e.id], auto: true }));
   const globalSlots = [...keptGlobal, ...added];
   // 片段槽：清掉已断开的上游图
   let scenesChanged = false;
@@ -128,27 +149,42 @@ async function doSyncRefSlots(projectId: string, upstreamImages: string[]): Prom
   useDirector.getState().updateProject(projectId, { globalSlots, scenes, refSemMemory: nextMem });
 }
 
-/** 把生效槽位快照转成提示词引用说明，编号与模型实际收到的图顺序严格一致：
+/** 把生效槽位快照转成提示词引用说明，编号与模型实际收到的素材顺序严格一致：
  *  - image（生图）：所有图进 refImages（orderedAll 顺序），首尾帧也编「图N」——图1=第一张槽位图
  *  - video（生视频）：首帧/尾帧是具名参数（image/lastFrame），用专名「首帧/尾帧」；其余参考图按 refs 顺序编「图N」
+ *  - 视频/音频参考单独编号：视频N（<Video N>）、音频N（<Audio N>），与 H3 REF2VA 标签体系一致
  *  分镜批量生成时前置拼进 prompt，模型写提示词可用「图N」或「首帧/尾帧」指代具体参考图。 */
 export function refsNoteFromSnapshot(slots: DirectorSlotValue[], target: "image" | "video"): string {
   const semLabel = new Map(REF_SEMANTICS.map((s) => [s.value, s.label]));
   const lines: string[] = [];
   let n = 0;
+  let vn = 0;
+  let an = 0;
   for (const slot of slots) {
     for (const _aid of slot.assetIds) {
-      const label = semLabel.get(slot.semantic) ?? slot.semantic;
+      if (slot.semantic === "referenceVideo" || slot.semantic === "referenceAudio") {
+        if (target === "image") continue; // 生图不吃视/音参考，不列进说明
+        if (slot.semantic === "referenceVideo") {
+          vn++;
+          lines.push(`视频${vn}：视频参考（H3 标签 <Video ${vn}>）`);
+        } else {
+          an++;
+          lines.push(`音频${an}：音频参考（H3 标签 <Audio ${an}>）`);
+        }
+        continue;
+      }
+      const label = slot.label ?? semLabel.get(slot.semantic) ?? slot.semantic;
       if (target === "video" && (slot.semantic === "firstFrame" || slot.semantic === "lastFrame")) {
-        lines.push(`${label}`); // 视频首尾帧是具名参数，不占「图N」序号
+        // 视频首尾帧是具名参数，不占「图N」序号；自定义 label（尾帧接力虚拟槽）带上语义前缀
+        lines.push(slot.label ? `${semLabel.get(slot.semantic)}：${slot.label}` : label);
       } else {
         n++;
-        lines.push(`图${n}：${label}`);
+        lines.push(target === "video" ? `图${n}：${label}（H3 标签 <Picture ${n}>）` : `图${n}：${label}`);
       }
     }
   }
   const hint = target === "video" ? "图N 或 首帧/尾帧" : "图N";
-  return lines.length ? `参考图（按序，提示词可用「${hint}」引用）：\n${lines.join("\n")}` : "";
+  return lines.length ? `参考素材（按序，提示词可用「${hint}」引用）：\n${lines.join("\n")}` : "";
 }
 
 /** resolveSlotImages 的结果：按生效顺序解析好的 dataURL 列表 + 槽位快照 */
@@ -165,6 +201,18 @@ export type ResolvedRefs = {
   snapshot: DirectorSlotValue[];
 };
 
+/** 计算片段生效槽位：全局槽（保序）+ 片段槽（追加在后；首帧/尾帧单例语义片段覆盖全局） */
+function effectiveSlots(project: DirectorProject, segment: DirectorSegment): DirectorSlotValue[] {
+  const segSlots = segment.slots ?? [];
+  const segSingletons = new Set(segSlots.map((s) => s.semantic).filter((s) => SINGLETON_SEMANTICS.has(s)));
+  return [
+    ...(project.globalSlots ?? []).filter(
+      (g) => !(SINGLETON_SEMANTICS.has(g.semantic) && segSingletons.has(g.semantic)),
+    ),
+    ...segSlots,
+  ];
+}
+
 /**
  * 解析片段生效的参考图：全局槽（保序）+ 片段槽（追加在后）。
  * 首帧/尾帧是单例语义：片段定义了同名槽时覆盖全局的；同语义取第一张。
@@ -174,18 +222,12 @@ export async function resolveSlotImages(
   project: DirectorProject,
   segment: DirectorSegment,
 ): Promise<ResolvedRefs | null> {
-  const segSlots = segment.slots ?? [];
-  const segSingletons = new Set(segSlots.map((s) => s.semantic).filter((s) => SINGLETON_SEMANTICS.has(s)));
-  const effSlots = [
-    ...(project.globalSlots ?? []).filter(
-      (g) => !(SINGLETON_SEMANTICS.has(g.semantic) && segSingletons.has(g.semantic)),
-    ),
-    ...segSlots,
-  ];
+  const effSlots = effectiveSlots(project, segment);
   if (!effSlots.length) return null;
   const items = useAssets.getState().items;
   const res: ResolvedRefs = { orderedAll: [], refs: [], snapshot: effSlots };
   for (const slot of effSlots) {
+    if (slot.semantic === "referenceVideo" || slot.semantic === "referenceAudio") continue;
     for (const aid of slot.assetIds) {
       const a = items.find((x) => x.id === aid);
       if (!a) continue;
@@ -208,4 +250,64 @@ export async function resolveSlotImages(
   }
   if (!res.orderedAll.length) return null;
   return res;
+}
+
+/** resolveSlotMedia 的结果：图/视/音三类参考按生效槽序解析（MiniMax H3 REF2VA 等多模态参考工作流用） */
+export type ResolvedMedia = {
+  /** 图片参考（首尾帧/参考图语义；无图时 orderedAll 为空） */
+  images: ResolvedRefs;
+  /** 视频参考（dataURL，槽序即 <Video N> 编号序） */
+  videos: string[];
+  /** 音频参考（dataURL，槽序即 <Audio N> 编号序） */
+  audios: string[];
+  /** 生效的槽位快照（含视/音槽，写进 Take 可追溯） */
+  snapshot: DirectorSlotValue[];
+};
+
+/**
+ * 解析片段生效的全部参考素材（图/视/音三类）。
+ * 槽序即编号序：图片 → <Picture N>，视频 → <Video N>，音频 → <Audio N>。
+ * 三类全空（或资产都读不到）时返回 null。
+ */
+export async function resolveSlotMedia(
+  project: DirectorProject,
+  segment: DirectorSegment,
+): Promise<ResolvedMedia | null> {
+  const effSlots = effectiveSlots(project, segment);
+  if (!effSlots.length) return null;
+  const items = useAssets.getState().items;
+  const images: ResolvedRefs = { orderedAll: [], refs: [], snapshot: effSlots };
+  const videos: string[] = [];
+  const audios: string[] = [];
+  for (const slot of effSlots) {
+    for (const aid of slot.assetIds) {
+      const a = items.find((x) => x.id === aid);
+      if (!a) continue;
+      let url: string | null = null;
+      try {
+        url = await assetToDataUrl(a.path, a.mime);
+      } catch {
+        continue; // 资产文件读不到（被清理/移动）→ 跳过，不阻塞生成
+      }
+      if (!url) continue;
+      if (slot.semantic === "referenceVideo") {
+        videos.push(url);
+        continue;
+      }
+      if (slot.semantic === "referenceAudio") {
+        audios.push(url);
+        continue;
+      }
+      images.orderedAll.push(url);
+      if (slot.semantic === "firstFrame") {
+        if (!images.firstFrame) images.firstFrame = url;
+      } else if (slot.semantic === "lastFrame") {
+        if (!images.lastFrame) images.lastFrame = url;
+      } else {
+        images.refs.push(url);
+      }
+    }
+  }
+  if (!images.orderedAll.length && !videos.length && !audios.length) return null;
+  return { images, videos, audios, snapshot: effSlots };
 }

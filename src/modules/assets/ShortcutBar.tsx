@@ -85,8 +85,8 @@ export function ShortcutBar() {
     // 不能冒泡到资产库容器的“拖文件导入”，否则自己的资产会被再导入一份
     e.stopPropagation();
     setOverId(null);
-    // Tauri 下资产卡走原生拖拽（拿不到自定义数据），从拖拽状态里补回资产 id
-    const id = e.dataTransfer.getData("momo/asset-id") || getNativeDragAsset() || "";
+    // Tauri 下资产卡走原生拖拽（拿不到自定义数据），从拖拽状态里补回资产 id；多选拖拽负载取第一张
+    const id = (e.dataTransfer.getData("momo/asset-id") || getNativeDragAsset() || "").split(",")[0] ?? "";
     const it = useAssets.getState().items.find((x) => x.id === id);
     if (it) {
       void sendAsset(s, it);

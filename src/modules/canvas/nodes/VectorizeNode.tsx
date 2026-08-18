@@ -43,12 +43,20 @@ export const VectorizeNode = memo(function VectorizeNode({ id, data, selected }:
           <div className="media-main">
             {/* SVG 刻意例外不用 Thumb：位图缩略管线会把 SVG 栅格化，全项目唯一 <img> 直塞 */}
             <img className="img-main vec-preview" src={previewSrc} alt="" title="点击预览" onClick={() => d.result && setLightbox(d.result)} />
-            {d.report ? <div className="enh-report">{d.report}</div> : null}
+            {d.report ? (
+              <div className="enh-report" title={d.reportDetail}>
+                {d.report}
+              </div>
+            ) : null}
           </div>
         ) : (
           <div className="gen-empty">
             <IcImage size={24} />
-            <span>连接一张图片（Logo/打卡框/插画/文化墙），选中节点在底部面板点「矢量化」</span>
+            <span>
+              连接一张图片（Logo/插画等）
+              <br />
+              选中后在底部面板点「矢量化」
+            </span>
           </div>
         )}
       </div>

@@ -5,16 +5,24 @@
  * 方案 §20.2：支持外部剧本确定性切分（分段标记 + 自定义分层/分段标记）。
  * 剧本可直接拖入 .txt/.md 文件导入；输入框随窗口高度自适应。
  */
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useDirector } from "../../core/stores/directorStore";
 import { useSkills } from "../../core/stores/skillStore";
 import { toast, useUi } from "../../core/stores/uiStore";
-import { splitScript, structuredSplit, hasExternalSegments, projectProgress } from "../../core/directorEngine";
+import { splitScript, structuredSplit, hasExternalSegments, projectProgress, detectScriptKind, importPromptSegments, refineSegmentPrompts, countPromptSegments, type ScriptKind } from "../../core/directorEngine";
+import { buildSkillSystem } from "../../core/skillEngine";
 import { breakdownPrompt, type PromptBreakdown, newPromptRecipe, applyRecipeToPrompt } from "../../core/directorAnalysis";
 import { errMsg } from "../../core/utils";
 import { IcLoading, IcWand, IcSparkles, IcText } from "../../ui/icons";
+import { PopSelect } from "../../ui/PopSelect";
 import type { DirectorProject } from "../../core/types";
+
+const KIND_LABEL: Record<ScriptKind, string> = {
+  full: "完整剧本",
+  segmented: "已分段分镜脚本",
+  prompts: "分段提示词包",
+};
 
 export function ScriptPage({ project }: { project: DirectorProject }) {
   const updateProject = useDirector((s) => s.updateProject);
@@ -26,6 +34,9 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
   const [recipeName, setRecipeName] = useState("");
   const [recipeBusy, setRecipeBusy] = useState(false);
   const [breakdown, setBreakdown] = useState<PromptBreakdown | null>(null);
+  // 剧本形态识别（三态导入）：自动检测 + 手动覆盖
+  const [kindOverride, setKindOverride] = useState<ScriptKind | "auto">("auto");
+  const [refining, setRefining] = useState<{ done: number; total: number } | null>(null);
   // 订阅 skillStore 变化（useShallow 避免 byContext 返回新数组引用导致无限渲染）
   const directorSkills = useSkills(useShallow((s) => s.byContext("director.project")));
   // 配方库从 project 持久化读写（B4 修复：原 useState 切页签丢失）
@@ -39,6 +50,11 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
   const segDelim = si.delimiter?.trim() ?? "";
   const sceneDelim = si.sceneDelimiter?.trim() ?? "";
   const patchImport = (p: Partial<typeof si>) => patch({ scriptImport: { ...si, ...p } });
+
+  // 剧本形态：自动识别结果 + 用户手动覆盖（覆盖仅本次会话生效）
+  const autoKind = useMemo(() => detectScriptKind(project.script, segDelim), [project.script, segDelim]);
+  const kind: ScriptKind = kindOverride === "auto" ? autoKind : kindOverride;
+  const promptSegCount = useMemo(() => (kind === "prompts" ? countPromptSegments(project.script) : 0), [kind, project.script]);
 
   /** 导入剧本文件（拖入或点选）：.txt/.md 纯文本 */
   const importFile = async (f: File) => {
@@ -54,7 +70,8 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
         return;
       }
       patch({ script: text });
-      toast(`已导入「${f.name}」（${text.length} 字）`, "ok");
+      // 导入即识别形态：不猜用户知不知道三态，直接把判定结果说出来（识别条上还能手动改）
+      toast(`已导入「${f.name}」（${text.length} 字，识别为：${KIND_LABEL[detectScriptKind(text, segDelim)]}）`, "ok");
     } catch (e) {
       toast(`读取文件失败：${errMsg(e)}`, "err");
     }
@@ -67,10 +84,25 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
     }
     setBusy(true);
     try {
+      // 项目绑定的 Skill 作为拆分补充规范注入（拆分指导能力可做成 Skill 扩展）
+      const skillSys = (project.skillBindings ?? [])
+        .filter((b) => b.enabled)
+        .map((b) => {
+          const sk = useSkills.getState().getById(b.skillId);
+          return sk ? buildSkillSystem(sk, b.values) : "";
+        })
+        .filter(Boolean)
+        .join("\n\n");
       // 有外部分段标记时先确定性切分，再让 LLM 分析每段内部镜头
-      const { characters, scenes } = await splitScript(project.script, project.targetDurationSec, maxSegSec);
-      patch({ characters, scenes });
-      toast(`已拆出 ${scenes.length} 场 · ${scenes.reduce((n, s) => n + s.segments.length, 0)} 个片段 · ${characters.length} 个角色`, "ok");
+      const { characters, scenes } = await splitScript(project.script, project.targetDurationSec, maxSegSec, skillSys || undefined);
+      // 目标时长自动识别：拆分后按各段实际时长总和回填
+      const total = scenes.reduce((n, s) => n + s.segments.reduce((m, seg) => m + seg.durationSec, 0), 0);
+      patch({ characters, scenes, ...(total > 0 ? { targetDurationSec: total } : {}) });
+      toast(`已拆出 ${scenes.length} 场 · ${scenes.reduce((n, s) => n + s.segments.length, 0)} 个片段 · ${characters.length} 个角色${total > 0 ? `（目标时长已设为 ${total}s）` : ""}`, "ok");
+      // 防呆提示：剧本较长却只拆出 1 个片段，大概率是绑定的 Skill 干扰了拆分（可临时停用后重试）
+      if (scenes.reduce((n, s) => n + s.segments.length, 0) <= 1 && project.script.trim().length > 400) {
+        toast("剧本较长却只拆出 1 个片段：可能是绑定的 Skill 干扰了拆分，可在「项目级 Skill」临时停用后重试", "info");
+      }
     } catch (e) {
       const msg = errMsg(e);
       toast(`剧本拆分失败：${msg}`, "err");
@@ -94,6 +126,7 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
       dialogue: [],
       shots: [],
       scriptRange: [0, text.length] as [number, number],
+      scriptText: text, // 原文留存：供「AI 精读分段」取全文提取结构化内容
       approvedTakeId: null,
       takes: [],
     });
@@ -126,12 +159,58 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
     }
     patch({ scenes });
     const segCount = scenes.reduce((n, s) => n + s.segments.length, 0);
+    const totalSec = scenes.reduce((n, s) => n + s.segments.reduce((m, seg) => m + seg.durationSec, 0), 0);
+    if (totalSec > 0) patch({ targetDurationSec: totalSec }); // 目标时长自动识别：分段总长回填
     toast(
       sceneDelim
         ? `已按分层标记切出 ${scenes.length} 场 · ${segCount} 个片段`
         : `检测到 ${segCount} 个分段，已写入分镜表（可到分镜页编辑）`,
       "ok",
     );
+  };
+
+  /** 成品分段提示词直录：每段原文进 promptOverride，锁定防重拆；全局风格锚定写入项目规则 */
+  const doImportPrompts = () => {
+    try {
+      const { scenes, globalStyle } = importPromptSegments(project.script, maxSegSec);
+      const p: Partial<DirectorProject> = { scenes };
+      // 目标时长自动识别：直录段从标题解析了真实时长，回填总和
+      const totalSec = scenes[0]?.segments.reduce((n, s) => n + s.durationSec, 0) ?? 0;
+      if (totalSec > 0) p.targetDurationSec = totalSec;
+      if (globalStyle) {
+        p.ruleSet = {
+          ...(project.ruleSet ?? { name: "全局规则", positive: {}, negative: {}, generation: {} }),
+          positive: { ...(project.ruleSet?.positive ?? {}), style: globalStyle },
+        };
+      }
+      patch(p);
+      toast(
+        `已直录 ${scenes[0]?.segments.length ?? 0} 段成品提示词${globalStyle ? "，全局风格锚定已写入项目规则（每段生成时自动带上）" : ""}，可到分镜页配参考与配方`,
+        "ok",
+      );
+    } catch (e) {
+      toast(`直录失败：${errMsg(e)}`, "err");
+    }
+  };
+
+  /** 用项目绑定的 Skill 批量精炼全部分镜的 H3 提示词 */
+  const doRefineAll = async () => {
+    setRefining({ done: 0, total: progress.total });
+    try {
+      const r = await refineSegmentPrompts(project.id, undefined, (done, total) => setRefining({ done, total }));
+      if (!r.ok && !r.failed && r.skipped) {
+        toast(`没有精炼任何片段：${r.skipped} 段均为成品直录（🔒 锁定），提示词已是成品无需精炼`, "info");
+      } else {
+        toast(
+          `精炼完成：成功 ${r.ok} 段${r.failed ? `，失败 ${r.failed} 段（详见报错中心）` : ""}${r.skipped ? `，跳过 ${r.skipped} 段（已锁定成品）` : ""}`,
+          r.failed ? "info" : "ok",
+        );
+      }
+    } catch (e) {
+      toast(`精炼失败：${errMsg(e)}`, "err");
+    } finally {
+      setRefining(null);
+    }
   };
 
   return (
@@ -168,7 +247,7 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
             <div>
               <div className="ds-card-title">剧本输入</div>
               <div className="ds-card-desc">
-                粘贴故事或剧本、或直接拖入 .txt/.md 文件；带「分段1 / 第1段 / ### 标题 / ---」标记的剧本会按外部分段处理，也可用下方自定义标记
+                支持三种输入：完整剧本（AI 拆分）、已分段的分镜脚本（标记检测）、已整理好的分段提示词包（H3 六段式、「定调前言 + 片段标题 + 围栏提示词块」或「序号-标题-时长」段头如 01-古刹闻客-11秒，直录分镜）；粘贴或拖入 .txt/.md 均可
               </div>
             </div>
           </div>
@@ -219,6 +298,29 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
             </label>
             <span className="ds-opt-hint">行内含标记文本即在该行切开；都留空则自动识别内置标记</span>
           </div>
+          {/* 剧本形态识别条：自动识别 + 手动覆盖 */}
+          {project.script.trim() ? (
+            <div className="ds-split-opts">
+              <span className="ds-opt-hint">识别为</span>
+              <PopSelect
+                className="nodrag"
+                title="剧本形态决定拆分方式：完整剧本走 AI 拆分；已分段脚本走标记检测；成品提示词直接入分镜"
+                value={kindOverride === "auto" ? autoKind : kindOverride}
+                options={(["full", "segmented", "prompts"] as const).map((k) => ({
+                  value: k,
+                  label: `${KIND_LABEL[k]}${kindOverride === "auto" && k === autoKind ? "（自动）" : ""}`,
+                }))}
+                onChange={(v) => setKindOverride(v === autoKind ? "auto" : (v as ScriptKind))}
+              />
+              <span className="ds-opt-hint">
+                {kind === "prompts"
+                  ? `检测到约 ${promptSegCount} 段提示词（H3 六段式、「标题 + 围栏提示词块」或「序号-标题-时长」段头的通用包均可），可直接入分镜`
+                  : kind === "segmented"
+                    ? "含分段标记，可一键检测分段；也可让 AI 重新理解全文"
+                    : "完整剧本将由 AI 拆分为场/片段/镜头，或先用标记手动分段"}
+              </span>
+            </div>
+          ) : null}
           <div className="ds-card-foot">
             <input
               ref={fileRef}
@@ -247,13 +349,21 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
               秒
             </label>
             <span className="spacer" />
-            <button className="btn sm" onClick={doDetect} disabled={busy || !project.script.trim()}>
-              检测分段
-            </button>
-            <button className="btn sm primary" onClick={() => void doSplit()} disabled={busy || !project.script.trim()}>
-              {busy ? <IcLoading size={14} /> : null}
-              AI 拆分剧本
-            </button>
+            {kind === "prompts" ? (
+              <button className="btn sm primary" onClick={doImportPrompts} disabled={busy || !project.script.trim()}>
+                直录为分镜（{promptSegCount || "?"} 段）
+              </button>
+            ) : (
+              <>
+                <button className={`btn sm${kind === "segmented" ? " primary" : ""}`} onClick={doDetect} disabled={busy || !project.script.trim()}>
+                  检测分段
+                </button>
+                <button className={`btn sm${kind === "segmented" ? "" : " primary"}`} onClick={() => void doSplit()} disabled={busy || !project.script.trim()}>
+                  {busy ? <IcLoading size={14} /> : null}
+                  AI 拆分剧本
+                </button>
+              </>
+            )}
           </div>
         </div>
 
@@ -369,7 +479,9 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
               </span>
               <div>
                 <div className="ds-card-title">项目级 Skill</div>
-                <div className="ds-card-desc">勾选后作用于所有片段</div>
+                <div className="ds-card-desc">
+                  勾选后作用于两处：<b>剧本 AI 拆分</b>（作补充规范参与切段）与<b>每段生成</b>（指令拼进提示词；H3 成品段自动跳过防重复）；拆分/直录后可一键精炼
+                </div>
               </div>
             </div>
             <div className="ds-card-body">
@@ -391,7 +503,7 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
                         }}
                       />
                       <b>{sk.name}</b>
-                      <span className="ds-card-desc">{sk.description}</span>
+                      <span className="ds-badge" title="本 Skill 同时作用于：剧本 AI 拆分（补充规范）与每段生成（指令拼接；H3 成品段自动跳过）">拆分 + 生成</span>
                     </label>
                   );
                 })}
@@ -401,6 +513,29 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
                   </div>
                 ) : null}
               </div>
+              {(project.skillBindings ?? []).some((b) => b.enabled) ? (
+                <div style={{ marginTop: 10 }}>
+                  <button
+                    className="btn sm primary"
+                    disabled={!!refining || !progress.total}
+                    onClick={() => void doRefineAll()}
+                  >
+                    {refining ? <IcLoading size={13} /> : <IcSparkles size={13} />}
+                    {refining ? ` 精炼中 ${refining.done}/${refining.total}` : " 用 Skill 精炼全部分镜提示词"}
+                  </button>
+                  <div className="ds-card-desc" style={{ marginTop: 4 }}>
+                    {progress.total
+                      ? "按勾选的 Skill 规范逐段产出 H3 成品提示词，结果写入各分镜的提示词覆盖"
+                      : "先拆分或直录出片段，再执行精炼"}
+                  </div>
+                  {/* 风格规则重复预警：项目风格锚定与 Skill 指令并存时，生成提示词里风格要求会叠加 */}
+                  {project.ruleSet?.positive.style?.trim() ? (
+                    <div className="ds-style-dup">
+                      ⚠ 项目已有全局风格锚定（来自提示词包前言）。若 Skill 指令里也写了风格要求，生成时同一段提示词会出现两份风格描述——建议只保留一处（清空项目规则风格，或精简 Skill 指令中的风格部分）。
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </div>
 

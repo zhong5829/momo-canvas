@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from "react";
 import { useBoard } from "../../core/stores/boardStore";
-import { useComfy } from "../../core/stores/comfyStore";
+import { useComfyTemplates } from "../../core/stores/comfyStore";
 import { useUi } from "../../core/stores/uiStore";
 import { collectUpstream, runFlow } from "../../core/runner";
 import { buildImageEntries, COMFY_SLOT_NONE, effectiveParams, enrichParamsWithCombo, findVariant } from "../../core/services/comfy";
@@ -23,7 +23,7 @@ import type { ComfyData } from "../../core/types";
 function ImageSlotPanel({ selId, onClose }: { selId: string; onClose: () => void }) {
   const node = useBoard((s) => s.nodes.find((n) => n.id === selId));
   const upd = useBoard((s) => s.updateData);
-  const templates = useComfy((s) => s.templates);
+  const templates = useComfyTemplates();
   const [openKey, setOpenKey] = useState<string | null>(null);
   // 上游图（join/split 保证只在内容变化时重渲染）
   const upImgs = useBoard(() => {
@@ -136,7 +136,7 @@ export function ComfyConfigPanel() {
   });
   const node = useBoard((s) => (selId ? s.nodes.find((n) => n.id === selId) : undefined));
   const upd = useBoard((s) => s.updateData);
-  const templates = useComfy((s) => s.templates);
+  const templates = useComfyTemplates();
   const setTemplateMgr = useUi((s) => s.setTemplateMgr);
   const suppressed = useUi((s) => s.genPanelSuppressed);
   const [upOpen, setUpOpen] = useState(false);
@@ -268,6 +268,13 @@ export function ComfyConfigPanel() {
               输入映射
             </button>
           ) : null}
+          <button
+            className={`gd-up-toggle${d.freeAfter ? " on" : ""}`}
+            title="运行结束后自动清理 ComfyUI 显存（卸载模型 + 释放缓存）；大工作流防显存堆积，代价是下次运行重新加载模型"
+            onClick={() => upd(selId, { freeAfter: !d.freeAfter })}
+          >
+            清显存
+          </button>
           <span className="gd-toolbar-sp" />
           <button
             className="gd-send"

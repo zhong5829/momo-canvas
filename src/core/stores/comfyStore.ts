@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { create } from "zustand";
 import type { ComfyTemplate, ComfyVariant } from "../types";
 import { loadJSON, saveJSON } from "../persist";
@@ -50,6 +51,12 @@ export const useComfy = create<ComfyState>((set, get) => ({
     })()),
 
   upsert: (tpl) => {
+    if (!get().loaded) {
+      // HMR 可能重建本 store（内存列表清空、loaded=false）。未加载前禁止直接落盘：
+      // 先从磁盘恢复再执行本次写操作，防止把全量模板覆盖成空表
+      void get().init().then(() => get().upsert(tpl));
+      return;
+    }
     const list = get().templates.filter((t) => t.id !== tpl.id);
     const next = [tpl, ...list];
     set({ templates: next });
@@ -57,6 +64,11 @@ export const useComfy = create<ComfyState>((set, get) => ({
   },
 
   remove: (id) => {
+    if (!get().loaded) {
+      // 同上：先恢复再删，防止空表覆盖磁盘
+      void get().init().then(() => get().remove(id));
+      return;
+    }
     const next = get().templates.filter((t) => t.id !== id);
     set({ templates: next });
     void saveJSON("comfy-templates.json", "v1", next);
@@ -69,3 +81,17 @@ export const useComfy = create<ComfyState>((set, get) => ({
     return { ok: r.ok, err: r.err };
   },
 }));
+
+/**
+ * 订阅模板列表的自愈入口：开发期 Vite HMR 会重建本 store 模块（内存列表清空、loaded 归 false），
+ * 而 App 只在启动时调一次 init——用本 hook 替代 useComfy((s) => s.templates)，
+ * 发现未加载时自动从磁盘重新加载，模板列表不会再凭空消失。
+ */
+export function useComfyTemplates() {
+  const templates = useComfy((s) => s.templates);
+  const loaded = useComfy((s) => s.loaded);
+  useEffect(() => {
+    if (!loaded) void useComfy.getState().init();
+  }, [loaded]);
+  return templates;
+}

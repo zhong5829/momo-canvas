@@ -7,10 +7,11 @@ import { Modal, Field, Switch, Row } from "../../ui/kit";
 import { PopSelect } from "../../ui/PopSelect";
 import { ModelPicker } from "../../ui/ModelPicker";
 import { flattenCard, modelKey, resolveModelCard, splitModelKey, useSettings } from "../../core/stores/settingsStore";
-import { useComfy } from "../../core/stores/comfyStore";
+import { useComfy, useComfyTemplates } from "../../core/stores/comfyStore";
 import { toast, useUi } from "../../core/stores/uiStore";
 import { useUsage } from "../../core/stores/usageStore";
 import { chatOnce } from "../../core/services/llm";
+import { freeComfyMemory, freeResultText } from "../../core/services/comfy";
 import { fetchModelList } from "../../core/services/modelList";
 import { calibrateProtocol } from "../../core/services/protoCalibrate";
 import { placeholdersIn, protoFingerprint, unknownPlaceholders, validateProto, varsDoc } from "../../core/services/protoSpec";
@@ -22,6 +23,7 @@ import {
   IcBlack,
   IcChat,
   IcCheck,
+  IcBroom,
   IcClose,
   IcDownload,
   IcEdit,
@@ -1840,10 +1842,11 @@ function ComfyTab() {
   const online = useComfy((s) => s.online);
   const onlineInfo = useComfy((s) => s.onlineInfo);
   const test = useComfy((s) => s.test);
-  const templates = useComfy((s) => s.templates);
+  const templates = useComfyTemplates();
   const removeTpl = useComfy((s) => s.remove);
   const setTemplateMgr = useUi((s) => s.setTemplateMgr);
   const [testing, setTesting] = useState(false);
+  const [freeing, setFreeing] = useState(false);
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   const tplFileRef = useRef<HTMLInputElement>(null);
 
@@ -1861,7 +1864,7 @@ function ComfyTab() {
       <Field label="服务地址">
         <Row>
           <input className="input" value={settings.comfy.host} placeholder="http://127.0.0.1:8188"
-            onChange={(e) => update("comfy", { host: e.target.value.trim() })} />
+            onChange={(e) => update("comfy", { ...settings.comfy, host: e.target.value.trim() })} />
           <button
             className="btn"
             disabled={testing}
@@ -1879,11 +1882,53 @@ function ComfyTab() {
           </button>
         </Row>
       </Field>
+      <Field label="工作流目录（往返编辑）">
+        <Row>
+          <input
+            className="input"
+            value={settings.comfy.workflowDir ?? ""}
+            placeholder="ComfyUI 的用户工作流目录，如 G:\ComfyUI\ComfyUI\user\default\workflows"
+            title="配置后，模板管理里可把模板一键送进 ComfyUI 画布编辑（Ctrl+S 保存），再一键同步回模板"
+            onChange={(e) => update("comfy", { ...settings.comfy, workflowDir: e.target.value })}
+          />
+          <button
+            className="btn"
+            onClick={async () => {
+              try {
+                const { open } = await import("@tauri-apps/plugin-dialog");
+                const picked = await open({ directory: true, title: "选择 ComfyUI 的用户工作流目录（通常在 …/ComfyUI/user/default/workflows）" });
+                if (picked && typeof picked === "string") update("comfy", { ...settings.comfy, workflowDir: picked });
+              } catch {
+                toast("当前环境不支持选择目录，可直接粘贴路径", "info");
+              }
+            }}
+          >
+            选择…
+          </button>
+        </Row>
+        <div className="sec-desc" style={{ marginTop: 6 }}>
+          模板「⬆」按钮默认走 ComfyUI 自身接口直接推送工作流库（无需此项）。仅当不配服务地址（离线/旧版 ComfyUI）时，才用此目录以本地文件方式兜底。
+        </div>
+      </Field>
       <Row gap={8} style={{ marginBottom: 18 }}>
         <span className={`dot ${online}`} />
         <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-2)" }}>
           {online === "ok" ? `已连接 ${onlineInfo}` : online === "down" ? "未连接" : "未检测"}
         </span>
+        <button
+          className="btn sm"
+          style={{ marginLeft: "auto" }}
+          disabled={freeing}
+          title="立即调用 ComfyUI /free：卸载全部模型、释放显存与 ComfyUI 进程内存缓存（下次运行会重新加载模型）"
+          onClick={async () => {
+            setFreeing(true);
+            const r = await freeComfyMemory(settings.comfy.host);
+            setFreeing(false);
+            toast(freeResultText(r), r.ok ? "ok" : "err");
+          }}
+        >
+          {freeing ? <IcLoading size={13} /> : <IcBroom size={13} />} 一键释放显存与内存
+        </button>
       </Row>
 
       <div className="gp-lab" style={{ margin: "4px 0 8px" }}>工作流模板（{templates.length}）</div>

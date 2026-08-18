@@ -12,18 +12,19 @@ import { useBoard } from "../../core/stores/boardStore";
 import { useSettings } from "../../core/stores/settingsStore";
 import { toast } from "../../core/stores/uiStore";
 import { PopSelect } from "../../ui/PopSelect";
-import { assetToDataUrl, assetUrl } from "../../core/services/assetFiles";
+import { ScrubVideoThumb } from "../../ui/VideoThumb";
+import { assetToDataUrl, assetToBlob, assetToBlobUrl, assetUrl } from "../../core/services/assetFiles";
 import { errMsg, isTauri } from "../../core/utils";
 import { grabFrame } from "../../core/videoEdit";
 import { ShortcutBar, sendAsset } from "./ShortcutBar";
 import { getNativeDragAsset, setNativeDragAsset } from "./dragState";
 import type { AssetItem, AssetKind } from "../../core/types";
 
-/** 原生 OS 拖拽（Tauri 默认）：同一次拖拽可落到画布/快捷栏/资源管理器/第三方软件 */
-async function nativeDragOut(it: AssetItem) {
+/** 原生 OS 拖拽（Tauri 默认）：同一次拖拽可落到画布/快捷栏/资源管理器/第三方软件；多选拖拽 = 拖出全部选中文件 */
+async function nativeDragOut(list: AssetItem[]) {
   try {
     const { startDrag } = await import("@crabnebula/tauri-plugin-drag");
-    await startDrag({ item: [it.path], icon: it.thumb || it.path });
+    await startDrag({ item: list.map((it) => it.path), icon: list[0].thumb || list[0].path });
   } catch (e) {
     toast(`拖出失败：${errMsg(e)}`, "err");
   }
@@ -66,6 +67,7 @@ import {
   IcArrowR,
   IcCheck,
   IcCheckSquare,
+  IcClapper,
   IcClose,
   IcDownload,
   IcEdit,
@@ -77,6 +79,7 @@ import {
   IcLibrary,
   IcLayers,
   IcMusic,
+  IcRefresh,
   IcRestore,
   IcSearch,
   IcStar,
@@ -88,7 +91,7 @@ import {
 } from "../../ui/icons";
 import "./assets.css";
 
-const KIND_TABS: { key: AssetKind | "all" | "fav" | "trash"; label: string; icon: React.ReactNode }[] = [
+const KIND_TABS: { key: AssetKind | "all" | "directorRef" | "fav" | "trash"; label: string; icon: React.ReactNode }[] = [
   { key: "all", label: "全部", icon: <IcGallery size={17} /> },
   { key: "image", label: "图片", icon: <IcImage size={17} /> },
   { key: "video", label: "视频", icon: <IcVideo size={17} /> },
@@ -96,18 +99,90 @@ const KIND_TABS: { key: AssetKind | "all" | "fav" | "trash"; label: string; icon
   { key: "pdf", label: "PDF", icon: <IcFile size={17} /> },
   { key: "vector", label: "矢量", icon: <IcVector size={17} /> },
   { key: "other", label: "其他", icon: <IcFile size={17} /> },
+  { key: "directorRef", label: "导演台参考", icon: <IcClapper size={17} /> },
   { key: "fav", label: "收藏", icon: <IcStar size={17} /> },
   { key: "trash", label: "回收站", icon: <IcTrash size={17} /> },
 ];
 
 const KIND_BADGE: Record<AssetKind, string> = { image: "", video: "视频", audio: "音频", pdf: "PDF", vector: "SVG", other: "文件" };
 
+/** 视频卡封面：封面帧 + 悬停挂 video 左右滑动擦洗（与导演台版本卡同一预览逻辑）。
+ *  asset:// 协议在 WebView2 下不支持 Range 请求（seek 不了），必须先转 blob URL。 */
+function VideoCardThumb({ item }: { item: AssetItem }) {
+  const [url, setUrl] = useState<string | undefined>(() =>
+    /^(blob:|data:|https?:)/i.test(item.path) ? item.path : undefined,
+  );
+  useEffect(() => {
+    if (url) return;
+    let on = true;
+    void assetToBlobUrl(item.path, item.mime)
+      .then((u) => on && setUrl(u))
+      .catch(() => on && setUrl(assetUrl(item.path)));
+    return () => {
+      on = false;
+    };
+  }, [item.path, url]);
+  if (!url) return <IcVideo size={40} />;
+  // 点击交给外层卡片（预览大图/勾选），这里只管擦洗预览
+  return <ScrubVideoThumb src={url} className="a-scrub-thumb" onClick={() => {}} />;
+}
+
+/** PDF 首页封面渲染缓存（path → dataURL；模块级，重开资产库命中缓存不再重渲） */
+const pdfCoverCache = new Map<string, string>();
+
+async function renderPdfCover(path: string): Promise<string | null> {
+  const hit = pdfCoverCache.get(path);
+  if (hit) return hit;
+  const pdfjs = await import("pdfjs-dist");
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
+  const blob = await assetToBlob(path, "application/pdf");
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+  const page = await doc.getPage(1);
+  const base = page.getViewport({ scale: 1 });
+  const vp = page.getViewport({ scale: Math.min(2, 480 / base.width) });
+  const c = document.createElement("canvas");
+  c.width = Math.ceil(vp.width);
+  c.height = Math.ceil(vp.height);
+  await page.render({ canvas: c, viewport: vp }).promise;
+  const url = c.toDataURL("image/webp", 0.8);
+  pdfCoverCache.set(path, url);
+  return url;
+}
+
+/** PDF 卡封面：截取第一页作固定封面；渲染失败回落文件图标 */
+function PdfCover({ item }: { item: AssetItem }) {
+  const [url, setUrl] = useState<string | null>(() => pdfCoverCache.get(item.path) ?? null);
+  useEffect(() => {
+    if (url) return;
+    let on = true;
+    void renderPdfCover(item.path)
+      .then((u) => on && u && setUrl(u))
+      .catch(() => {});
+    return () => {
+      on = false;
+    };
+  }, [item.path, url]);
+  if (url) return <img src={url} alt="" loading="lazy" />;
+  return <IcFile size={40} />;
+}
+
+/** 矢量 / 音频的专属图标封面（不再直显原文件，网格观感统一） */
+function KindCover({ kind }: { kind: "vector" | "audio" }) {
+  return (
+    <div className={`a-kind-cover ${kind}`}>
+      {kind === "vector" ? <IcVector size={34} /> : <IcMusic size={34} />}
+      <span>{kind === "vector" ? "SVG" : "音频"}</span>
+    </div>
+  );
+}
+
 function AssetThumb({ item }: { item: AssetItem }) {
   if (item.thumb) return <img src={assetUrl(item.thumb)} alt="" loading="lazy" />;
   if (item.kind === "image") return <img src={assetUrl(item.path)} alt="" loading="lazy" />;
-  if (item.kind === "vector") return <img className="svg-bg" src={assetUrl(item.path)} alt="" loading="lazy" />;
-  if (item.kind === "audio") return <IcMusic size={40} />;
-  if (item.kind === "video") return <IcVideo size={40} />;
+  if (item.kind === "vector") return <KindCover kind="vector" />;
+  if (item.kind === "audio") return <KindCover kind="audio" />;
+  if (item.kind === "video") return <VideoCardThumb item={item} />;
+  if (item.kind === "pdf") return <PdfCover item={item} />;
   return <IcFile size={40} />;
 }
 
@@ -129,6 +204,12 @@ function fmtDate(ts: number) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** 生成耗时：60s 内显示秒，更长显示分秒（资产卡角标用，尽量短） */
+function fmtDur(ms: number) {
+  const s = ms / 1000;
+  return s < 60 ? `${s.toFixed(1)}s` : `${Math.floor(s / 60)}m${String(Math.round(s % 60)).padStart(2, "0")}s`;
+}
+
 export function AssetLibrary() {
   const open = useAssets((s) => s.open);
   const setOpen = useAssets((s) => s.setOpen);
@@ -146,11 +227,31 @@ export function AssetLibrary() {
   const deleteFolder = useAssets((s) => s.deleteFolder);
   const addTagMany = useAssets((s) => s.addTagMany);
 
-  const [kind, setKind] = useState<AssetKind | "all" | "fav" | "trash">("all");
+  const [kind, setKind] = useState<AssetKind | "all" | "directorRef" | "fav" | "trash">("all");
   const [folderId, setFolderId] = useState<string | "all">("all");
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [keyword, setKeyword] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  /** 多选模式：左键点选勾选、拖动可批量拖出；右键按住滑动涂抹勾选 */
+  const [pickMode, setPickMode] = useState(false);
+  /**
+   * 右键滑选笔触（两段式，S 形路径）：
+   *  - cell 逐卡模式：划到哪张涂哪张（划过行中间几张就是几张）
+   *  - row 整行模式：划过某行「最右一张」后紧接下移到下一行才触发，此后一行一行整行选
+   *  - 方向锁定：起笔卡未选中 → 本次全程「勾选」；起笔卡已选中 → 本次全程「取消勾选」（绝不中途反转）
+   */
+  const strokeRef = useRef<{
+    action: "add" | "remove";
+    mode: "cell" | "row";
+    rows: string[][][];
+    cardRow: Map<Element, number>;
+    rowLastCard: Set<Element>;
+    seenCells: Set<Element>;
+    seenRows: Set<number>;
+    brinkRow: number | null;
+    grid: HTMLElement;
+    raf: number;
+  } | null>(null);
   const [previewIdx, setPreviewIdx] = useState<number | null>(null);
   const [focusedGroupId, setFocusedGroupId] = useState<string | null>(null);
   const [confirmDel, setConfirmDel] = useState(false);
@@ -193,9 +294,15 @@ export function AssetLibrary() {
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
     return items.filter((i) => {
+      // 来源维度：导演台参考素材（上游同步/参考格上传/声音提取落库）默认不混进普通视图，
+      // 收进「导演台参考」分类统一管理；收藏与关键词搜索不受隐藏影响（要找的时候找得到）
+      const isDirRef = i.director?.role === "reference";
+      if (kind === "directorRef") {
+        if (!isDirRef) return false;
+      } else if (isDirRef && kind !== "fav" && !kw) return false;
       if (kind === "fav") {
         if (!i.fav) return false;
-      } else if (kind !== "all" && i.kind !== kind) return false;
+      } else if (kind !== "all" && kind !== "directorRef" && i.kind !== kind) return false;
       if (folderId !== "all" && i.folderId !== folderId) return false;
       if (tagFilter && !(i.tags ?? []).includes(tagFilter)) return false;
       if (kw && !`${i.name} ${i.prompt ?? ""} ${i.model ?? ""} ${(i.tags ?? []).join(" ")}`.toLowerCase().includes(kw))
@@ -229,9 +336,15 @@ export function AssetLibrary() {
     : undefined;
 
   const counts = useMemo(() => {
-    const c: Record<string, number> = { all: items.length };
+    const c: Record<string, number> = {};
     for (const i of items) {
-      c[i.kind] = (c[i.kind] ?? 0) + 1;
+      if (i.director?.role === "reference") {
+        // 导演台参考不占「全部」与各类型计数（默认视图看不到，计数大于可见数会误导）
+        c.directorRef = (c.directorRef ?? 0) + 1;
+      } else {
+        c.all = (c.all ?? 0) + 1;
+        c[i.kind] = (c[i.kind] ?? 0) + 1;
+      }
       if (i.fav) c.fav = (c.fav ?? 0) + 1;
     }
     c.trash = trash.length;
@@ -250,14 +363,17 @@ export function AssetLibrary() {
     if (tagFilter && !allTags.some(([t]) => t === tagFilter)) setTagFilter(null);
   }, [tagFilter, allTags]);
 
-  /* Esc 关闭 */
+  /* Esc 关闭；多选模式优先退出多选 */
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (previewIdx !== null) setPreviewIdx(null);
         else if (focusedGroupId) setFocusedGroupId(null);
-        else setOpen(false);
+        else if (pickMode) {
+          setPickMode(false);
+          setSelected(new Set());
+        } else setOpen(false);
       }
       if (previewIdx !== null && e.key === "ArrowLeft") setPreviewIdx((i) => (i !== null && i > 0 ? i - 1 : i));
       if (previewIdx !== null && e.key === "ArrowRight")
@@ -273,6 +389,11 @@ export function AssetLibrary() {
 
   useEffect(() => setConfirmDel(false), [selected.size]);
 
+  /* 面板关闭时退出多选模式（选择集维持原行为保留） */
+  useEffect(() => {
+    if (!open) setPickMode(false);
+  }, [open]);
+
   if (!open) return null;
 
   const toggleSel = (id: string) => {
@@ -283,6 +404,136 @@ export function AssetLibrary() {
   };
 
   const clearSel = () => setSelected(new Set());
+
+  /** 按锁定方向应用一批 id（add = 全部勾选 / remove = 全部取消） */
+  const applyStrokeIds = (ids: string[]) => {
+    const st = strokeRef.current;
+    if (!st || !ids.length) return;
+    const action = st.action;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (action === "add") next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  };
+
+  /** 笔触途经卡片：cell 模式逐卡涂抹并检测「行尾→下一行」升级；row 模式整行涂抹 */
+  const strokeOverCard = (el: Element) => {
+    const st = strokeRef.current;
+    if (!st) return;
+    const row = st.cardRow.get(el);
+    if (row == null) return;
+    if (st.mode === "row") {
+      if (st.seenRows.has(row)) return;
+      st.seenRows.add(row);
+      applyStrokeIds(st.rows[row].flat());
+      return;
+    }
+    if (!st.seenCells.has(el)) {
+      st.seenCells.add(el);
+      applyStrokeIds((el.getAttribute("data-sel-ids") ?? "").split(",").filter(Boolean));
+    }
+    if (st.rowLastCard.has(el)) {
+      st.brinkRow = row; // 划到本行最右一张：再紧接下移就升级整行模式
+    } else if (st.brinkRow != null && row === st.brinkRow + 1) {
+      // 行尾 → 紧接下一行：升级。起始行补齐整行（刚才可能只划过一部分），新行整行选
+      st.mode = "row";
+      if (!st.seenRows.has(st.brinkRow)) {
+        st.seenRows.add(st.brinkRow);
+        applyStrokeIds(st.rows[st.brinkRow].flat());
+      }
+      if (!st.seenRows.has(row)) {
+        st.seenRows.add(row);
+        applyStrokeIds(st.rows[row].flat());
+      }
+      st.brinkRow = null;
+    } else if (row !== st.brinkRow) {
+      st.brinkRow = null; // 移去了别的行但不是「行尾紧接下一行」，升级条件作废
+    }
+  };
+
+  /** 指针坐标下的卡片（不在卡上返回 null） */
+  const hitCard = (x: number, y: number): Element | null => {
+    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    return el?.closest("[data-sel-ids]") ?? null;
+  };
+
+  /** 多选模式右键起笔：方向由起笔卡当前状态决定；滑动逐卡涂抹，行尾紧接下移升级整行；超界自动滚动续选 */
+  const startStroke = (fromCard: HTMLElement) => {
+    const grid = fromCard.closest(".al-grid") as HTMLElement | null;
+    if (!grid) return;
+    const gridR = grid.getBoundingClientRect();
+    const base = grid.scrollTop;
+    const cards = Array.from(grid.querySelectorAll<HTMLElement>("[data-sel-ids]")).map((el) => ({
+      el,
+      // 折算成相对网格的稳定坐标：滚动中 rect.top 与 scrollTop 同步变化，差值恒定
+      top: el.getBoundingClientRect().top - gridR.top + base,
+      left: el.getBoundingClientRect().left,
+      ids: (el.getAttribute("data-sel-ids") ?? "").split(",").filter(Boolean),
+    }));
+    cards.sort((a, b) => a.top - b.top);
+    const rows: string[][][] = [];
+    const rowTops: number[] = [];
+    const rowLastCard = new Set<Element>();
+    const cardRow = new Map<Element, number>();
+    for (const c of cards) {
+      const at = rowTops.length - 1;
+      if (at >= 0 && Math.abs(c.top - rowTops[at]) < 60) {
+        rows[at].push(c.ids);
+        cardRow.set(c.el, at);
+      } else {
+        rowTops.push(c.top);
+        rows.push([c.ids]);
+        cardRow.set(c.el, rows.length - 1);
+      }
+    }
+    // 每行最右一张（行内 left 最大者）：划过它再下移即触发整行模式
+    for (let r = 0; r < rows.length; r++) {
+      const rowCards = cards.filter((c) => cardRow.get(c.el) === r).sort((a, b) => a.left - b.left);
+      if (rowCards.length) rowLastCard.add(rowCards[rowCards.length - 1].el);
+    }
+    // 方向锁定：起笔卡当前已全选中 → 本次全程取消勾选；否则全程勾选
+    const startIds = (fromCard.getAttribute("data-sel-ids") ?? "").split(",").filter(Boolean);
+    const allOn = startIds.length > 0 && startIds.every((id) => selected.has(id));
+    strokeRef.current = { action: allOn ? "remove" : "add", mode: "cell", rows, cardRow, rowLastCard, seenCells: new Set(), seenRows: new Set(), brinkRow: null, grid, raf: 0 };
+    const r0 = fromCard.getBoundingClientRect();
+    const mouse = { x: r0.left + r0.width / 2, y: r0.top + r0.height / 2 };
+    strokeOverCard(fromCard);
+    const onMove = (ev: MouseEvent) => {
+      mouse.x = ev.clientX;
+      mouse.y = ev.clientY;
+      const el = hitCard(mouse.x, mouse.y);
+      if (el) strokeOverCard(el);
+    };
+    const tick = () => {
+      const st = strokeRef.current;
+      if (!st) return;
+      const gr = st.grid.getBoundingClientRect();
+      if (mouse.y < gr.top + 14 && st.grid.scrollTop > 0) {
+        st.grid.scrollTop -= 14;
+        const el = hitCard(mouse.x, mouse.y);
+        if (el) strokeOverCard(el);
+      } else if (mouse.y > gr.bottom - 14 && st.grid.scrollTop < st.grid.scrollHeight - st.grid.clientHeight - 1) {
+        st.grid.scrollTop += 14;
+        const el = hitCard(mouse.x, mouse.y);
+        if (el) strokeOverCard(el);
+      }
+      st.raf = requestAnimationFrame(tick);
+    };
+    const onUp = () => {
+      const st = strokeRef.current;
+      if (st) cancelAnimationFrame(st.raf);
+      strokeRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    strokeRef.current.raf = requestAnimationFrame(tick);
+  };
 
   const batchDelete = async () => {
     if (!confirmDel) {
@@ -359,7 +610,7 @@ export function AssetLibrary() {
     >
       <div
         ref={panelRef}
-        className={`assetlib ${selected.size ? "selecting" : ""}`}
+        className={`assetlib ${selected.size || pickMode ? "selecting" : ""}`}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault();
@@ -383,7 +634,20 @@ export function AssetLibrary() {
               <span className="cnt">{counts[t.key] ?? 0}</span>
             </button>
           ))}
-          <div className="side-sec">文件夹</div>
+          <div className="side-sec side-sec-row">
+            文件夹
+            <span style={{ flex: 1 }} />
+            <button
+              className="icon-btn al-newfolder"
+              title="新建文件夹"
+              onClick={() => {
+                const id = createFolder(`文件夹 ${folders.length + 1}`);
+                setEditingFolder(id);
+              }}
+            >
+              <IcFolderPlus size={14} />
+            </button>
+          </div>
           <button className={`side-item ${folderId === "all" ? "on" : ""}`} onClick={() => setFolderId("all")}>
             <IcFolder size={17} />
             全部位置
@@ -442,16 +706,6 @@ export function AssetLibrary() {
               </span>
             </button>
           ))}
-          <button
-            className="side-item"
-            onClick={() => {
-              const id = createFolder(`文件夹 ${folders.length + 1}`);
-              setEditingFolder(id);
-            }}
-          >
-            <IcFolderPlus size={17} />
-            新建文件夹
-          </button>
           {allTags.length ? (
             <>
               <div className="side-sec">标签</div>
@@ -492,12 +746,23 @@ export function AssetLibrary() {
             </span>
             <span style={{ flex: 1 }} />
             <button
-              className="btn sm"
-              title="选中当前筛选结果的全部资产"
-              disabled={!filtered.length}
-              onClick={() => setSelected(new Set(filtered.map((i) => i.id)))}
+              className={`btn sm ${pickMode ? "primary" : ""}`}
+              title={
+                pickMode
+                  ? "退出多选模式"
+                  : "进入多选模式：左键点击勾选、按住拖动可批量拖出（多选时拖一张 = 拖全部）；右键按住滑动涂抹——划到哪张选哪张，划到一行最右一张后继续下移则一行一行连选，超出上下边界自动滚动续选；起笔卡已选中时本次为取消勾选"
+              }
+              disabled={!pickMode && !filtered.length}
+              onClick={() => {
+                if (pickMode) {
+                  setPickMode(false);
+                  clearSel();
+                } else {
+                  setPickMode(true);
+                }
+              }}
             >
-              <IcCheckSquare size={15} /> 全选筛选结果
+              <IcCheckSquare size={15} /> {pickMode ? "退出多选" : "进入多选模式"}
             </button>
             <button className="btn sm" onClick={() => fileRef.current?.click()}>
               <IcUpload size={15} /> 导入文件
@@ -590,7 +855,7 @@ export function AssetLibrary() {
               )}
             </div>
           ) : (
-          <div className="al-grid">
+          <div className="al-grid" onContextMenu={(e) => { if (pickMode) e.preventDefault(); }}>
             {filtered.length === 0 ? (
               <div className="al-empty">
                 <IcLibrary size={40} />
@@ -617,9 +882,17 @@ export function AssetLibrary() {
                     <div key={entry.key} className="a-group-stack">
                       <div
                         className={`a-card a-group-card ${allSelected ? "sel" : ""}`}
+                        data-sel-ids={members.map((x) => x.id).join(",")}
                         title={`${it.groupLabel || it.prompt || it.name}\n${members.length} 个生成结果 · 点击展开\n右键：整组操作`}
+                        onMouseDown={(e) => {
+                          // 多选模式右键起笔滑选（组卡按整组取反）
+                          if (pickMode && e.button === 2) {
+                            e.preventDefault();
+                            startStroke(e.currentTarget as HTMLElement);
+                          }
+                        }}
                         onClick={() => {
-                          if (selected.size) {
+                          if (pickMode || selected.size) {
                             const next = new Set(selected);
                             if (allSelected) members.forEach((x) => next.delete(x.id));
                             else members.forEach((x) => next.add(x.id));
@@ -631,6 +904,7 @@ export function AssetLibrary() {
                         onContextMenu={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
+                          if (pickMode) return; // 多选模式右键被滑选占用
                           setGroupMenu({ x: e.clientX, y: e.clientY, key: entry.key });
                         }}
                       >
@@ -639,6 +913,7 @@ export function AssetLibrary() {
                         <button
                           className="a-check"
                           aria-label={allSelected ? "取消选择整组" : "选择整组"}
+                          onMouseDown={(e) => e.stopPropagation()}
                           onClick={(e) => {
                             e.stopPropagation();
                             const next = new Set(selected);
@@ -658,22 +933,34 @@ export function AssetLibrary() {
                 <div
                   key={it.id}
                   className={`a-card ${selected.has(it.id) ? "sel" : ""}`}
+                  data-sel-ids={it.id}
                   title={`${it.prompt || it.name}\n拖拽：落到画布 = 图片节点 · 右侧快捷栏 = 发送 · 资源管理器/第三方软件 = 拖出文件\n右键：更多操作`}
                   draggable
+                  onMouseDown={(e) => {
+                    // 多选模式右键起笔滑选；左键留给点选与拖拽（多选拖一张 = 拖全部选中）
+                    if (pickMode && e.button === 2) {
+                      e.preventDefault();
+                      startStroke(e.currentTarget as HTMLElement);
+                    }
+                  }}
                   onDragStart={(e) => {
+                    // 多选时拖选中卡 = 拖全部选中（负载为逗号拼接的 id 列表，消费端 split）
+                    const ids = selected.size && selected.has(it.id) ? [...selected] : [it.id];
+                    const payload = ids.join(",");
                     if (isTauri) {
                       // 原生拖拽：一次拖拽通吃画布 / 快捷栏 / 资源管理器 / 第三方软件
                       e.preventDefault();
-                      setNativeDragAsset(it.id);
+                      setNativeDragAsset(payload);
                       trackDragOut();
-                      void nativeDragOut(it).finally(() => {
+                      const dragList = items.filter((x) => ids.includes(x.id));
+                      void nativeDragOut(dragList).finally(() => {
                         setNativeDragAsset(null);
                         endDragTrack();
                       });
                       return;
                     }
                     // 浏览器预览：HTML5 拖拽（画布/快捷栏）
-                    e.dataTransfer.setData("momo/asset-id", it.id);
+                    e.dataTransfer.setData("momo/asset-id", payload);
                     e.dataTransfer.effectAllowed = "copy";
                     trackDragOut();
                   }}
@@ -685,10 +972,11 @@ export function AssetLibrary() {
                   onContextMenu={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    if (pickMode) return; // 多选模式右键被滑选占用，不弹快捷菜单
                     setCardMenu({ x: e.clientX, y: e.clientY, id: it.id });
                   }}
                   onClick={() => {
-                    if (selected.size) toggleSel(it.id);
+                    if (selected.size || pickMode) toggleSel(it.id);
                     else setPreviewIdx(idx);
                   }}
                   onDoubleClick={(e) => {
@@ -699,11 +987,21 @@ export function AssetLibrary() {
                 >
                   <div className="a-thumb">
                     <AssetThumb item={it} />
+                    {it.width && it.height ? (
+                      <div
+                        className="a-meta"
+                        title={`${it.width}×${it.height}${it.durationMs ? ` · 生成耗时 ${fmtDur(it.durationMs)}` : ""} · 收录于 ${fmtDate(it.createdAt)}`}
+                      >
+                        <span>{it.width}×{it.height}</span>
+                        {it.durationMs ? <span>{fmtDur(it.durationMs)}</span> : null}
+                      </div>
+                    ) : null}
                   </div>
                   {KIND_BADGE[it.kind] ? <span className="a-badge">{KIND_BADGE[it.kind]}</span> : null}
                   <button
                     className={`a-fav ${it.fav ? "on" : ""}`}
                     title={it.fav ? "取消收藏" : "收藏（「收藏」页签集中查看）"}
+                    onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => {
                       e.stopPropagation();
                       toggleFav(it.id);
@@ -713,6 +1011,7 @@ export function AssetLibrary() {
                   </button>
                   <button
                     className="a-check"
+                    onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => {
                       e.stopPropagation();
                       toggleSel(it.id);
@@ -795,6 +1094,25 @@ export function AssetLibrary() {
               </div>
               <button className="btn sm" title="把所选资产复制到指定文件夹（附带元信息 momo-meta.json）" onClick={() => void exportMany([...selected])}>
                 <IcDownload size={15} /> 批量导出
+              </button>
+              <button
+                className="btn sm"
+                title="全选当前筛选结果的全部资产"
+                disabled={!filtered.length}
+                onClick={() => setSelected(new Set(filtered.map((i) => i.id)))}
+              >
+                <IcCheckSquare size={15} /> 全选
+              </button>
+              <button
+                className="btn sm"
+                title="反选：已选中的取消勾选，当前筛选结果里未选中的全部勾选"
+                disabled={!filtered.length}
+                onClick={() => {
+                  const cur = new Set(selected);
+                  setSelected(new Set(filtered.filter((i) => !cur.has(i.id)).map((i) => i.id)));
+                }}
+              >
+                <IcRefresh size={15} /> 反选
               </button>
               <button className={`btn sm ${confirmDel ? "primary" : "danger"}`} onClick={() => void batchDelete()}>
                 <IcTrash size={15} /> {confirmDel ? "再点一次确认删除" : "批量删除"}

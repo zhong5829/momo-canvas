@@ -2,7 +2,7 @@
  * 视频缩略图 — 节点/画廊内不挂 <video>（每个 <video> 都占用解码器与内存，
  * 多了整个画布掉帧），只显示抓取的封面帧 + 播放角标 + 时长，点击才进灯箱真正播放。
  */
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useUi } from "../core/stores/uiStore";
 
 type Poster = { poster: string | null; dur: number; dims?: { w: number; h: number } };
@@ -136,6 +136,80 @@ export function VideoThumb({
       )}
       <span className="vt-play">▶</span>
       {p?.dur ? <span className="vt-dur">{fmtDur(p.dur)}</span> : null}
+    </div>
+  );
+}
+
+/**
+ * 悬停滑动预览缩略图：鼠标在卡上左右滑动时，画面跳到对应时间点的帧（时间轴擦洗式预览）。
+ * 平时与 VideoThumb 一样只显示封面帧；悬停期间才挂一个 muted <video>，移开即卸载，避免多视频解码拖垮页面。
+ * 点击进灯箱播放（不传 onClick 时的默认行为）。
+ */
+export function ScrubVideoThumb({
+  src,
+  className,
+  style,
+  title,
+  onClick,
+}: {
+  src: string;
+  className?: string;
+  style?: CSSProperties;
+  title?: string;
+  onClick?: () => void;
+}) {
+  const [p, setP] = useState<Poster | null>(() => cache.get(src) ?? null);
+  const [hover, setHover] = useState(false);
+  const [pct, setPct] = useState<number | null>(null);
+  const vidRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    let on = true;
+    setP(cache.get(src) ?? null);
+    void makeVideoPoster(src).then((r) => {
+      if (on) setP(r);
+    });
+    return () => {
+      on = false;
+    };
+  }, [src]);
+  // 鼠标横移 → seek 到对应比例的时间点（duration 未就绪时跳过）
+  useEffect(() => {
+    const v = vidRef.current;
+    if (!v || pct == null || !Number.isFinite(v.duration) || v.duration <= 0) return;
+    v.currentTime = Math.min(Math.max(0.05, pct * v.duration), Math.max(0.05, v.duration - 0.05));
+  }, [pct]);
+  const open = onClick ?? (() => useUi.getState().setLightbox(src, null, "video"));
+  return (
+    <div
+      className={`vthumb scrub ${className ?? ""}`}
+      style={style}
+      title={title ?? "点击放大播放；悬停后左右滑动可擦洗预览画面"}
+      onClick={open}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => {
+        setHover(false);
+        setPct(null);
+      }}
+      onMouseMove={(e) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        if (!r.width) return;
+        setPct(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)));
+      }}
+    >
+      {hover ? (
+        <video ref={vidRef} src={src} muted playsInline preload="auto" />
+      ) : p?.poster ? (
+        <img src={p.poster} alt="" loading="lazy" draggable={false} />
+      ) : (
+        <div className="vthumb-ph">{p ? "视频（无法预览封面）" : "封面加载中…"}</div>
+      )}
+      <span className="vt-play">▶</span>
+      {hover && pct != null ? (
+        <span className="vt-scrub">
+          <i style={{ width: `${Math.round(pct * 100)}%` }} />
+        </span>
+      ) : null}
+      {!hover && p?.dur ? <span className="vt-dur">{fmtDur(p.dur)}</span> : null}
     </div>
   );
 }

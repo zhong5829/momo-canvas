@@ -13,13 +13,67 @@ import { toast, useUi } from "../../core/stores/uiStore";
 import { useAssets } from "../../core/stores/assetStore";
 import { assetUrl } from "../../core/services/assetFiles";
 import { saveTextFile } from "../comfy/templateIO";
-import { IcFilmCut, IcPlay, IcMusic, IcScan, IcClapper, IcActivity, IcDownload } from "../../ui/icons";
-import { useState } from "react";
+import { IcFilmCut, IcPlay, IcMusic, IcScan, IcClapper, IcActivity, IcDownload, IcFlow, IcLoading, IcGear } from "../../ui/icons";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useComfyTemplates } from "../../core/stores/comfyStore";
+import { runBatchUpscale } from "../../core/directorQueue";
+import { PopSelect, PopLayer } from "../../ui/PopSelect";
 import type { DirectorProject, DirectorAudioKind } from "../../core/types";
 
 export function EditingPage({ project }: { project: DirectorProject }) {
   const progress = projectProgress(project);
   const continuityIssues = project.scenes.length ? checkContinuity(project) : [];
+  const templates = useComfyTemplates();
+  // 高清放大：默认选名字像放大模板的（放大/upscale/超分/SeedVR2）
+  const [upTplId, setUpTplId] = useState("");
+  const [upBusy, setUpBusy] = useState(false);
+  const [upProg, setUpProg] = useState<{ done: number; total: number; name: string }>({ done: 0, total: 0, name: "" });
+  const [askUp, setAskUp] = useState(false);
+  // 高清放大参数覆盖：模板 id → 参数键值（留空 = 模板默认值），随项目持久化
+  const [upParamsOpen, setUpParamsOpen] = useState(false);
+  const upParamAnchor = useRef<HTMLButtonElement>(null);
+  const upTpl = templates.find((t) => t.id === upTplId);
+  const upParams = upTplId ? project.upscaleParams?.[upTplId] ?? {} : {};
+  const setUpParam = (key: string, raw: string) => {
+    const kind = upTpl?.params.find((p) => p.key === key)?.kind;
+    const v = raw === "" ? undefined : kind === "number" || kind === "seed" ? Number(raw) : raw;
+    const all = { ...(useDirector.getState().getById(project.id)?.upscaleParams ?? {}) };
+    const forTpl = { ...(all[upTplId] ?? {}) };
+    if (v === undefined || (typeof v === "number" && !Number.isFinite(v))) delete forTpl[key];
+    else forTpl[key] = v;
+    all[upTplId] = forTpl;
+    useDirector.getState().updateProject(project.id, { upscaleParams: all });
+  };
+  const upscaleOptions = useMemo(
+    () =>
+      [...templates]
+        .sort((a, b) => Number(/放大|upscale|超分|seedvr/i.test(b.name)) - Number(/放大|upscale|超分|seedvr/i.test(a.name)))
+        .map((t) => ({
+          value: t.id,
+          label: t.name,
+          icon: <IcFlow size={14} />,
+        })),
+    [templates],
+  );
+  useEffect(() => {
+    if (!upTplId && templates.length) {
+      setUpTplId(templates.find((t) => /放大|upscale|超分|seedvr/i.test(t.name))?.id ?? "");
+    }
+  }, [templates, upTplId]);
+  const runUpscale = async () => {
+    setUpBusy(true);
+    setUpProg({ done: 0, total: 0, name: "" });
+    try {
+      const params = useDirector.getState().getById(project.id)?.upscaleParams?.[upTplId];
+      const r = await runBatchUpscale(project.id, upTplId, (done, total, name) => setUpProg({ done, total, name }), params);
+      if (!r.done && !r.failed) toast("没有需要放大的片段（采用版本需为视频且未被本模板放大过）", "info");
+      else toast(`高清放大结束：成功 ${r.done}${r.failed ? ` · 失败 ${r.failed}（详见报错中心）` : ""}`, r.failed ? "info" : "ok");
+    } catch (e) {
+      toast(`高清放大失败：${e instanceof Error ? e.message : String(e)}`, "err");
+    } finally {
+      setUpBusy(false);
+    }
+  };
 
   // 时间线：从 scenes + approvedTakeId 派生（P1-2 修复：不再依赖持久化的 project.timeline）
   const timeline = deriveTimeline(project).map((entry) => {
@@ -194,6 +248,9 @@ export function EditingPage({ project }: { project: DirectorProject }) {
         </div>
       </div>
 
+      {/* 双栏布局：主列（检查/放大/时间线/音频/导出） + 连续性右轨（横贯上下，高度按内容锁定） */}
+      <div className="dse-cols">
+        <div className="dse-main">
       {/* 缺片检查卡 */}
       <div className="ds-card">
         <div className="ds-card-head">
@@ -201,8 +258,8 @@ export function EditingPage({ project }: { project: DirectorProject }) {
             <IcScan size={16} />
           </span>
           <div>
-            <div className="ds-card-title">缺片检查</div>
-            <div className="ds-card-desc">所有片段都有已采用的完成版本，才能导出完整成片</div>
+            <div className="ds-card-title">① 缺片检查</div>
+            <div className="ds-card-desc">所有片段都有已采用的完成版本，才能进入下一步顺序预演</div>
           </div>
         </div>
         <div className="ds-card-body">
@@ -227,15 +284,15 @@ export function EditingPage({ project }: { project: DirectorProject }) {
         </div>
       </div>
 
-      {/* 故事顺序/时间线卡 */}
+      {/* 故事顺序/时间线卡（第二步） */}
       <div className="ds-card">
         <div className="ds-card-head">
           <span className="ds-card-ic">
             <IcClapper size={16} />
           </span>
           <div>
-            <div className="ds-card-title">故事顺序</div>
-            <div className="ds-card-desc">采用版本按故事顺序连成时间线，共 {timeline.length} 段 · {totalSec}s</div>
+            <div className="ds-card-title">② 故事顺序 · 预演</div>
+            <div className="ds-card-desc">缺片清零后按故事顺序硬切连播检查，共 {timeline.length} 段 · {totalSec}s</div>
           </div>
         </div>
         <div className="ds-card-body">
@@ -266,35 +323,87 @@ export function EditingPage({ project }: { project: DirectorProject }) {
         </div>
       </div>
 
-      {/* 连续性问题卡 */}
+      {/* 连续性问题卡 → 已移右轨（见 dse-cols 尾部） */}
+
+      {/* 高清放大卡（第三步）：顺序预演确认后，用 ComfyUI 放大模板逐条放大采用版本并自动替换 */}
       <div className="ds-card">
         <div className="ds-card-head">
           <span className="ds-card-ic">
             <IcActivity size={16} />
           </span>
           <div>
-            <div className="ds-card-title">连续性问题</div>
-            <div className="ds-card-desc">检查角色/场景/道具在相邻片段间的连续性</div>
+            <div className="ds-card-title">③ 高清放大</div>
+            <div className="ds-card-desc">
+              顺序预演确认无误后再进行：逐条放大采用版本，完成后成片预览 / 片段卡自动替换为高清版（原版本保留可回退）
+            </div>
           </div>
         </div>
         <div className="ds-card-body">
-          {continuityIssues.length ? (
-            <div className="ds-issues">
-              {continuityIssues.map((iss: ContinuityIssue, i: number) => (
-                <div key={i} className={`ds-issue ${iss.level}`}>
-                  <span className="ds-badge">{iss.category}</span>
-                  <span className="dse-pre">{iss.message}</span>
+          <div className="dse-btn-row nodrag">
+            <PopSelect
+              className="dse-upscale-tpl"
+              title="放大用的 ComfyUI 模板（需带视频入口 LoadVideo；图片版放大模板吃不了视频）"
+              value={upTplId}
+              triggerIcon
+              options={upscaleOptions}
+              onChange={setUpTplId}
+            />
+            <button
+              ref={upParamAnchor}
+              className="btn sm"
+              title="设置放大模板暴露的参数（与画布 ComfyUI 节点的参数浮窗同理；留空用模板默认值）"
+              disabled={!upTpl?.params?.length}
+              onClick={() => setUpParamsOpen((v) => !v)}
+            >
+              <IcGear size={13} /> 参数
+            </button>
+            {upBusy ? (
+              <>
+                <span className="ds-card-desc">
+                  <IcLoading size={13} /> 放大中 {upProg.done + 1}/{upProg.total} {upProg.name}
+                </span>
+                <div className="dsg-bar" title={`放大进度 ${upProg.done}/${upProg.total}`}>
+                  <i style={{ width: `${upProg.total ? Math.round((upProg.done / upProg.total) * 100) : 0}%` }} />
                 </div>
-              ))}
+              </>
+            ) : (
+              <button className="btn sm primary" disabled={!upTplId || !timeline.length} onClick={() => setAskUp(true)}>
+                <IcActivity size={13} /> 开始高清放大
+              </button>
+            )}
+            {upParamsOpen && upTpl ? (
+              <PopLayer anchorRef={upParamAnchor} onClose={() => setUpParamsOpen(false)} className="ds-h3-pop dse-up-pop">
+                <div className="ds-h3-pop-head">
+                  <b>放大参数</b>
+                  <span className="ds-card-desc">{upTpl.name}（留空用模板默认值）</span>
+                </div>
+                <div className="dse-up-params">
+                  {upTpl.params
+                    .filter((p) => p.kind !== "image")
+                    .map((p) => (
+                      <label key={p.key} className="dse-up-param">
+                        <span title={p.key}>{p.label}</span>
+                        <input
+                          className="input sm nodrag"
+                          type={p.kind === "number" || p.kind === "seed" ? "number" : "text"}
+                          value={String(upParams[p.key] ?? "")}
+                          placeholder={p.value !== undefined ? String(p.value) : ""}
+                          onChange={(e) => setUpParam(p.key, e.target.value)}
+                        />
+                      </label>
+                    ))}
+                  {!upTpl.params.filter((p) => p.kind !== "image").length ? (
+                    <div className="ds-card-desc">该模板没有暴露可调参数——到「设置 → ComfyUI 模板 → 编辑参数」里暴露后再来</div>
+                  ) : null}
+                </div>
+              </PopLayer>
+            ) : null}
+          </div>
+          {!templates.some((t) => /放大|upscale|超分|seedvr/i.test(t.name)) ? (
+            <div className="ds-card-desc" style={{ marginTop: 6 }}>
+              还没有疑似放大模板：在 ComfyUI 里把视频放大工作流（带 LoadVideo，如 SeedVR2 视频版）导出 API JSON，到「设置 → ComfyUI 模板」导入后即可选用
             </div>
-          ) : (
-            <div className="ds-empty">
-              <div className="ds-empty-title">未发现连续性问题</div>
-              <div className="ds-empty-desc">
-                {progress.total > 0 ? "相邻片段的角色/场景连续性检查通过。" : "拆分剧本并生成片段后，这里会自动检查连续性。"}
-              </div>
-            </div>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -308,8 +417,8 @@ export function EditingPage({ project }: { project: DirectorProject }) {
             <IcDownload size={16} />
           </span>
           <div>
-            <div className="ds-card-title">交付导出</div>
-            <div className="ds-card-desc">导出 Premiere 项目、节点成片、SRT 字幕、镜头表与项目清单</div>
+            <div className="ds-card-title">④ 交付导出</div>
+            <div className="ds-card-desc">放大完成后交付：导出 Premiere 项目、节点成片（MP4）、SRT 字幕、镜头表与项目清单</div>
           </div>
         </div>
         <div className="ds-card-body">
@@ -356,7 +465,57 @@ export function EditingPage({ project }: { project: DirectorProject }) {
           </button>
         </div>
       </div>
-    </div>
+        </div>
+        {/* 连续性右轨：横贯上下（sticky 吸顶），高度按内容锁定，超出视口时内部滚动 */}
+        <aside className="dse-continuity">
+          <div className="ds-card">
+            <div className="ds-card-head">
+              <span className="ds-card-ic">
+                <IcActivity size={16} />
+              </span>
+              <div>
+                <div className="ds-card-title">连续性</div>
+                <div className="ds-card-desc">相邻片段间的缺片/重复/跳跃检查</div>
+              </div>
+            </div>
+            <div className="ds-card-body">
+              {continuityIssues.length ? (
+                <div className="ds-issues">
+                  {continuityIssues.map((iss: ContinuityIssue, i: number) => (
+                    <div key={i} className={`ds-issue ${iss.level}`}>
+                      <span className="ds-badge">{iss.category}</span>
+                      <span className="dse-pre">{iss.message}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="ds-empty">
+                  <div className="ds-empty-title">未发现问题</div>
+                  <div className="ds-empty-desc">
+                    {progress.total > 0 ? "相邻片段的连续性检查通过。" : "拆分剧本并生成片段后，这里会自动检查。"}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </aside>
+      </div>
+
+
+      {askUp ? (
+        <div className="ds-ask" onMouseDown={(e) => { if (e.target === e.currentTarget) setAskUp(false); }}>
+          <div className="ds-ask-card">
+            <div className="ds-ask-text">
+              将用模板「{templates.find((t) => t.id === upTplId)?.name}」逐条放大 {timeline.length} 个采用版本（本地 ComfyUI 串行，逐条耗时视模板而定）。
+              完成后成片预览 / 成片检查 / 片段卡自动替换为高清版，原版本保留可回退。确认开始？
+            </div>
+            <div className="ds-ask-row">
+              <button className="btn sm" onClick={() => setAskUp(false)}>取消</button>
+              <button className="btn sm primary" onClick={() => { setAskUp(false); void runUpscale(); }}>确认开始</button>
+            </div>
+          </div>
+        </div>
+      ) : null}    </div>
   );
 }
 

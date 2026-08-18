@@ -57,10 +57,13 @@ export function checkContinuity(project: DirectorProject): ContinuityIssue[] {
     }
   }
 
-  // 跳跃：片段之间两者都缺 continuityIn/Out 才报（减少 LLM 不返回时的噪音）
+  // 跳跃：片段之间两者都缺 continuityIn/Out 才报（减少 LLM 不返回时的噪音）。
+  // 成品直录对（双方 locked）豁免：这类片段的连续性写在提示词正文里（如「本段开场必须精确继承上一段锁定状态」），
+  // 没有结构化字段是常态，报「剧情跳跃」全是噪音
   for (let i = 0; i < allSegs.length - 1; i++) {
     const a = allSegs[i].seg;
     const b = allSegs[i + 1].seg;
+    if (a.locked && b.locked) continue;
     if (!a.continuityOut && !b.continuityIn) {
       issues.push({
         level: "info",

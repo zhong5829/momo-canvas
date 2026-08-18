@@ -42,12 +42,15 @@ export const DirectorNode = memo(function DirectorNode({ id, data, selected }: N
     }
   }, [d.projectId, id, boardId, createProject, upd]);
 
-  // 上游接入的图片（端口统一，任意图片节点都能连进来当参考图）
-  const upstreamImgs = useMemo(() => collectUpstream(id).images, [id, nodes, edges]);
-  // 内容指纹签名：只有图片内容真的变了才触发同步（collectUpstream 每次返回新数组，不能按引用比较）
-  const upstreamSig = useMemo(() => upstreamImgs.map(hashDataUrl).join("|"), [upstreamImgs]);
+  // 上游接入的素材（端口统一，任意图片/视频/音频节点都能连进来当参考）
+  const upstreamMedia = useMemo(() => collectUpstream(id), [id, nodes, edges]);
+  // 内容指纹签名：只有素材内容真的变了才触发同步（collectUpstream 每次返回新数组，不能按引用比较）
+  const upstreamSig = useMemo(
+    () => [...upstreamMedia.images, ...upstreamMedia.videos, ...upstreamMedia.audios].map(hashDataUrl).join("|"),
+    [upstreamMedia],
+  );
   useEffect(() => {
-    if (d.projectId) void syncRefSlots(d.projectId, upstreamImgs);
+    if (d.projectId) void syncRefSlots(d.projectId, upstreamMedia);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [d.projectId, upstreamSig]);
 

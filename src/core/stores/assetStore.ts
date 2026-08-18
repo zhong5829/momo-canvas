@@ -22,6 +22,8 @@ export type CollectInput = {
   director?: AssetItem["director"];
   /** 内容指纹（导演台参考图去重用；传入后写入资产项） */
   contentHash?: string;
+  /** 生成耗时（毫秒，画布生成物传入；资产卡角标显示用） */
+  durationMs?: number;
 };
 
 /** 回收站保留天数：超过自动彻底清理（删除磁盘文件） */
@@ -104,6 +106,13 @@ export const useAssets = create<AssetState>((set, get) => {
 
     collect: async (input) => {
       try {
+        // 导演台参考素材按内容指纹去重：同一张图/一段声音无论复用多少次（拖进多个片段、重复导入文件夹），
+        // 只落一份磁盘文件、返回同一个资产条目，杜绝「导演台参考」里堆重复副本。生成结果不去重（内容相同也是新版本）。
+        if (input.director?.role === "reference") {
+          const h = input.contentHash ?? (input.src.startsWith("data:") ? hashDataUrl(input.src) : undefined);
+          const hit = h ? get().items.find((i) => i.contentHash === h && !i.deletedAt) : undefined;
+          if (hit) return hit;
+        }
         const { bytes, mime } = await fetchBytes(input.src);
         // mime 不可靠（中转站常给 octet-stream）→ 落盘扩展名以文件头识别为准，避免存成 .bin
         let ext = extFromMime(mime);
@@ -137,6 +146,7 @@ export const useAssets = create<AssetState>((set, get) => {
           director: input.director,
           // dataURL 来源自动写内容指纹：导演台参考图等按内容去重的场景才能跨入口生效
           contentHash: input.contentHash ?? (input.src.startsWith("data:") ? hashDataUrl(input.src) : undefined),
+          durationMs: input.durationMs,
           ...input.group,
           createdAt: Date.now(),
         };

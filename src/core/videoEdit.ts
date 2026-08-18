@@ -294,3 +294,58 @@ export async function videoDuration(src: string): Promise<number> {
     return 0;
   }
 }
+
+/**
+ * 从视频提取一段音频并编码 16bit PCM WAV（声线参考用：提取后入资产库，拖到其他片段的音频参考格）。
+ * WebView2 里 asset:// 的视频无法直接喂给 AudioContext，调用方需先转 blob URL。
+ */
+export async function extractAudioWav(videoUrl: string, startSec?: number, endSec?: number): Promise<Blob> {
+  const buf = await (await fetch(videoUrl)).arrayBuffer();
+  const Ctx = window.AudioContext;
+  if (!Ctx) throw new Error("当前环境不支持音频解码");
+  const ctx = new Ctx();
+  let audio: AudioBuffer;
+  try {
+    audio = await ctx.decodeAudioData(buf);
+  } finally {
+    void ctx.close();
+  }
+  const sr = audio.sampleRate;
+  const s = Math.max(0, Math.floor((startSec ?? 0) * sr));
+  const e = Math.min(audio.length, Math.ceil((endSec ?? audio.duration) * sr));
+  const frames = Math.max(0, e - s);
+  if (!frames) throw new Error("提取区间为空");
+  const chs = Math.max(1, Math.min(2, audio.numberOfChannels));
+  // 交错声道
+  const data = new Float32Array(frames * chs);
+  for (let c = 0; c < chs; c++) {
+    const src = audio.getChannelData(Math.min(c, audio.numberOfChannels - 1));
+    for (let i = 0; i < frames; i++) data[i * chs + c] = src[s + i];
+  }
+  // WAV 头 + PCM16 编码
+  const bytes = 44 + data.length * 2;
+  const out = new ArrayBuffer(bytes);
+  const v = new DataView(out);
+  const ws = (o: number, str: string) => {
+    for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i));
+  };
+  ws(0, "RIFF");
+  v.setUint32(4, bytes - 8, true);
+  ws(8, "WAVE");
+  ws(12, "fmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, chs, true);
+  v.setUint32(24, sr, true);
+  v.setUint32(28, sr * chs * 2, true);
+  v.setUint16(32, chs * 2, true);
+  v.setUint16(34, 16, true);
+  ws(36, "data");
+  v.setUint32(40, data.length * 2, true);
+  let o = 44;
+  for (let i = 0; i < data.length; i++, o += 2) {
+    const x = Math.max(-1, Math.min(1, data[i]));
+    v.setInt16(o, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+  }
+  return new Blob([out], { type: "audio/wav" });
+}

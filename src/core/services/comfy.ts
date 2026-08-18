@@ -28,6 +28,56 @@ export async function pingComfy(host: string): Promise<{ ok: boolean; info?: str
   }
 }
 
+/** 采样 ComfyUI 空闲显存/内存（/system_stats，多卡显存求和）；读不到返回 null，不阻塞清理流程 */
+async function sampleFree(host: string): Promise<{ vram: number; ram: number } | null> {
+  try {
+    const r = await xfetch(`${normalizeHost(host)}/system_stats`, { method: "GET" });
+    if (!r.ok) return null;
+    const j = (await r.json()) as { system?: { ram_free?: number }; devices?: { vram_free?: number }[] };
+    if (!j?.system || !Array.isArray(j.devices)) return null;
+    return { vram: j.devices.reduce((n, d) => n + (d.vram_free ?? 0), 0), ram: j.system.ram_free ?? 0 };
+  } catch {
+    return null;
+  }
+}
+
+/** 清理结果文案：有采样数据带释放量，没有就一句话 */
+export function freeResultText(r: Awaited<ReturnType<typeof freeComfyMemory>>): string {
+  if (!r.ok) return `清理失败${r.err ? `：${r.err}` : ""}`;
+  const parts: string[] = [];
+  if (r.vramFreedMB !== undefined) parts.push(`显存 ${(r.vramFreedMB / 1024).toFixed(1)} GB`);
+  if (r.ramFreedMB !== undefined) parts.push(`内存 ${(r.ramFreedMB / 1024).toFixed(1)} GB`);
+  return parts.length ? `已释放 ${parts.join(" · ")} ✓` : "已清理 ComfyUI 显存与内存 ✓";
+}
+
+/** 清理 ComfyUI 显存与内存：卸载模型 + 释放缓存（/free 的 unload_models + free_memory 双参数），
+ *  前后各采样一次 /system_stats 报告释放量（采样失败不影响清理结果）；大工作流连跑多段时防显存堆积，代价是下次运行重新加载模型 */
+export async function freeComfyMemory(
+  host: string,
+): Promise<{ ok: boolean; err?: string; vramFreedMB?: number; ramFreedMB?: number }> {
+  if (!normalizeHost(host)) return { ok: false, err: "未配置 ComfyUI 地址" };
+  const before = await sampleFree(host);
+  try {
+    const resp = await xfetch(`${normalizeHost(host)}/free`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ unload_models: true, free_memory: true }),
+    });
+    if (!resp.ok) return { ok: false, err: `HTTP ${resp.status}: ${await readErrorBody(resp)}` };
+    // 内存归还给系统有延迟，稍等再采样
+    await new Promise((res) => setTimeout(res, 400));
+    const after = await sampleFree(host);
+    if (!before || !after) return { ok: true };
+    return {
+      ok: true,
+      vramFreedMB: Math.max(0, Math.round((after.vram - before.vram) / 1048576)),
+      ramFreedMB: Math.max(0, Math.round((after.ram - before.ram) / 1048576)),
+    };
+  } catch (e) {
+    return { ok: false, err: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /* ---------------- 工作流解析 ---------------- */
 
 export function isApiWorkflow(json: unknown): json is Record<string, ComfyWfNode> {
@@ -235,8 +285,45 @@ export function canDisable(wf: Record<string, ComfyWfNode>, nodeId: string): { o
   return { ok: false, why: "该节点被下游引用、又没有可跨接的上游输入，忽略会使工作流断链" };
 }
 
-/** 剔除被忽略的节点：引用它的输入改接其第一个上游（链式解析），无法跨接则删除该输入 */
-export function pruneDisabled(
+/**
+ * 「有则生效、无则连坐旁路」的通用剔除（素材入口级）：
+ * marked 节点 + 只服务于它们的下游节点（所有输入都来自被剔除节点，如视频拆分器）整条移出工作流，
+ * 消费端指向它们的链接一并摘除——REF2VA 的 ref_images/ref_videos/ref_audios 等都是可选输入，摘除即不启用。
+ * 用途：模板内置的占位图/默认视音参考在没有真实素材时不参与计算（32GB 级显存顶爆的元凶）。
+ */
+export function pruneNodesWithServants(
+  wf: Record<string, ComfyWfNode>,
+  marked: Set<string>,
+): Record<string, ComfyWfNode> {
+  if (!marked.size) return wf;
+  const all = new Set(marked);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [id, n] of Object.entries(wf)) {
+      if (all.has(id)) continue;
+      const vals = Object.values(n.inputs ?? {});
+      if (!vals.length) continue;
+      if (vals.every((v) => Array.isArray(v) && all.has(String(v[0])))) {
+        all.add(id);
+        changed = true;
+      }
+    }
+  }
+  const out: Record<string, ComfyWfNode> = {};
+  for (const [id, n] of Object.entries(wf)) {
+    if (all.has(id)) continue;
+    const inputs: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(n.inputs ?? {})) {
+      if (Array.isArray(v) && all.has(String(v[0]))) continue;
+      inputs[k] = v;
+    }
+    out[id] = { ...n, inputs };
+  }
+  return out;
+}
+
+/** 剔除被忽略的节点：引用它的输入改接其第一个上游（链式解析），无法跨接则删除该输入 */export function pruneDisabled(
   wf: Record<string, ComfyWfNode>,
   disabled: string[] | undefined,
 ): Record<string, ComfyWfNode> {
@@ -566,6 +653,19 @@ export async function uploadVideoToComfy(host: string, src: string): Promise<str
   return j.subfolder ? `${j.subfolder}/${j.name}` : j.name;
 }
 
+/** 上传音频到 ComfyUI 的 input 目录（与视频同一通用上传接口） */
+export async function uploadAudioToComfy(host: string, src: string): Promise<string> {
+  const blob = src.startsWith("data:") ? dataUrlToBlob(src) : await (await xfetch(src)).blob();
+  const ext = /wav/.test(blob.type) ? "wav" : /mpeg|mp3/.test(blob.type) ? "mp3" : /ogg/.test(blob.type) ? "ogg" : /m4a|mp4|aac/.test(blob.type) ? "m4a" : "wav";
+  const fd = new FormData();
+  fd.append("image", blob, `momo_${uid(6)}.${ext}`);
+  fd.append("overwrite", "true");
+  const resp = await xfetch(`${normalizeHost(host)}/upload/image`, { method: "POST", body: fd });
+  if (!resp.ok) throw new Error(`上传音频到 ComfyUI 失败 ${resp.status}: ${await readErrorBody(resp)}`);
+  const j = await resp.json();
+  return j.subfolder ? `${j.subfolder}/${j.name}` : j.name;
+}
+
 /** images 已回传为 dataURL（显示/下游/资产收录全链路统一）；texts 为 ShowText 等文本输出；videos 为 VHS 合成等视频输出（blob URL） */
 export type ComfyRunResult = { images: string[]; texts: string[]; videos: string[] };
 
@@ -661,6 +761,8 @@ export async function runComfyTemplate(
     upstreamTexts?: string[];
     /** 上游视频：自动上传并喂给 LoadVideo 类节点（SeedVR2 放大等视频工作流） */
     upstreamVideos?: string[];
+    /** 上游音频：自动上传并喂给 LoadAudio 类节点（MiniMax H3 REF2VA 等音频参考工作流） */
+    upstreamAudios?: string[];
     /** 子工作流分支 id；undefined/找不到/default → 走整个工作流（老模板兼容） */
     variantId?: string;
     /**
@@ -668,6 +770,17 @@ export async function runComfyTemplate(
      * 指定了的入口精确用这张图；未映射的入口仍走默认顺序分配（旧行为零回归）。
      */
     imageSlotMap?: Record<string, string>;
+    /**
+     * 片段时长（秒）：写入工作流的「时长槽位」——优先标签含 时长/duration/秒 的数字型暴露参数
+     * （如 H3 模板的「时长（秒）」PrimitiveFloat），回退到标题含时长的节点上的字面量数字输入。
+     * 只写「秒」语义槽位；帧数类输入（length/frames）交给工作流自己的秒→帧换算节点（如 H3 的自动对齐帧数）。
+     */
+    durationSec?: number;
+    /**
+     * 画幅与像素（导演台顶栏设置）：按模板暴露的参数形式写入——
+     * 有「百万像素/megapixels」数字参数就写 mp；有「宽/高」数字参数对就写换算后的宽高；有「比例/aspect」文本参数就写比例串。
+     */
+    resolution?: { aspect?: string; mp?: number; width?: number; height?: number };
   } = {},
 ): Promise<ComfyRunResult> {
   const base = normalizeHost(host);
@@ -682,7 +795,7 @@ export async function runComfyTemplate(
       `子工作流分支有 ${dangling.length} 处依赖未选入分支（如 ${detail}），请在模板编辑器中补全共享节点或重新框选`,
     );
   }
-  const wf: Record<string, ComfyWfNode> = wfRaw;
+  let wf: Record<string, ComfyWfNode> = wfRaw;
   const params = effectiveParams(tpl, opts.variantId);
   const outNodeId = effectiveOutputNodeId(tpl, opts.variantId);
   const nodeTitle = (nid: string) => {
@@ -710,6 +823,7 @@ export async function runComfyTemplate(
   };
 
   const imageParamNodes = new Set<string>(); // 已由图片参数占用的节点
+  const unfilledImgNodes = new Set<string>(); // 没喂到素材的图片入口节点：提交前连坐旁路（不跑模板占位图）
   let hasTextParam = false;
   let firstTextFilled = false;
   for (const p of params) {
@@ -724,7 +838,11 @@ export async function runComfyTemplate(
       if (typeof v === "string" && v.startsWith("data:")) v = await ensureUploaded(v);
       else if (mapped && mapped !== COMFY_SLOT_NONE) v = await ensureUploaded(mapped);
       else if (v === undefined && imgQueue.length) v = await ensureUploaded(imgQueue.shift()!);
-      if (v === undefined) throw new Error(`图片参数「${p.label}」缺少输入：请连接上游图片节点，或在输入映射里指定`);
+      // 没素材的图片入口：不报错也不喂占位图——标记剔除，「有则生效、无则旁路」
+      if (v === undefined) {
+        unfilledImgNodes.add(p.nodeId);
+        continue;
+      }
       node.inputs[p.input] = v;
       continue;
     }
@@ -737,12 +855,138 @@ export async function runComfyTemplate(
         continue;
       }
     }
+    // 种子：留空 = 每次随机（与 ComfyUI 界面的「随机」同理）；填了数字 = 固定可复现
+    if (p.kind === "seed") {
+      const fixed = own !== undefined && own !== "" ? Number(own) : NaN;
+      if (Number.isFinite(fixed)) node.inputs[p.input] = fixed;
+      else {
+        const seed = Math.floor(Math.random() * 2 ** 47);
+        node.inputs[p.input] = seed;
+        opts.onProgress?.(`随机种子 ${seed} → #${p.nodeId} ${nodeTitle(p.nodeId)}`);
+      }
+      continue;
+    }
     const v = own !== undefined ? own : p.value;
-    node.inputs[p.input] = p.kind === "number" || p.kind === "seed" ? Number(v) : v;
+    node.inputs[p.input] = p.kind === "number" ? Number(v) : v;
+  }
+
+  // 1a-2. 未暴露成参数的种子输入（noise_seed/seed）也每次随机——模板 JSON 里存的是导出那刻的具体数字，
+  //       不随机的话每轮都朝同一个方向出图；想固定某个种子就把它暴露成参数并填数字（上分支）
+  {
+    const seedParams = new Set(params.filter((x) => x.kind === "seed").map((x) => `${x.nodeId}.${x.input}`));
+    for (const [nid, node] of Object.entries(wf)) {
+      for (const [k, v] of Object.entries(node.inputs ?? {})) {
+        if (typeof v !== "number" || !/^(?:noise_)?seed$/i.test(k)) continue;
+        if (seedParams.has(`${nid}.${k}`)) continue; // 已由暴露参数处理（固定或随机）
+        const seed = Math.floor(Math.random() * 2 ** 47);
+        node.inputs[k] = seed;
+        opts.onProgress?.(`随机种子 ${seed} → #${nid} ${nodeTitle(nid)}`);
+      }
+    }
+  }
+
+  // 1b. 片段时长 → 时长槽位（在参数回填之后写，覆盖模板默认值与配方里的静态值——每段时长本来就各不相同）。
+  //     优先暴露参数（标签含 时长/duration/秒 且为数字型），回退扫描节点标题含时长的字面量数字输入。
+  if (opts.durationSec && opts.durationSec > 0) {
+    const dur = opts.durationSec;
+    const durParam = params.find((x) => x.kind === "number" && /时长|duration|秒/i.test(x.label ?? ""));
+    if (durParam && wf[durParam.nodeId]) {
+      wf[durParam.nodeId].inputs[durParam.input] = dur;
+      opts.onProgress?.(`片段时长 ${dur} 秒 → #${durParam.nodeId} ${nodeTitle(durParam.nodeId)}`);
+    } else {
+      let hit = false;
+      for (const [nid, node] of Object.entries(wf)) {
+        const title = node._meta?.title ?? "";
+        if (!/时长|duration/i.test(title)) continue;
+        for (const [k, v] of Object.entries(node.inputs ?? {})) {
+          if (typeof v === "number") {
+            node.inputs[k] = dur;
+            hit = true;
+            opts.onProgress?.(`片段时长 ${dur} 秒 → #${nid} ${title}`);
+            break;
+          }
+        }
+        if (hit) break;
+      }
+    }
+  }
+
+  // 1c. 画幅与像素 → 模板的分辨率参数（百万像素数字参数 / 宽+高数字参数对 / 比例文本参数，各有则各写）
+  if (opts.resolution) {
+    const res = opts.resolution;
+    let mpDone = false;
+    let aspectDone = false;
+    let wDone = false;
+    let hDone = false;
+    for (const p of params) {
+      if (!wf[p.nodeId]) continue;
+      const label = `${p.label ?? ""} ${p.key}`;
+      if (res.mp !== undefined && p.kind === "number" && /百万像素|megapixels?/i.test(label)) {
+        wf[p.nodeId].inputs[p.input] = res.mp;
+        mpDone = true;
+        opts.onProgress?.(`像素 ${res.mp} MP → ${p.label}`);
+      } else if (res.aspect && p.kind === "text" && /比例|aspect/i.test(label)) {
+        wf[p.nodeId].inputs[p.input] = res.aspect;
+        aspectDone = true;
+        opts.onProgress?.(`画幅 ${res.aspect} → ${p.label}`);
+      } else if (res.width !== undefined && p.kind === "number" && /宽|width/i.test(label) && !/高|height/i.test(label)) {
+        wf[p.nodeId].inputs[p.input] = res.width;
+        wDone = true;
+      } else if (res.height !== undefined && p.kind === "number" && /高|height/i.test(label) && !/宽|width/i.test(label)) {
+        wf[p.nodeId].inputs[p.input] = res.height;
+        hDone = true;
+      }
+    }
+    // 1c-2. 分辨率参数没暴露时的兜底：按节点输入名直写（ResolutionSelector 的 megapixels、
+    //       EmptyLatentImage/Video 的 width/height 都是这些通用名）。aspect_ratio 是下拉控件，
+    //       按 object_info 选项表前缀匹配（"16:9" → "16:9 (Widescreen)"）；匹配不到就保持模板原值，
+    //       给下拉写非法值会被 ComfyUI 校验整单拒绝
+    if (!mpDone && res.mp !== undefined) {
+      for (const [nid, node] of Object.entries(wf)) {
+        if (typeof node.inputs?.megapixels === "number") {
+          node.inputs.megapixels = res.mp;
+          mpDone = true;
+          opts.onProgress?.(`像素 ${res.mp} MP → #${nid} ${nodeTitle(nid)}`);
+        }
+      }
+    }
+    if (!wDone && res.width !== undefined) {
+      for (const node of Object.values(wf)) {
+        if (typeof node.inputs?.width === "number") {
+          node.inputs.width = res.width;
+          wDone = true;
+        }
+      }
+    }
+    if (!hDone && res.height !== undefined) {
+      for (const node of Object.values(wf)) {
+        if (typeof node.inputs?.height === "number") {
+          node.inputs.height = res.height;
+          hDone = true;
+        }
+      }
+    }
+    if (!aspectDone && res.aspect) {
+      const info = await fetchObjectInfo(host);
+      for (const [nid, node] of Object.entries(wf)) {
+        if (typeof node.inputs?.aspect_ratio !== "string") continue;
+        const spec = info?.[node.class_type]?.input;
+        const list = spec?.required?.aspect_ratio?.[0] ?? spec?.optional?.aspect_ratio?.[0];
+        const hit = Array.isArray(list) ? list.find((o: unknown) => String(o).startsWith(res.aspect!)) : undefined;
+        if (hit !== undefined) {
+          node.inputs.aspect_ratio = hit;
+          aspectDone = true;
+          opts.onProgress?.(`画幅 ${hit} → #${nid} ${nodeTitle(nid)}`);
+          break;
+        }
+      }
+    }
+    if (res.width && res.height && (wDone || hDone)) opts.onProgress?.(`分辨率 ${res.width}×${res.height}`);
   }
 
   // 2a. 剩余上游图片 → 未被参数占用的 LoadImage 节点（精确映射优先，其余按编号顺序）
   {
+    const fedLoaders = new Set<string>(); // 实际分到图的加载节点（其余旁路）
     const loaders = Object.keys(wf)
       .filter((id) => isImageLoaderClass(wf[id].class_type) && !imageParamNodes.has(id))
       .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
@@ -750,12 +994,23 @@ export async function runComfyTemplate(
       const mapped = opts.imageSlotMap?.[`${id}.image`];
       if (mapped && mapped !== COMFY_SLOT_NONE) {
         wf[id].inputs.image = await ensureUploaded(mapped);
+        fedLoaders.add(id);
         continue;
       }
       if (mapped === COMFY_SLOT_NONE) continue; // 明确不给图：入口留空（工作流端自行报错或走默认）
       if (!imgQueue.length) break;
       wf[id].inputs.image = await ensureUploaded(imgQueue.shift()!);
+      fedLoaders.add(id);
     }
+    // 没分到图的非参数 LoadImage：模板默认占位图没有意义，一并标记旁路
+    for (const id of loaders) if (!fedLoaders.has(id)) unfilledImgNodes.add(id);
+  }
+
+  // 2a-0. 「有则生效、无则连坐旁路」：没喂到素材的图片入口（含其专属下游）整条移出提交工作流，
+  //        避免 REF2VA 把模板占位图当真实参考算进注意力（显存与时间都被无谓放大）
+  if (unfilledImgNodes.size) {
+    wf = pruneNodesWithServants(wf, unfilledImgNodes);
+    opts.onProgress?.(`已旁路 ${unfilledImgNodes.size} 个无素材的图片入口`);
   }
 
   // 2a'. 上游视频 → LoadVideo 类节点（VHS_LoadVideo 等；输入名 video / file / video_path）
@@ -776,6 +1031,28 @@ export async function runComfyTemplate(
     if (vidQueue.length) {
       throw new Error(
         "已连接上游视频，但该工作流没有足够的视频加载节点（LoadVideo）。请在模板里加 VHS_LoadVideo 类节点，或断开视频连线。",
+      );
+    }
+  }
+
+  // 2a''. 上游音频 → LoadAudio 类节点（MiniMax H3 REF2VA 的 Audio 1-3 等；输入名 audio / file / audio_path）
+  const audQueue = [...(opts.upstreamAudios ?? [])];
+  if (audQueue.length) {
+    const aLoaders = Object.keys(wf)
+      .filter((id) => isAudioLoaderClass(wf[id].class_type))
+      .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+    for (const id of aLoaders) {
+      if (!audQueue.length) break;
+      opts.onProgress?.("上传音频到 ComfyUI…");
+      const name = await uploadAudioToComfy(host, audQueue.shift()!);
+      const inputs = wf[id].inputs;
+      const key = ["audio", "file", "audio_path"].find((k) => k in inputs && !isConnection(inputs[k])) ?? "audio";
+      inputs[key] = name;
+      opts.onProgress?.(`音频已接入 #${id} ${nodeTitle(id)}`);
+    }
+    if (audQueue.length) {
+      throw new Error(
+        "已连接上游音频，但该工作流没有足够的音频加载节点（LoadAudio）。请在模板里加 LoadAudio 节点，或断开音频连线。",
       );
     }
   }
@@ -803,7 +1080,12 @@ export async function runComfyTemplate(
       const required = (spec.input?.required ?? {}) as Record<string, unknown[]>;
       for (const [input, def] of Object.entries(required)) {
         const cur = node.inputs[input];
-        const broken = cur === undefined || (isConnection(cur) && !wf[cur[0]]);
+        // AUTOGROW 类自定义输入（如 ComfyMathExpression 的 values）：前端格式里子输入槽名是「values.a」
+        // 带点形式，object_info 登记的却是「values」——带点子输入在即视为已提供，原样交给 ComfyUI 校验
+        // （同一工作流在 ComfyUI 界面能跑，服务端自然认这种槽名）
+        const dottedChild =
+          cur === undefined && Object.keys(node.inputs).some((k) => k.startsWith(`${input}.`));
+        const broken = (cur === undefined && !dottedChild) || (isConnection(cur) && !wf[cur[0]]);
         if (!broken) continue;
         const t = def?.[0];
         if (Array.isArray(t)) {
@@ -869,7 +1151,9 @@ export async function runComfyTemplate(
         });
       });
 
-    for (let i = 0; i < 600; i++) {
+    // 30 分钟上限（2500 × 1.2s）：H3 一段 ~500s，叠加排队等待与「每段后清显存」的模型重载，
+    // 旧的 12 分钟上限会在长任务上误判超时 → 报错重试 → 队列越堆越卡（恶性循环）
+    for (let i = 0; i < 2500; i++) {
       await sleep(1200);
       const hr = await xfetch(`${base}/history/${promptId}`);
       if (!hr.ok) continue;
@@ -904,8 +1188,11 @@ export async function runComfyTemplate(
         return `${base}/view?${q.toString()}`;
       };
       const nodeIds = outNodeId && outputs[outNodeId] ? [outNodeId] : Object.keys(outputs);
+      // 分类按扩展名而非所在键：H3 的自定义 SaveVideo 会把 .mp4 登记在 images 键下，
+      // 只认 videos/gifs 键会漏收视频（应用端报「视频生成未返回结果」，服务端其实已出片）
+      const isVideoFile = (f: { filename: string }) => /\.(mp4|webm|mov|mkv|m4v|avi)$/i.test(f.filename);
       for (const nid of nodeIds) {
-        for (const img of outputs[nid]?.images ?? []) urls.push(viewUrl(img));
+        for (const img of outputs[nid]?.images ?? []) (isVideoFile(img) ? vurls : urls).push(viewUrl(img));
       }
       for (const nid of Object.keys(outputs)) {
         const out = outputs[nid] ?? {};

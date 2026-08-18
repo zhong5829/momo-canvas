@@ -344,7 +344,8 @@ export function AgentPanel() {
     e.preventDefault();
     setDragOver(false);
     if (e.dataTransfer.getData("momo/node-kind")) return; // 坞里的节点类型是给画布的，不拦截
-    const assetId = e.dataTransfer.getData("momo/asset-id") || getNativeDragAsset() || "";
+    // 多选拖拽负载取第一张（创作助手按单图理解）
+    const assetId = (e.dataTransfer.getData("momo/asset-id") || getNativeDragAsset() || "").split(",")[0] ?? "";
     if (assetId) {
       const it = useAssets.getState().items.find((x) => x.id === assetId);
       if (!it) return;

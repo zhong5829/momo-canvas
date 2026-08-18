@@ -80,12 +80,15 @@ export const EnhanceLocalNode = memo(function EnhanceLocalNode({ id, data, selec
                 {d.qualityGate === "failed" ? "未通过" : d.qualityGate === "warning" ? "需检查" : "保真"} {d.fidelityScore}
               </div>
             ) : null}
-            {d.report ? <div className="enh-report">{d.report}</div> : null}
           </div>
         ) : (
           <div className="gen-empty">
             <IcImage size={24} />
-            <span>连接一张图片到左侧，选中节点在底部面板调参并点「增强」</span>
+            <span>
+              连接一张图片到左侧
+              <br />
+              选中后在底部面板点「增强」
+            </span>
           </div>
         )}
       </div>

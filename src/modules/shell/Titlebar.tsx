@@ -8,6 +8,7 @@ import { toast, useUi, type ErrLogItem } from "../../core/stores/uiStore";
 import { useAssets } from "../../core/stores/assetStore";
 import { useRunLog, type RunLogEntry } from "../../core/stores/logStore";
 import { chatStream } from "../../core/services/llm";
+import { freeComfyMemory, freeResultText } from "../../core/services/comfy";
 import { ERR_ANALYZE_SYSTEM, buildErrContext, extractProtocolFix } from "../../core/errorHelp";
 import { errMsg, isTauri } from "../../core/utils";
 import {
@@ -16,6 +17,7 @@ import {
   IcCheck,
   IcClose,
   IcBlack,
+  IcBroom,
   IcGallery,
   IcGear,
   IcHistory,
@@ -363,6 +365,27 @@ function ErrCenter() {
   );
 }
 
+/** 一键释放 ComfyUI 显存与内存（/free）：卸载模型 + 清缓存，完成后报告释放量 */
+function MemFreeBtn() {
+  const host = useSettings((s) => s.settings.comfy.host);
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      className="icon-btn"
+      title="一键释放 ComfyUI 显存与内存：卸载模型并清理缓存，下次运行会重新加载模型"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        const r = await freeComfyMemory(host);
+        setBusy(false);
+        toast(freeResultText(r), r.ok ? "ok" : "err");
+      }}
+    >
+      {busy ? <IcLoading size={19} /> : <IcBroom size={19} />}
+    </button>
+  );
+}
+
 /** 单条运行日志：一行摘要，点开看请求体/响应体 */
 function RunLogRow({ e }: { e: RunLogEntry }) {
   const [open, setOpen] = useState(false);
@@ -538,6 +561,7 @@ export function Titlebar() {
       </button>
       <RunLogCenter />
       <ErrCenter />
+      <MemFreeBtn />
       <button
         className={`icon-btn ${charLibOpen ? "on" : ""}`}
         title={`角色库：内置人物预设，一键生成整套角色素材${hk("charLib")}`}

@@ -73,7 +73,8 @@ export const useSkills = create<SkillState>((set, get) => ({
       const saved = await loadJSON<PersistShape>("skills.json", "v1");
       // 合并内置 Skill（用户可能禁用了内置项，保留用户的 enabled/starred 状态）
       const builtin = builtinSkills();
-      const userSkills = saved?.skills ?? [];
+      // 防御：早期版本导入的 Skill 可能缺 id（展开覆盖 bug），加载时补发，避免 install 误判同 id 互相覆盖
+      const userSkills = (saved?.skills ?? []).map((s) => (s.id ? s : { ...s, id: uid(8) }));
       const merged: MomoSkill[] = [...builtin];
       for (const s of userSkills) {
         const bi = merged.findIndex((m) => m.id === s.id);
@@ -88,34 +89,47 @@ export const useSkills = create<SkillState>((set, get) => ({
     })()),
 
   install: (skill) => {
-    const s = get();
-    const idx = s.skills.findIndex((x) => x.id === skill.id);
-    const skills = idx >= 0 ? s.skills.map((x) => (x.id === skill.id ? { ...skill, updatedAt: Date.now() } : x)) : [...s.skills, skill];
-    set({ skills });
-    void saveJSON("skills.json", "v1", { skills, schemaVersion: 1 } satisfies PersistShape);
+    void (async () => {
+      // 写操作前必须确保 init 完成：否则内存是空数组，会把内置 Skill 和已存数据整体覆盖落盘
+      if (!get().loaded) await get().init();
+      const s = get();
+      const idx = s.skills.findIndex((x) => x.id === skill.id);
+      const skills = idx >= 0 ? s.skills.map((x) => (x.id === skill.id ? { ...skill, updatedAt: Date.now() } : x)) : [...s.skills, skill];
+      set({ skills });
+      void saveJSON("skills.json", "v1", { skills, schemaVersion: 1 } satisfies PersistShape);
+    })();
   },
 
   remove: (id) => {
-    const s = get();
-    // 内置 Skill 不允许删除（只能禁用）
-    if (s.skills.find((x) => x.id === id)?.source === "builtin") return;
-    const skills = s.skills.filter((x) => x.id !== id);
-    set({ skills });
-    void saveJSON("skills.json", "v1", { skills, schemaVersion: 1 } satisfies PersistShape);
+    void (async () => {
+      if (!get().loaded) await get().init();
+      const s = get();
+      // 内置 Skill 不允许删除（只能禁用）
+      if (s.skills.find((x) => x.id === id)?.source === "builtin") return;
+      const skills = s.skills.filter((x) => x.id !== id);
+      set({ skills });
+      void saveJSON("skills.json", "v1", { skills, schemaVersion: 1 } satisfies PersistShape);
+    })();
   },
 
   toggleEnabled: (id) => {
-    const s = get();
-    const skills = s.skills.map((x) => (x.id === id ? { ...x, enabled: !x.enabled, updatedAt: Date.now() } : x));
-    set({ skills });
-    void saveJSON("skills.json", "v1", { skills, schemaVersion: 1 } satisfies PersistShape);
+    void (async () => {
+      if (!get().loaded) await get().init();
+      const s = get();
+      const skills = s.skills.map((x) => (x.id === id ? { ...x, enabled: !x.enabled, updatedAt: Date.now() } : x));
+      set({ skills });
+      void saveJSON("skills.json", "v1", { skills, schemaVersion: 1 } satisfies PersistShape);
+    })();
   },
 
   toggleStarred: (id) => {
-    const s = get();
-    const skills = s.skills.map((x) => (x.id === id ? { ...x, starred: !x.starred } : x));
-    set({ skills });
-    void saveJSON("skills.json", "v1", { skills, schemaVersion: 1 } satisfies PersistShape);
+    void (async () => {
+      if (!get().loaded) await get().init();
+      const s = get();
+      const skills = s.skills.map((x) => (x.id === id ? { ...x, starred: !x.starred } : x));
+      set({ skills });
+      void saveJSON("skills.json", "v1", { skills, schemaVersion: 1 } satisfies PersistShape);
+    })();
   },
 
   getById: (id) => get().skills.find((x) => x.id === id),
@@ -133,7 +147,7 @@ export function skillsForContext(ctx: string): MomoSkill[] {
 /** 新建空 Skill（导入向导用） */
 export function newSkill(partial: Partial<MomoSkill>): MomoSkill {
   const now = Date.now();
-  return {
+  const merged: MomoSkill = {
     id: uid(8),
     name: "未命名 Skill",
     version: "1.0.0",
@@ -149,4 +163,7 @@ export function newSkill(partial: Partial<MomoSkill>): MomoSkill {
     updatedAt: now,
     ...partial,
   };
+  // id 兜底必须在展开之后：partial.id 为 undefined/空串时展开会覆盖掉默认 uid，导致所有无 id 的导入互相覆盖
+  if (!merged.id) merged.id = uid(8);
+  return merged;
 }

@@ -10,12 +10,13 @@ import "./director.css";
 import { useUi } from "../../core/stores/uiStore";
 import { useDirector } from "../../core/stores/directorStore";
 import { useAssets } from "../../core/stores/assetStore";
-import { projectProgress } from "../../core/directorEngine";
+import { projectProgress, mpToSize } from "../../core/directorEngine";
 import { IcClose, IcText, IcClapper, IcSparkles, IcFilmCut, IcFilmFrame, IcGallery } from "../../ui/icons";
 import { ScriptPage } from "./ScriptPage";
 import { StoryboardPage } from "./StoryboardPage";
 import { GenerationPage } from "./GenerationPage";
 import { EditingPage } from "./EditingPage";
+import { RecipeSelect } from "./RecipeSelect";
 // three.js 体积大，3D 导演台按需懒加载（点开页签才下载/编译）
 const ThreeDPage = lazy(() => import("./ThreeDPage").then((m) => ({ default: m.ThreeDPage })));
 import { ErrorBoundary } from "../../ui/ErrorBoundary";
@@ -48,6 +49,8 @@ export function DirectorStudio() {
   const project = useDirector((s) => s.projects.find((p) => p.nodeId === nodeId));
   const updateProject = useDirector((s) => s.updateProject);
   const [tab, setTab] = useState<Tab>("script");
+  // 百万像素输入：自由文本（不设最小值限制），合法数字即写回项目
+  const [mpText, setMpText] = useState(String(project?.resolutionMP ?? 1));
 
   useEffect(() => {
     if (open) void useDirector.getState().init();
@@ -56,6 +59,7 @@ export function DirectorStudio() {
   // B10 修复：切换项目时重置 tab 到脚本页
   useEffect(() => {
     setTab("script");
+    setMpText(String(useDirector.getState().projects.find((x) => x.nodeId === nodeId)?.resolutionMP ?? 1));
   }, [nodeId]);
 
   if (!open) return null;
@@ -80,6 +84,7 @@ export function DirectorStudio() {
   }
 
   const patch = (p: Partial<DirectorProject>) => updateProject(project.id, p);
+  const mpSize = project ? mpToSize(project.aspect, project.resolutionMP ?? 1) : mpToSize("16:9", 1);
 
   return (
     <div className="director-studio">
@@ -120,6 +125,36 @@ export function DirectorStudio() {
             />
             秒
           </label>
+          {/* 目标像素（百万）：与画幅换算宽高，生成时写入工作流（megapixels/宽/高参数）；输入不限最小值，支持小数点后两位 */}
+          <div className="ds-head-mp nodrag" title="目标像素（百万）：与左侧画幅自动换算宽高，生成时写入工作流的百万像素/宽/高参数（宽高对齐 16 的倍数）">
+            <span className="ds-mp-label">像素</span>
+            <input
+              className="input sm ds-mp-input"
+              type="text"
+              inputMode="decimal"
+              value={mpText}
+              onChange={(e) => {
+                // 只放行「数字 + 最多两位小数」的输入
+                const raw = e.target.value;
+                if (!/^\d*\.?\d{0,2}$/.test(raw)) return;
+                setMpText(raw);
+                const v = Number(raw);
+                if (raw.trim() !== "" && Number.isFinite(v) && v > 0) patch({ resolutionMP: Math.round(v * 100) / 100 });
+              }}
+              onBlur={() => {
+                // 失焦规范显示：合法值补足两位小数，非法回退 1.00
+                const n = Number(mpText);
+                setMpText(Number.isFinite(n) && n > 0 ? n.toFixed(2) : "1.00");
+              }}
+            />
+            <span className="ds-mp-label">百万</span>
+            <span className="ds-card-desc">{mpSize.width}×{mpSize.height}</span>
+          </div>
+          {/* 生成配方：远程模型或本地 ComfyUI 模板（直选模板自动建配方；分镜页可按片段覆盖） */}
+          <div className="ds-head-recipe nodrag">
+            生成配方
+            <RecipeSelect project={project} target="project" />
+          </div>
         </div>
         {/* 总体进度（方案 §6.4 项目栏） */}
         <HeadProgress project={project} />

@@ -132,6 +132,9 @@ export function compileNegative(ctx: ShotContext): string {
  * H3 R2V 专用：按参考素材的最终连接顺序注入 <Picture N> / <Video N> / <Audio N> 标签。
  * 方案 §7.6：R2V 提示词标签按实际连接顺序产生，素材卡片拖动排序后必须重新编译标签。
  *
+ * 注：导演台生成链路当前由 directorRefs.refsNoteFromSnapshot 承担同一职责（编号与槽序严格一致），
+ * 本函数保留给需要「kind/usage/label 三元组」自定义前缀的场景。
+ *
  * @param basePrompt 编译好的基础提示词
  * @param refs 参考素材列表（按连接顺序）：每项标注用途
  */
@@ -149,6 +152,100 @@ export function injectR2VTags(
   }
   const tags = [...picN, ...vidN, ...audN];
   return tags.length ? `${basePrompt}\n\n参考素材：\n${tags.join("\n")}` : basePrompt;
+}
+
+/* ---------------- H3 成品提示词解析（分镜卡框格化展示用） ---------------- */
+
+/** H3 六段式正文段名 → 中文标签 */
+export const H3_SECTION_LABELS: Record<string, string> = {
+  subject_definitions: "角色与场景定义",
+  summary: "内容摘要",
+  retention_analysis: "保真分析",
+  detailed_description: "动作时序描述",
+  overall_soundscape: "声音环境",
+  non_diegetic_music: "音乐（非剧情内）",
+};
+
+/** H3 元数据字段 → 中文标签（不认识的字段原样显示） */
+export const H3_META_LABELS: Record<string, string> = {
+  Purpose: "段落目的",
+  "Continuity bridge in": "承接桥（入）",
+  "Continuity bridge out": "衔接桥（出）",
+  "Reference image order": "参考图顺序",
+  Characters: "角色",
+  Scene: "场景",
+  Props: "道具",
+  Dialogue: "对白",
+  Camera: "摄影机",
+};
+
+export type ParsedH3Prompt = {
+  /** 标题行三段：H3-01 / 三岁的画 / 12秒 */
+  code: string;
+  title: string;
+  duration: string;
+  /** 元数据字段（`**Label**: value` 行，值可多行） */
+  meta: Array<{ label: string; value: string }>;
+  /** 六段正文 */
+  sections: Array<{ name: string; text: string }>;
+};
+
+/**
+ * 解析 H3 成品提示词为框格化展示结构（标题行 + 元数据 + 六段正文）。
+ * 无 `## H3-` 头且无 `subject_definitions:` 正文时返回 null，调用方回落纯文本预览。
+ */
+export function parseH3Prompt(text: string): ParsedH3Prompt | null {
+  const t = text.trim();
+  if (!t) return null;
+  const lines = t.split(/\r?\n/);
+  let code = "";
+  let title = "";
+  let duration = "";
+  let i = 0;
+  // 标题行：## H3-01 | 三岁的画 | 12秒（全角｜/省略尾段都认）
+  const head = lines[0].match(/^##\s*(H3[-_]?[\w-]*)\s*[|｜]\s*([^|｜]*?)\s*(?:[|｜]\s*(.*))?$/i);
+  if (head) {
+    code = head[1];
+    title = head[2].trim();
+    duration = (head[3] ?? "").trim();
+    i = 1;
+  } else if (!/subject_definitions\s*:/i.test(t)) {
+    return null;
+  }
+  const metaBufs: Array<{ label: string; lines: string[] }> = [];
+  const secBufs: Array<{ name: string; lines: string[] }> = [];
+  let curMeta: { label: string; lines: string[] } | null = null;
+  let curSec: { name: string; lines: string[] } | null = null;
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    const secM = line.match(
+      /^(subject_definitions|summary|retention_analysis|detailed_description|overall_soundscape|non_diegetic_music)\s*:\s*(.*)$/i,
+    );
+    if (secM) {
+      curMeta = null;
+      curSec = { name: secM[1].toLowerCase(), lines: secM[2].trim() ? [secM[2].trim()] : [] };
+      secBufs.push(curSec);
+      continue;
+    }
+    if (curSec) {
+      curSec.lines.push(line.trimEnd());
+      continue;
+    }
+    const metaM = line.match(/^\*\*(.+?)\*\*\s*[:：]?\s*(.*)$/);
+    if (metaM) {
+      curMeta = { label: metaM[1].trim(), lines: metaM[2].trim() ? [metaM[2].trim()] : [] };
+      metaBufs.push(curMeta);
+      continue;
+    }
+    if (curMeta) curMeta.lines.push(line.trim());
+  }
+  return {
+    code,
+    title,
+    duration,
+    meta: metaBufs.filter((m) => m.label).map((m) => ({ label: m.label, value: m.lines.join("\n").trim() })),
+    sections: secBufs.map((s) => ({ name: s.name, text: s.lines.join("\n").trim() })).filter((s) => s.text),
+  };
 }
 
 /** 收集一个 segment 的完整镜头上下文（供 UI 预览编译结果用） */

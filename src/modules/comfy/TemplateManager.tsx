@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, Field, Row, Switch } from "../../ui/kit";
 import { PopSelect } from "../../ui/PopSelect";
-import { useComfy } from "../../core/stores/comfyStore";
+import { useComfy, useComfyTemplates } from "../../core/stores/comfyStore";
 import { useSettings } from "../../core/stores/settingsStore";
 import { toast, useUi } from "../../core/stores/uiStore";
 import {
@@ -21,13 +21,18 @@ import {
 } from "../../core/services/comfy";
 import { layoutWorkflow, zhInput, zhNode, WFG_H, WFG_W, connectedComponents } from "./wfGraph";
 import { errMsg, uid } from "../../core/utils";
-import { IcDownload, IcEdit, IcFlow, IcTrash, IcUpload } from "../../ui/icons";
+import { IcClose, IcDownload, IcEdit, IcFlow, IcRefresh, IcTrash, IcUpload } from "../../ui/icons";
 import {
   autoExposeMap,
+  comfyEditFilename,
   importTemplateFilesAuto,
+  isTripWatching,
   packTemplates,
   paramsFromExpose,
   saveTextFile,
+  startComfyRoundTrip,
+  stopTripWatch,
+  syncFromComfyEditor,
   templatesFromJson,
   type ExposeMap,
 } from "./templateIO";
@@ -136,13 +141,38 @@ export function TemplateManager() {
   const open = useUi((s) => s.templateMgrOpen);
   const editId = useUi((s) => s.templateMgrEdit);
   const close = () => useUi.getState().setTemplateMgr(false);
-  const templates = useComfy((s) => s.templates);
+  const templates = useComfyTemplates();
   const upsert = useComfy((s) => s.upsert);
   const remove = useComfy((s) => s.remove);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  // ComfyUI 往返编辑：监听会话在 templateIO 模块级存活（关掉本弹窗也继续），这里只同步展示状态
+  const [tripIds, setTripIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    setTripIds(new Set(templates.filter((x) => isTripWatching(x.id)).map((x) => x.id)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const toggleTrip = (t: ComfyTemplate) => {
+    if (tripIds.has(t.id)) {
+      stopTripWatch(t.id);
+      setTripIds((prev) => {
+        const n = new Set(prev);
+        n.delete(t.id);
+        return n;
+      });
+      toast(`已停止「${t.name}」的自动同步监听`, "info");
+      return;
+    }
+    void startComfyRoundTrip(t).then(
+      () => {
+        setTripIds((prev) => new Set(prev).add(t.id));
+        toast(`已推送到 ComfyUI 工作流库并打开浏览器：在 ComfyUI 左侧「工作流」列表点开 ${comfyEditFilename(t.name)} 开始编辑，Ctrl+S 保存后这里自动同步`, "ok");
+      },
+      (e) => toast(`送出失败：${errMsg(e)}`, "err"),
+    );
+  };
   // combo 下拉选项：编辑器里同样从 ComfyUI 服务端 /object_info 拉取（缓存；离线退化为文本框）
   const comfyHost = useSettings((s) => s.settings.comfy.host);
   const [objectInfo, setObjectInfo] = useState<Record<string, any> | null>(null);
@@ -352,10 +382,40 @@ export function TemplateManager() {
                   <b>{t.name}</b>
                   <span>
                     {Object.keys(t.workflow).length} 个节点 · 暴露 {t.params.length} 个参数
+                    {tripIds.has(t.id) ? " · 🔄 ComfyUI 编辑中（保存即自动同步）" : ""}
                   </span>
                 </div>
                 <button className="icon-btn" title="编辑参数" onClick={() => setDraft(draftFromTemplate(t))}>
                   <IcEdit size={17} />
+                </button>
+                <button
+                  className={`icon-btn${tripIds.has(t.id) ? " on" : ""}`}
+                  title={
+                    tripIds.has(t.id)
+                      ? "停止自动同步监听（ComfyUI 里的文件保留）"
+                      : "一键 ComfyUI 编辑：模板写进工作流目录并自动打开 ComfyUI（左侧列表点开 MOMO_*.json），改完 Ctrl+S，这里自动同步回模板"
+                  }
+                  onClick={() => toggleTrip(t)}
+                >
+                  {tripIds.has(t.id) ? <IcClose size={17} /> : <IcUpload size={17} />}
+                </button>
+                <button
+                  className="icon-btn"
+                  title="从 ComfyUI 收回：读取 ComfyUI 里保存过的 MOMO_<模板名>.json（前端格式自动转换），更新本模板（保留名称/分支，失效的暴露参数自动剔除）"
+                  onClick={() =>
+                    void syncFromComfyEditor(t).then(
+                      (r) => {
+                        upsert(r.merged);
+                        toast(
+                          `模板「${t.name}」已同步更新（${Object.keys(r.merged.workflow).length} 个节点${r.droppedParams ? `，剔除 ${r.droppedParams} 个失效参数` : ""}）${r.warnings.length ? `；⚠️ ${r.warnings[0]}` : ""}`,
+                          "ok",
+                        );
+                      },
+                      (e) => toast(`同步失败：${errMsg(e)}`, "err"),
+                    )
+                  }
+                >
+                  <IcRefresh size={17} />
                 </button>
                 <button
                   className="icon-btn"
