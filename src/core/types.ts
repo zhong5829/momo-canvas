@@ -1153,6 +1153,10 @@ export type ComfyWfNode = {
   class_type: string;
   inputs: Record<string, unknown>;
   _meta?: { title?: string };
+  /** 节点在 ComfyUI 画布上的位置（前端格式导入/往返编辑时保留；API 格式导入为自动布局估算值） */
+  pos?: [number, number];
+  /** 节点在 ComfyUI 画布上的尺寸（同上，推回 ComfyUI 时不至于全部默认尺寸堆叠） */
+  size?: [number, number];
 };
 
 export type ComfyParamKind = "text" | "number" | "seed" | "image" | "toggle";

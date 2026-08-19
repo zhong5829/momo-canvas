@@ -13,11 +13,12 @@ import { toast, useUi } from "../../core/stores/uiStore";
 import { useAssets } from "../../core/stores/assetStore";
 import { assetUrl } from "../../core/services/assetFiles";
 import { saveTextFile } from "../comfy/templateIO";
-import { IcFilmCut, IcPlay, IcMusic, IcScan, IcClapper, IcActivity, IcDownload, IcFlow, IcLoading, IcGear } from "../../ui/icons";
+import { IcFilmCut, IcPlay, IcMusic, IcScan, IcClapper, IcActivity, IcDownload, IcFlow, IcLoading, IcGear, IcClose, IcMic, IcText, IcZap, IcGlobe } from "../../ui/icons";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useComfyTemplates } from "../../core/stores/comfyStore";
 import { runBatchUpscale } from "../../core/directorQueue";
 import { PopSelect, PopLayer } from "../../ui/PopSelect";
+import { AskCard } from "./AskCard";
 import type { DirectorProject, DirectorAudioKind } from "../../core/types";
 
 export function EditingPage({ project }: { project: DirectorProject }) {
@@ -315,7 +316,7 @@ export function EditingPage({ project }: { project: DirectorProject }) {
           )}
         </div>
         <div className="ds-card-foot">
-          <span className="ds-card-desc">硬切连播仅用于检查缺片/时长/剧情连续性</span>
+          <span className="ds-hint">硬切连播仅用于检查缺片/时长/剧情连续性</span>
           <span className="spacer" />
           <button className="btn sm" disabled={!canPreview} onClick={doPreview}>
             <IcPlay size={14} /> 顺序预演（硬切）
@@ -375,7 +376,7 @@ export function EditingPage({ project }: { project: DirectorProject }) {
               <PopLayer anchorRef={upParamAnchor} onClose={() => setUpParamsOpen(false)} className="ds-h3-pop dse-up-pop">
                 <div className="ds-h3-pop-head">
                   <b>放大参数</b>
-                  <span className="ds-card-desc">{upTpl.name}（留空用模板默认值）</span>
+                  <span className="ds-hint">{upTpl.name}（留空用模板默认值）</span>
                 </div>
                 <div className="dse-up-params">
                   {upTpl.params
@@ -393,14 +394,14 @@ export function EditingPage({ project }: { project: DirectorProject }) {
                       </label>
                     ))}
                   {!upTpl.params.filter((p) => p.kind !== "image").length ? (
-                    <div className="ds-card-desc">该模板没有暴露可调参数——到「设置 → ComfyUI 模板 → 编辑参数」里暴露后再来</div>
+                    <div className="ds-hint">该模板没有暴露可调参数——到「设置 → ComfyUI 模板 → 编辑参数」里暴露后再来</div>
                   ) : null}
                 </div>
               </PopLayer>
             ) : null}
           </div>
           {!templates.some((t) => /放大|upscale|超分|seedvr/i.test(t.name)) ? (
-            <div className="ds-card-desc" style={{ marginTop: 6 }}>
+            <div className="ds-hint">
               还没有疑似放大模板：在 ComfyUI 里把视频放大工作流（带 LoadVideo，如 SeedVR2 视频版）导出 API JSON，到「设置 → ComfyUI 模板」导入后即可选用
             </div>
           ) : null}
@@ -503,18 +504,20 @@ export function EditingPage({ project }: { project: DirectorProject }) {
 
 
       {askUp ? (
-        <div className="ds-ask" onMouseDown={(e) => { if (e.target === e.currentTarget) setAskUp(false); }}>
-          <div className="ds-ask-card">
-            <div className="ds-ask-text">
+        <AskCard
+          text={
+            <>
               将用模板「{templates.find((t) => t.id === upTplId)?.name}」逐条放大 {timeline.length} 个采用版本（本地 ComfyUI 串行，逐条耗时视模板而定）。
               完成后成片预览 / 成片检查 / 片段卡自动替换为高清版，原版本保留可回退。确认开始？
-            </div>
-            <div className="ds-ask-row">
-              <button className="btn sm" onClick={() => setAskUp(false)}>取消</button>
-              <button className="btn sm primary" onClick={() => { setAskUp(false); void runUpscale(); }}>确认开始</button>
-            </div>
-          </div>
-        </div>
+            </>
+          }
+          okText="确认开始"
+          onCancel={() => setAskUp(false)}
+          onConfirm={() => {
+            setAskUp(false);
+            void runUpscale();
+          }}
+        />
       ) : null}    </div>
   );
 }
@@ -561,6 +564,13 @@ function AudioSection({ project }: { project: DirectorProject }) {
     ambient: "环境音",
     music: "音乐",
   };
+  const KIND_ICON: Record<DirectorAudioKind, React.ReactNode> = {
+    dialogue: <IcMic size={14} />,
+    narration: <IcText size={14} />,
+    sfx: <IcZap size={14} />,
+    ambient: <IcGlobe size={14} />,
+    music: <IcMusic size={14} />,
+  };
 
   return (
     <div className="ds-card">
@@ -576,11 +586,17 @@ function AudioSection({ project }: { project: DirectorProject }) {
       <div className="ds-card-body">
         {/* 新建音频轨道 */}
         <div className="ds-audio-add">
-          <select className="input sm nodrag" value={newKind} onChange={(e) => setNewKind(e.target.value as DirectorAudioKind)}>
-            {(Object.keys(KIND_LABEL) as DirectorAudioKind[]).map((k) => (
-              <option key={k} value={k}>{KIND_LABEL[k]}</option>
-            ))}
-          </select>
+          <PopSelect
+            className="nodrag ds-audio-kind"
+            value={newKind}
+            triggerIcon
+            options={(Object.keys(KIND_LABEL) as DirectorAudioKind[]).map((k) => ({
+              value: k,
+              label: KIND_LABEL[k],
+              icon: KIND_ICON[k],
+            }))}
+            onChange={(v) => setNewKind(v as DirectorAudioKind)}
+          />
           <input
             className="input nodrag"
             placeholder="输入文本（对白/旁白/音效描述）…"
@@ -609,7 +625,7 @@ function AudioSection({ project }: { project: DirectorProject }) {
                     {busy === t.id ? "生成中…" : "TTS"}
                   </button>
                 ) : null}
-                <button className="icon-btn danger" aria-label="删除" title="删除" onClick={() => removeTrack(t.id)}>✕</button>
+                <button className="icon-btn danger" aria-label="删除" title="删除" onClick={() => removeTrack(t.id)}><IcClose size={13} /></button>
               </div>
             ))}
           </div>

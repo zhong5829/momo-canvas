@@ -17,14 +17,15 @@ import { runBatch, collectBatchTasks, cancelBatch, type BatchOp } from "../../co
 import { assetUrl, assetToBlobUrl } from "../../core/services/assetFiles";
 import { extractAudioWav } from "../../core/videoEdit";
 import { RecipeSelect } from "./RecipeSelect";
+import { BatchSwitches } from "./BatchSwitches";
+import { AskCard } from "./AskCard";
 import { PopSelect, PopLayer } from "../../ui/PopSelect";
 import { Thumb } from "../../ui/Thumb";
 import { ScrubVideoThumb, fmtDur } from "../../ui/VideoThumb";
-import { IcStar, IcCheck, IcUpload, IcLoading, IcZap, IcFilmFrame, IcClapper, IcRefresh, IcClose, IcMic } from "../../ui/icons";
+import { IcStar, IcCheck, IcUpload, IcLoading, IcZap, IcFilmFrame, IcClapper, IcRefresh, IcClose, IcMic, IcTimer } from "../../ui/icons";
 import type { DirectorProject, DirectorSegment, DirectorTake } from "../../core/types";
 
 export function GenerationPage({ project }: { project: DirectorProject }) {
-  const updateProject = useDirector((s) => s.updateProject);
   // 审核看板：片段列表带最新 Take 缩略图（资产库里的封面）
   const assets = useAssets((s) => s.items);
   const allSegs = project.scenes.flatMap((s) => s.segments.map((seg) => ({ seg, scene: s })));
@@ -187,30 +188,7 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
               <button className="btn sm primary" onClick={() => doBatch(batchOp)}>
                 <IcZap size={14} /> 开始批量生成
               </button>
-              <label
-                className="ds-opt"
-                title="每段生成结束后调用 ComfyUI /free 卸载模型并释放显存；H3 等大工作流防显存堆积，代价是下一段重新加载模型"
-              >
-                <input
-                  type="checkbox"
-                  className="nodrag"
-                  checked={!!project.freeMemBetween}
-                  onChange={(e) => updateProject(project.id, { freeMemBetween: e.target.checked })}
-                />
-                <span className="ds-opt-hint">每段后清显存</span>
-              </label>
-              <label
-                className="ds-opt"
-                title="批量生成连贯性：上一段生成完成后自动抽取其尾帧，作为下一段的首帧/首张参考图（本段显式首帧优先），与本段参考图一起投喂，保证跨段画面衔接；关闭则各段独立生成"
-              >
-                <input
-                  type="checkbox"
-                  className="nodrag"
-                  checked={!!project.tailFrameRelay}
-                  onChange={(e) => updateProject(project.id, { tailFrameRelay: e.target.checked })}
-                />
-                <span className="ds-opt-hint">尾帧接力</span>
-              </label>
+              <BatchSwitches project={project} />
             </>
           )}
         </div>
@@ -268,7 +246,7 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
                     </span>
                   )}
                   <span className="ds-seg-pick-name">{scene.location} · {seg.summary.slice(0, 20)}</span>
-                  {approved ? <span className="ds-badge ok">✓</span> : seg.takes?.length ? <span className="ds-badge">{seg.takes.length}</span> : <span className="ds-badge warn">缺</span>}
+                  {approved ? <span className="ds-badge ok"><IcCheck size={12} /></span> : seg.takes?.length ? <span className="ds-badge">{seg.takes.length}</span> : <span className="ds-badge warn">缺</span>}
                 </div>
               );
             })}
@@ -289,15 +267,16 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
           )}
   
       {ask ? (
-        <div className="ds-ask" onMouseDown={(e) => { if (e.target === e.currentTarget) setAsk(null); }}>
-          <div className="ds-ask-card">
-            <div className="ds-ask-text">{ask.text}</div>
-            <div className="ds-ask-row">
-              <button className="btn sm" onClick={() => setAsk(null)}>取消</button>
-              <button className="btn sm primary" onClick={() => { const f = ask.onOk; setAsk(null); f(); }}>确认开始</button>
-            </div>
-          </div>
-        </div>
+        <AskCard
+          text={ask.text}
+          okText="确认开始"
+          onCancel={() => setAsk(null)}
+          onConfirm={() => {
+            const f = ask.onOk;
+            setAsk(null);
+            f();
+          }}
+        />
       ) : null}
       </div>
       </div>
@@ -310,6 +289,7 @@ function TakeManager({ project, segment }: { project: DirectorProject; segment: 
   const collect = useAssets((s) => s.collect);
   const assets = useAssets((s) => s.items);
   const fileRef = useRef<HTMLInputElement>(null);
+  const vidRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
   const [regenBusy, setRegenBusy] = useState(false);
 
@@ -456,33 +436,28 @@ function TakeManager({ project, segment }: { project: DirectorProject; segment: 
         )}
       </div>
       <div className="ds-card-foot">
-        <input ref={fileRef} type="file" accept="image/*" multiple className="dsg-file" onChange={(e) => e.target.files && importResult("image", e.target.files)} />
+        <input ref={fileRef} type="file" hidden accept="image/*" multiple onChange={(e) => e.target.files && importResult("image", e.target.files)} />
+        <input ref={vidRef} type="file" hidden accept="video/*" multiple onChange={(e) => e.target.files && importResult("video", e.target.files)} />
         <button className="btn sm" disabled={importing} onClick={() => fileRef.current?.click()}>
           <IcUpload size={14} /> 导入图片结果
         </button>
-        <button className="btn sm" disabled={importing} onClick={() => {
-          const inp = document.createElement("input");
-          inp.type = "file";
-          inp.accept = "video/*";
-          inp.multiple = true;
-          inp.onchange = () => inp.files && importResult("video", inp.files);
-          inp.click();
-        }}>
+        <button className="btn sm" disabled={importing} onClick={() => vidRef.current?.click()}>
           <IcUpload size={14} /> 导入视频结果
         </button>
         <span className="spacer" />
-        <span className="ds-card-desc">生成队列后续版本接入，当前可手动导入</span>
-      
+        <span className="ds-hint">生成队列后续版本接入，当前可手动导入</span>
+
       {askDel ? (
-        <div className="ds-ask" onMouseDown={(e) => { if (e.target === e.currentTarget) setAskDel(null); }}>
-          <div className="ds-ask-card">
-            <div className="ds-ask-text">删除这个版本？（已采用的需先取消采用）</div>
-            <div className="ds-ask-row">
-              <button className="btn sm" onClick={() => setAskDel(null)}>取消</button>
-              <button className="btn sm danger" onClick={() => { removeTake(askDel); setAskDel(null); }}>删除</button>
-            </div>
-          </div>
-        </div>
+        <AskCard
+          danger
+          text="删除这个版本？（已采用的需先取消采用）"
+          okText="删除"
+          onCancel={() => setAskDel(null)}
+          onConfirm={() => {
+            removeTake(askDel);
+            setAskDel(null);
+          }}
+        />
       ) : null}</div>
     </div>
   );
@@ -610,12 +585,12 @@ function TakeCard({ take, projectId, segmentId, segmentName, assetKind, assetPat
         <span className="ds-badge">{take.kind === "video" ? "视频" : "图片"}</span>
         {genSec > 0 ? (
           <span className="ds-badge" title={`生成耗时 ${genSec} 秒（不含排队等待）`}>
-            ⏱ {fmtDur(genSec)}
+            <IcTimer size={12} /> {fmtDur(genSec)}
           </span>
         ) : null}
         {take.status === "done" ? (
           approved ? (
-            <span className="ds-badge ok">✓ 采用</span>
+            <span className="ds-badge ok"><IcCheck size={12} /> 采用</span>
           ) : null
         ) : (
           <span className="ds-badge warn">{take.status === "running" ? "生成中" : take.status === "error" ? "失败" : take.status}</span>
@@ -643,7 +618,7 @@ function TakeCard({ take, projectId, segmentId, segmentName, assetKind, assetPat
             </button>
           )
         ) : null}
-        <button className="icon-btn danger" aria-label="删除" title="删除" onClick={onRemove}>✕</button>
+        <button className="icon-btn danger" aria-label="删除" title="删除" onClick={onRemove}><IcClose size={13} /></button>
       </div>
       {sndOpen ? (
         <PopLayer anchorRef={sndAnchor} onClose={() => setSndOpen(false)} className="ds-snd-pop">

@@ -13,7 +13,8 @@ import { useSettings } from "../../core/stores/settingsStore";
 import { toast } from "../../core/stores/uiStore";
 import { isVideoLoaderClass, isAudioLoaderClass } from "../../core/services/comfy";
 import { uid } from "../../core/utils";
-import { IcClose, IcWand, IcZap, IcPlus } from "../../ui/icons";
+import { IcClose, IcWand, IcZap, IcPlus, IcGlobe, IcFlow, IcImage, IcVideo, IcText, IcLayers, IcFilmFrame } from "../../ui/icons";
+import { PopSelect } from "../../ui/PopSelect";
 import type { DirectorRecipe } from "../../core/types";
 
 /**
@@ -184,52 +185,65 @@ export function RecipeManagerDialog({ projectId, onClose }: { projectId: string;
                     </label>
                     <label className="ds-threed-field">
                       引擎
-                      <select className="input sm" value={r.engine} onChange={(e) => updateRecipe(r.id, { engine: e.target.value as "comfy" | "provider" })}>
-                        <option value="comfy">本地 ComfyUI</option>
-                        <option value="provider">远程 API</option>
-                      </select>
+                      <PopSelect
+                        value={r.engine}
+                        triggerIcon
+                        options={[
+                          { value: "comfy", label: "本地 ComfyUI", icon: <IcFlow size={14} /> },
+                          { value: "provider", label: "远程 API", icon: <IcGlobe size={14} /> },
+                        ]}
+                        onChange={(v) => updateRecipe(r.id, { engine: v as "comfy" | "provider" })}
+                      />
                     </label>
                     <label className="ds-threed-field">
                       输出
-                      <select className="input sm" value={r.output} onChange={(e) => updateRecipe(r.id, { output: e.target.value as "image" | "video" })}>
-                        <option value="image">图片</option>
-                        <option value="video">视频</option>
-                      </select>
+                      <PopSelect
+                        value={r.output}
+                        triggerIcon
+                        options={[
+                          { value: "image", label: "图片", icon: <IcImage size={14} /> },
+                          { value: "video", label: "视频", icon: <IcVideo size={14} /> },
+                        ]}
+                        onChange={(v) => updateRecipe(r.id, { output: v as "image" | "video" })}
+                      />
                     </label>
                     <label className="ds-threed-field">
                       模式
-                      <select className="input sm" value={r.mode} onChange={(e) => updateRecipe(r.id, { mode: e.target.value as DirectorRecipe["mode"] })}>
-                        <option value="t2v">文生视频</option>
-                        <option value="i2v">图生视频</option>
-                        <option value="fl2v">首尾帧视频</option>
-                        <option value="r2v">多参考视频</option>
-                        <option value="t2i">文生图</option>
-                        <option value="i2i">图生图</option>
-                      </select>
+                      <PopSelect
+                        value={r.mode}
+                        triggerIcon
+                        options={[
+                          { value: "t2v", label: "文生视频", icon: <IcText size={14} /> },
+                          { value: "i2v", label: "图生视频", icon: <IcImage size={14} /> },
+                          { value: "fl2v", label: "首尾帧视频", icon: <IcFilmFrame size={14} /> },
+                          { value: "r2v", label: "多参考视频", icon: <IcLayers size={14} /> },
+                          { value: "t2i", label: "文生图", icon: <IcText size={14} /> },
+                          { value: "i2i", label: "图生图", icon: <IcImage size={14} /> },
+                        ]}
+                        onChange={(v) => updateRecipe(r.id, { mode: v as DirectorRecipe["mode"] })}
+                      />
                     </label>
                     {r.engine === "comfy" ? (
                       <label className="ds-threed-field">
                         ComfyUI 模板
-                        <select className="input sm" value={r.templateId ?? ""} onChange={(e) => updateRecipe(r.id, { templateId: e.target.value || undefined })}>
-                          <option value="">（选择模板）</option>
-                          {templates.map((t) => (
-                            <option key={t.id} value={t.id}>
-                              {t.name}
-                            </option>
-                          ))}
-                        </select>
+                        <PopSelect
+                          value={r.templateId ?? ""}
+                          placeholder="（选择模板）"
+                          triggerIcon
+                          options={templates.map((t) => ({ value: t.id, label: t.name, icon: <IcFlow size={14} /> }))}
+                          onChange={(v) => updateRecipe(r.id, { templateId: v || undefined })}
+                        />
                       </label>
                     ) : (
                       <label className="ds-threed-field">
                         远程视频模型
-                        <select className="input sm" value={r.providerModelKey ?? ""} onChange={(e) => updateRecipe(r.id, { providerModelKey: e.target.value || undefined })}>
-                          <option value="">（选择模型）</option>
-                          {videoModels.map((m) => (
-                            <option key={m.key} value={m.key}>
-                              {m.label}
-                            </option>
-                          ))}
-                        </select>
+                        <PopSelect
+                          value={r.providerModelKey ?? ""}
+                          placeholder="（选择模型）"
+                          triggerIcon
+                          options={videoModels.map((m) => ({ value: m.key, label: m.label, icon: <IcGlobe size={14} /> }))}
+                          onChange={(v) => updateRecipe(r.id, { providerModelKey: v || undefined })}
+                        />
                       </label>
                     )}
                     <button className="btn sm danger" onClick={() => removeRecipe(r.id)}>

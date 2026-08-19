@@ -556,7 +556,7 @@ const AxisGizmo = forwardRef<AxisGizmoHandle>(function AxisGizmo(_, ref) {
       <text x={axes.x[0] * (R + 9)} y={-axes.x[1] * (R + 9) + 3} fill="#F2555A">X</text>
       <text x={axes.y[0] * (R + 9)} y={-axes.y[1] * (R + 9) + 3} fill="#3FD68F">Y</text>
       <text x={axes.z[0] * (R + 9)} y={-axes.z[1] * (R + 9) + 3} fill="#4F8EF7">Z</text>
-      <circle r="2" fill="#8b93a5" />
+      <circle r="2" fill="var(--d3-text-3)" />
     </svg>
   );
 });

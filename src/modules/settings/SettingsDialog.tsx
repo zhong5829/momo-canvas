@@ -14,22 +14,25 @@ import { chatOnce } from "../../core/services/llm";
 import { freeComfyMemory, freeResultText } from "../../core/services/comfy";
 import { fetchModelList } from "../../core/services/modelList";
 import { calibrateProtocol } from "../../core/services/protoCalibrate";
-import { placeholdersIn, protoFingerprint, unknownPlaceholders, validateProto, varsDoc } from "../../core/services/protoSpec";
+import { placeholdersIn, protoFingerprint, unknownPlaceholders, validateProto, varList, varsDoc } from "../../core/services/protoSpec";
 import { MANUAL, useProtoTab } from "./protoTabStore";
 import { xfetch } from "../../core/services/http";
 import { errMsg, isTauri, parseJsonLoose, uid } from "../../core/utils";
 import { importTemplateFilesAuto, packTemplates, saveTextFile } from "../comfy/templateIO";
 import {
   IcBlack,
+  IcBulb,
   IcChat,
   IcCheck,
   IcBroom,
+  IcChevronD,
   IcClose,
   IcDownload,
   IcEdit,
   IcFlow,
   IcFolder,
   IcGallery,
+  IcGear,
   IcGlobe,
   IcKeyboard,
   IcLoading,
@@ -45,6 +48,7 @@ import {
   IcUpload,
   IcUpscale,
   IcVideo,
+  IcWarn,
 } from "../../ui/icons";
 import { EnhanceModelsTab } from "./EnhanceModelsTab";
 import { IcLogo } from "../../ui/icons";
@@ -1032,6 +1036,17 @@ function ProtocolTab() {
   const providers = settings.models.providers;
   const selProvider = testProvider || providers[0]?.id || MANUAL;
   const manual = selProvider === MANUAL;
+  /* 「占位符参考」chips 行展开态：纯界面状态，不进 protoTabStore */
+  const [varsOpen, setVarsOpen] = useState(false);
+
+  /** 占位符 chip 点击复制（清单来自 protoSpec.varList，不硬编码） */
+  const copyVar = (name: string) => {
+    const s = `{{${name}}}`;
+    navigator.clipboard
+      ?.writeText(s)
+      .then(() => toast(`已复制 ${s}`, "ok"))
+      .catch(() => toast(`复制失败，请手动输入 ${s}`, "err"));
+  };
 
   /** 选服务商时顺手预填其对应槽位的第一个模型 */
   const pickProvider = (pid: string) => {
@@ -1282,275 +1297,319 @@ function ProtocolTab() {
         由你配置的对话模型分析生成协议；核对用途（图片/视频）并保存后，就能在「模型配置」对应槽位的协议下拉里选用。
         协议也可以手写 / 修改 JSON。
       </SecTitle>
-      <Row gap={10} style={{ alignItems: "flex-start", marginBottom: 14 }}>
-        <Switch on={settings.protoSelfHeal} onChange={(v) => update("protoSelfHeal", v)} />
-        <div>
-          <b>协议自愈</b>
-          <div className="sec-desc" style={{ margin: "2px 0 0" }}>
-            自定义协议运行失败时，自动把报错与执行现场（真实请求/响应，密钥已脱敏）交给对话模型修协议并重试一次；
-            重试成功才写回保存，失败自动回滚不留坏协议。网络/鉴权/额度类错误不触发（修协议没用）。重试会产生一次生成费用。
-          </div>
-        </div>
-      </Row>
-
-      <div className="gp-lab" style={{ marginBottom: 8 }}>常用中转站预设（一键导入 / 修复）</div>
-      <div className="preset-list">
-        {PROTO_PRESETS.map((pp) => (
-          <div key={pp.key} className="preset-row" title={`${pp.label}\n\n${pp.note}`}>
-            <div className="pr-info">
-              <b>{pp.label}</b>
-              <span>{pp.note}</span>
+      {/* 卡 1：协议管理 —— 自愈开关 / 中转站预设 / 已保存协议 */}
+      <div className="pt-card">
+        <div className="pt-card-title">协议管理</div>
+        <div className="pt-switch-row">
+          <Switch on={settings.protoSelfHeal} onChange={(v) => update("protoSelfHeal", v)} />
+          <div className="pt-switch-txt">
+            <b>协议自愈</b>
+            <div className="pt-hint">
+              自定义协议运行失败时，自动把报错与执行现场（真实请求/响应，密钥已脱敏）交给对话模型修协议并重试一次；
+              重试成功才写回保存，失败自动回滚不留坏协议。网络/鉴权/额度类错误不触发（修协议没用）。重试会产生一次生成费用。
             </div>
-            <button
-              className="btn sm primary"
-              title="若匹配的服务商已绑定自定义协议：原地覆盖修复（绑定不变）；否则新建协议并自动绑定"
-              onClick={() => toast(applyProtoPreset(pp), "ok")}
-            >
-              导入 / 修复
-            </button>
           </div>
-        ))}
-      </div>
-      <p className="sec-desc" style={{ marginTop: 6, marginBottom: 16 }}>
-        预设按官方文档校对过图片/蒙版字段格式。导入后建议先跑一次下方的「测试并自动校准」再上画布。
-      </p>
+        </div>
 
-      {settings.customProtocols.length ? (
-        <>
-          <div className="gp-lab" style={{ marginBottom: 8 }}>已保存的协议</div>
-          <Row gap={8} style={{ flexWrap: "wrap", marginBottom: 16 }}>
-            {settings.customProtocols.map((p) => (
-              <span
-                key={p.id}
-                className="pe-chip"
-                title={`${p.role === "video" ? "视频生成" : p.role === "audio" ? "音频生成" : "图片生成"} · ${p.taskIdPath ? "异步轮询" : "同步"} · ${
-                  p.verifiedAt ? `已于 ${new Date(p.verifiedAt).toLocaleString()} 真实测试通过` : "还没跑过真实测试（建议先到下方「测试并自动校准」验证）"
-                } · 点 × 删除`}
+        <div className="pt-sub">常用中转站预设（一键导入 / 修复）</div>
+        <div className="preset-list">
+          {PROTO_PRESETS.map((pp) => (
+            <div key={pp.key} className="preset-row" title={`${pp.label}\n\n${pp.note}`}>
+              <div className="pr-info">
+                <b>{pp.label}</b>
+                <span>{pp.note}</span>
+              </div>
+              <button
+                className="btn sm primary"
+                title="若匹配的服务商已绑定自定义协议：原地覆盖修复（绑定不变）；否则新建协议并自动绑定"
+                onClick={() => toast(applyProtoPreset(pp), "ok")}
               >
-                {p.role === "video" ? "视频 · " : p.role === "audio" ? "音频 · " : "图片 · "}
-                {p.name}
-                {p.verifiedAt ? " ✓" : ""}
-                <button
-                  onClick={() => patch({ draft: JSON.stringify(p, null, 2), roleSel: p.role, calSnap: p })}
-                  title="编辑"
-                  aria-label="编辑"
-                >
-                  <IcEditSmall />
-                </button>
-                <button
-                  onClick={() => update("customProtocols", settings.customProtocols.filter((x) => x.id !== p.id))}
-                  aria-label="删除"
-                >
-                  <IcClose size={11} />
-                </button>
-              </span>
-            ))}
-          </Row>
-        </>
-      ) : null}
-
-      <Row gap={12} style={{ alignItems: "stretch" }}>
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-          <div className="gp-lab">① 粘贴接口文档 / 文档链接 / 示例请求</div>
-          <textarea
-            className="textarea"
-            style={{ flex: 1, minHeight: 260 }}
-            placeholder={
-              "把中转站的 API 文档、curl 示例、请求/响应 JSON 粘贴到这里…\n也可以直接粘贴 API 文档的网址链接，会自动抓取页面内容分析。\n信息越全，生成的协议越准。"
-            }
-            value={docs}
-            onChange={(e) => patch({ docs: e.target.value })}
-          />
-          <button className="btn primary" disabled={busy} onClick={() => void generate()}>
-            {busy ? <IcLoading size={16} /> : <IcSparkles size={16} />} 让协议助手分析生成
-          </button>
-        </div>
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-          <div className="gp-lab">② 核对 / 手动编辑协议 JSON</div>
-          <textarea
-            className="textarea"
-            style={{ flex: 1, minHeight: 260, fontFamily: "Consolas, monospace", fontSize: 12.5 }}
-            placeholder={
-              '协议 JSON 会出现在这里，也可以直接手写。\n占位符：{{baseUrl}} {{apiKey}} {{model}} {{prompt}} {{size}} {{n}} {{taskId}}\n图片类：{{image}} 首图 · {{image2}} 第二图/尾帧 · {{images}} 参考图JSON数组（不加引号）· {{mask}} 蒙版\n视频类：{{duration}} 时长秒 · {{resolution}} 分辨率档 · {{aspect}} 宽高比 · {{audio}} true/false\n提示：要支持图生图/局部重绘，body 里必须写上图片/蒙版字段，否则图片不会发给模型'
-            }
-            value={draft}
-            onChange={(e) => patch({ draft: e.target.value })}
-          />
-          {/* 通用体检：缺 {{prompt}} 或占位符名字拼错——这两条不会报错，只会静默出一张与输入无关的图 */}
-          {(() => {
-            if (!draft.trim()) return null;
-            const p = parseJsonLoose<CustomProtocol>(draft);
-            if (!p?.submit?.url) return null;
-            const msgs: string[] = [];
-            try {
-              if (!placeholdersIn(p).has("prompt")) msgs.push("模板里没有 {{prompt}}，提示词发不出去（会照样扣费，出一张与输入无关的结果）");
-              const unk = unknownPlaceholders(p);
-              if (unk.length) msgs.push(`有应用不认识的占位符 ${unk.map((k) => `{{${k}}}`).join(" ")}，运行时会被渲染成空串（多半是名字拼错）`);
-            } catch {
-              return null;
-            }
-            return msgs.length ? (
-              <div className="hint" style={{ color: "var(--warn, #d97706)" }}>⚠ {msgs.join("；")}</div>
-            ) : null;
-          })()}
-          {/* 能力体检：保存前就把「只能文生图/没有真蒙版」讲清楚，并给出一键修复入口 */}
-          {roleSel === "image" && draft.trim() ? (
-            !["{{image}}", "{{images}}", "{{image2}}"].some((k) => draft.includes(k)) ? (
-              <div className="hint" style={{ color: "var(--warn, #d97706)" }}>
-                ⚠ 模板没有图片占位符（{"{{image}} / {{images}}"}）：该协议只能<b>文生图</b>，接了参考图会直接报错。
-                <button className="btn sm" style={{ marginLeft: 8 }} disabled={busy} onClick={() => void completeDraft()}>
-                  {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全图生图/蒙版
-                </button>
-              </div>
-            ) : !draft.includes("{{mask}}") ? (
-              <div className="hint">
-                ℹ 模板不含 {"{{mask}}"}：可以图生图，但「真蒙版」重绘不可用（节点上切「指令式」也能重绘）。
-                <button className="btn sm" style={{ marginLeft: 8 }} disabled={busy} onClick={() => void completeDraft()}>
-                  {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全蒙版
-                </button>
-              </div>
-            ) : (
-              <div className="hint">✓ 模板含图片与蒙版占位符：文生图 / 图生图 / 真蒙版重绘均可用。</div>
-            )
-          ) : null}
-          {roleSel === "video" && draft.trim() ? (
-            !draft.includes("{{image}}") ? (
-              <div className="hint" style={{ color: "var(--warn, #d97706)" }}>
-                ⚠ 模板没有首帧占位符（{"{{image}}"}）：该协议只能<b>文生视频</b>，接上游图片不会生效。
-                <button className="btn sm" style={{ marginLeft: 8 }} disabled={busy} onClick={() => void completeDraft()}>
-                  {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全图生视频/尾帧/参数
-                </button>
-              </div>
-            ) : !draft.includes("{{image2}}") ? (
-              <div className="hint">
-                ℹ 模板不含尾帧 {"{{image2}}"}：首尾帧过渡不可用（接 2 路图时第 2 路会被忽略）。
-                <button className="btn sm" style={{ marginLeft: 8 }} disabled={busy} onClick={() => void completeDraft()}>
-                  {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全尾帧/参数
-                </button>
-              </div>
-            ) : !["{{duration}}", "{{resolution}}", "{{aspect}}"].some((k) => draft.includes(k)) ? (
-              <div className="hint">
-                ℹ 模板不含 {"{{duration}} / {{resolution}} / {{aspect}}"}：面板上的时长/分辨率/比例设置不会生效。
-                <button className="btn sm" style={{ marginLeft: 8 }} disabled={busy} onClick={() => void completeDraft()}>
-                  {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全参数
-                </button>
-              </div>
-            ) : (
-              <div className="hint">✓ 模板含首帧/尾帧/参数占位符：文生视频 / 图生视频 / 首尾帧 / 面板参数均可用。</div>
-            )
-          ) : null}
-          {roleSel === "audio" && draft.trim() ? (
-            !draft.includes("{{voice}}") ? (
-              <div className="hint">
-                ℹ 模板不含 {"{{voice}}"}：音色/歌手/风格选择不会生效（只能用服务商默认音色）。
-                <button className="btn sm" style={{ marginLeft: 8 }} disabled={busy} onClick={() => void completeDraft()}>
-                  {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全音色字段
-                </button>
-              </div>
-            ) : (
-              <div className="hint">✓ 模板含 {"{{prompt}}"} 与 {"{{voice}}"}：朗读文本与音色都能下发。</div>
-            )
-          ) : null}
-          <Row gap={8} style={{ alignItems: "center" }}>
-            <span className="gp-lab" style={{ margin: 0 }} title="决定该协议出现在哪个模型槽位、结果按图片还是视频处理">
-              协议用途
-            </span>
-            <button className={`btn sm ${roleSel === "image" ? "primary" : ""}`} onClick={() => patch({ roleSel: "image" })}>
-              <IcGallery size={14} /> 图片生成
-            </button>
-            <button className={`btn sm ${roleSel === "video" ? "primary" : ""}`} onClick={() => patch({ roleSel: "video" })}>
-              <IcVideo size={14} /> 视频生成
-            </button>
-            <button className={`btn sm ${roleSel === "audio" ? "primary" : ""}`} onClick={() => patch({ roleSel: "audio" })}>
-              <IcMusic size={14} /> 音频生成
-            </button>
-            <span style={{ flex: 1 }} />
-            <button className="btn primary" disabled={!draft.trim()} onClick={save}>
-              <IcCheck size={16} /> 校验并保存协议
-            </button>
-          </Row>
-        </div>
-      </Row>
-
-      <div className="gp-lab" style={{ margin: "18px 0 6px" }}>③ 测试并自动校准（先把协议测通，再去配模型）</div>
-      <p className="sec-desc" style={{ marginBottom: 8 }}>
-        <b>真实调用一次</b>该协议（生成类接口会产生一次费用），程序在真实响应里定位任务
-        ID、状态、结果字段的实际位置，自动把协议里写错的路径改成实测值——从「猜」变成「量」。
-        可以借已有服务商的 Key，也可以选「手动输入」直接填 Base URL / Key（还没建服务商也能先测协议）。
-        测试在后台运行：切到其他页面不会中断，日志保留在这里，也可以随时停止。
-      </p>
-      <Row gap={8} style={{ alignItems: "center", flexWrap: "wrap" }}>
-        <PopSelect
-          style={{ width: 220 }}
-          title="借用服务商的 Key"
-          value={selProvider}
-          options={[
-            ...providers.map((p) => ({ value: p.id, label: p.name })),
-            { value: MANUAL, label: "手动输入 Base URL / Key…" },
-          ]}
-          onChange={(v) => pickProvider(v)}
-        />
-        {manual ? (
-          <>
-            <input
-              className="input"
-              style={{ width: 230 }}
-              placeholder="Base URL（如 https://api.xx.com/v1）"
-              value={manualBase}
-              onChange={(e) => patch({ manualBase: e.target.value })}
-            />
-            <input
-              className="input"
-              style={{ width: 190 }}
-              type="password"
-              placeholder="API Key"
-              value={manualKey}
-              onChange={(e) => patch({ manualKey: e.target.value })}
-            />
-          </>
-        ) : null}
-        <input
-          className="input"
-          style={{ width: 200 }}
-          placeholder="测试用模型名（如 gpt-image-2）"
-          value={testModel}
-          onChange={(e) => patch({ testModel: e.target.value })}
-        />
-        <button
-          className="btn primary"
-          disabled={calBusy || !draft.trim()}
-          title="真实发起一次生成请求（有费用），并按真实响应校准协议 JSON"
-          onClick={() => void runCalibrate()}
-        >
-          {calBusy ? <IcLoading size={15} /> : <IcCheck size={15} />} {calBusy ? "测试中…" : "真实测试并校准"}
-        </button>
-        {calBusy ? (
-          <button className="btn" onClick={() => ctrl?.abort()} title="停止等待/轮询（已发出的提交请求所产生的费用无法撤回）">
-            停止测试
-          </button>
-        ) : null}
-      </Row>
-      {calLog.length ? (
-        <div className="cal-log">
-          {calLog.map((l, i) => (
-            <div key={i}>{l}</div>
+                导入 / 修复
+              </button>
+            </div>
           ))}
         </div>
-      ) : null}
-      {calDone && !calBusy ? (
-        <Row gap={10} style={{ marginTop: 8, alignItems: "center" }}>
-          <button className="btn primary" onClick={saveAndApply}>
-            <IcCheck size={15} />{" "}
-            {calDone.providerId
-              ? `保存协议并应用到「${providers.find((p) => p.id === calDone.providerId)?.name ?? "服务商"}」`
-              : "保存协议并新建服务商"}
+        <div className="pt-hint">预设按官方文档校对过图片/蒙版字段格式。导入后建议先跑一次下方「测试与校准」卡片的真实测试再上画布。</div>
+
+        {settings.customProtocols.length ? (
+          <>
+            <div className="pt-sub">已保存的协议</div>
+            <div className="pt-chips">
+              {settings.customProtocols.map((p) => (
+                <span
+                  key={p.id}
+                  className="pe-chip"
+                  title={`${p.role === "video" ? "视频生成" : p.role === "audio" ? "音频生成" : "图片生成"} · ${p.taskIdPath ? "异步轮询" : "同步"} · ${
+                    p.verifiedAt ? `已于 ${new Date(p.verifiedAt).toLocaleString()} 真实测试通过` : "还没跑过真实测试（建议先到下方「测试与校准」验证）"
+                  } · 点 × 删除`}
+                >
+                  {p.role === "video" ? "视频 · " : p.role === "audio" ? "音频 · " : "图片 · "}
+                  {p.name}
+                  {p.verifiedAt ? " ✓" : ""}
+                  <button
+                    onClick={() => patch({ draft: JSON.stringify(p, null, 2), roleSel: p.role, calSnap: p })}
+                    title="编辑"
+                    aria-label="编辑"
+                  >
+                    <IcEditSmall />
+                  </button>
+                  <button
+                    onClick={() => update("customProtocols", settings.customProtocols.filter((x) => x.id !== p.id))}
+                    aria-label="删除"
+                  >
+                    <IcClose size={11} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          </>
+        ) : null}
+      </div>
+
+      {/* 卡 2：编辑协议 —— 左栏粘贴文档 / 右栏 JSON（窄窗口折单列） */}
+      <div className="pt-card">
+        <div className="pt-card-title">编辑协议</div>
+        <div className="pt-hint">把中转站的接口文档粘贴到左侧，由「协议助手」分析生成协议 JSON；也可以在右侧直接手写或修改。</div>
+        <div className="pt-cols">
+          <div className="pt-col">
+            <div className="pt-sub">接口文档 / 文档链接 / 示例请求</div>
+            <textarea
+              className="textarea pt-doc"
+              placeholder={
+                "把中转站的 API 文档、curl 示例、请求/响应 JSON 粘贴到这里…\n也可以直接粘贴 API 文档的网址链接，会自动抓取页面内容分析。\n信息越全，生成的协议越准。"
+              }
+              value={docs}
+              onChange={(e) => patch({ docs: e.target.value })}
+            />
+            <button className="btn primary" disabled={busy} onClick={() => void generate()}>
+              {busy ? <IcLoading size={16} /> : <IcSparkles size={16} />} 让协议助手分析生成
+            </button>
+          </div>
+          <div className="pt-col">
+            <div className="pt-json-head">
+              <span className="pt-sub">核对 / 手动编辑协议 JSON</span>
+              <button
+                className={`pt-vars-toggle ${varsOpen ? "on" : ""}`}
+                title="展开当前用途可用的占位符清单（点击复制）"
+                onClick={() => setVarsOpen((v) => !v)}
+              >
+                <IcChevronD size={12} /> 占位符参考
+              </button>
+            </div>
+            {varsOpen ? (
+              <div className="pt-var-chips">
+                {varList(roleSel).map((v) => (
+                  <button key={v.name} className="pt-var-chip" title={`${v.desc}（点击复制）`} onClick={() => copyVar(v.name)}>
+                    {`{{${v.name}}}`}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <textarea
+              className="textarea pt-json"
+              placeholder={
+                "协议 JSON 会出现在这里，也可以直接手写。\n占位符见上方「占位符参考」（随协议用途切换，点击复制）。\n提示：要支持图生图/局部重绘，body 里必须写上图片/蒙版字段，否则图片不会发给模型"
+              }
+              value={draft}
+              onChange={(e) => patch({ draft: e.target.value })}
+            />
+            {/* 通用体检：缺 {{prompt}} 或占位符名字拼错——这两条不会报错，只会静默出一张与输入无关的图 */}
+            {(() => {
+              if (!draft.trim()) return null;
+              const p = parseJsonLoose<CustomProtocol>(draft);
+              if (!p?.submit?.url) return null;
+              const msgs: string[] = [];
+              try {
+                if (!placeholdersIn(p).has("prompt")) msgs.push("模板里没有 {{prompt}}，提示词发不出去（会照样扣费，出一张与输入无关的结果）");
+                const unk = unknownPlaceholders(p);
+                if (unk.length) msgs.push(`有应用不认识的占位符 ${unk.map((k) => `{{${k}}}`).join(" ")}，运行时会被渲染成空串（多半是名字拼错）`);
+              } catch {
+                return null;
+              }
+              return msgs.length ? (
+                <div className="pt-hint warn row">
+                  <IcWarn size={13} />
+                  <span>{msgs.join("；")}</span>
+                </div>
+              ) : null;
+            })()}
+            {/* 能力体检：保存前就把「只能文生图/没有真蒙版」讲清楚，并给出一键修复入口 */}
+            {roleSel === "image" && draft.trim() ? (
+              !["{{image}}", "{{images}}", "{{image2}}"].some((k) => draft.includes(k)) ? (
+                <div className="pt-hint warn row">
+                  <IcWarn size={13} />
+                  <span>模板没有图片占位符（{"{{image}} / {{images}}"}）：该协议只能<b>文生图</b>，接了参考图会直接报错。</span>
+                  <button className="btn sm" disabled={busy} onClick={() => void completeDraft()}>
+                    {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全图生图/蒙版
+                  </button>
+                </div>
+              ) : !draft.includes("{{mask}}") ? (
+                <div className="pt-hint row">
+                  <IcBulb size={13} />
+                  <span>模板不含 {"{{mask}}"}：可以图生图，但「真蒙版」重绘不可用（节点上切「指令式」也能重绘）。</span>
+                  <button className="btn sm" disabled={busy} onClick={() => void completeDraft()}>
+                    {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全蒙版
+                  </button>
+                </div>
+              ) : (
+                <div className="pt-hint ok row">
+                  <IcCheck size={13} />
+                  <span>模板含图片与蒙版占位符：文生图 / 图生图 / 真蒙版重绘均可用。</span>
+                </div>
+              )
+            ) : null}
+            {roleSel === "video" && draft.trim() ? (
+              !draft.includes("{{image}}") ? (
+                <div className="pt-hint warn row">
+                  <IcWarn size={13} />
+                  <span>模板没有首帧占位符（{"{{image}}"}）：该协议只能<b>文生视频</b>，接上游图片不会生效。</span>
+                  <button className="btn sm" disabled={busy} onClick={() => void completeDraft()}>
+                    {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全图生视频/尾帧/参数
+                  </button>
+                </div>
+              ) : !draft.includes("{{image2}}") ? (
+                <div className="pt-hint row">
+                  <IcBulb size={13} />
+                  <span>模板不含尾帧 {"{{image2}}"}：首尾帧过渡不可用（接 2 路图时第 2 路会被忽略）。</span>
+                  <button className="btn sm" disabled={busy} onClick={() => void completeDraft()}>
+                    {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全尾帧/参数
+                  </button>
+                </div>
+              ) : !["{{duration}}", "{{resolution}}", "{{aspect}}"].some((k) => draft.includes(k)) ? (
+                <div className="pt-hint row">
+                  <IcBulb size={13} />
+                  <span>模板不含 {"{{duration}} / {{resolution}} / {{aspect}}"}：面板上的时长/分辨率/比例设置不会生效。</span>
+                  <button className="btn sm" disabled={busy} onClick={() => void completeDraft()}>
+                    {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全参数
+                  </button>
+                </div>
+              ) : (
+                <div className="pt-hint ok row">
+                  <IcCheck size={13} />
+                  <span>模板含首帧/尾帧/参数占位符：文生视频 / 图生视频 / 首尾帧 / 面板参数均可用。</span>
+                </div>
+              )
+            ) : null}
+            {roleSel === "audio" && draft.trim() ? (
+              !draft.includes("{{voice}}") ? (
+                <div className="pt-hint row">
+                  <IcBulb size={13} />
+                  <span>模板不含 {"{{voice}}"}：音色/歌手/风格选择不会生效（只能用服务商默认音色）。</span>
+                  <button className="btn sm" disabled={busy} onClick={() => void completeDraft()}>
+                    {busy ? <IcLoading size={13} /> : <IcSparkles size={13} />} 让协议助手补全音色字段
+                  </button>
+                </div>
+              ) : (
+                <div className="pt-hint ok row">
+                  <IcCheck size={13} />
+                  <span>模板含 {"{{prompt}}"} 与 {"{{voice}}"}：朗读文本与音色都能下发。</span>
+                </div>
+              )
+            ) : null}
+            <div className="pt-role-row">
+              <span className="pt-sub" title="决定该协议出现在哪个模型槽位、结果按图片还是视频处理">
+                协议用途
+              </span>
+              <div className="pt-seg">
+                <button className={roleSel === "image" ? "on" : ""} onClick={() => patch({ roleSel: "image" })}>
+                  <IcGallery size={13} /> 图片生成
+                </button>
+                <button className={roleSel === "video" ? "on" : ""} onClick={() => patch({ roleSel: "video" })}>
+                  <IcVideo size={13} /> 视频生成
+                </button>
+                <button className={roleSel === "audio" ? "on" : ""} onClick={() => patch({ roleSel: "audio" })}>
+                  <IcMusic size={13} /> 音频生成
+                </button>
+              </div>
+              <span className="pt-spacer" />
+              <button className="btn primary" disabled={!draft.trim()} onClick={save}>
+                <IcCheck size={16} /> 校验并保存协议
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 卡 3：测试与校准 —— 真实跑一次协议，把结果路径从「猜」改成「量」 */}
+      <div className="pt-card">
+        <div className="pt-card-title">测试与校准</div>
+        <div className="pt-hint">
+          <b>真实调用一次</b>该协议（生成类接口会产生一次费用），程序在真实响应里定位任务
+          ID、状态、结果字段的实际位置，自动把协议里写错的路径改成实测值。
+          可以借已有服务商的 Key，也可以选「手动输入」直接填 Base URL / Key（还没建服务商也能先测协议）。
+          测试在后台运行：切到其他页面不会中断，日志保留在这里，也可以随时停止。
+        </div>
+        <div className="pt-cal-row">
+          <PopSelect
+            className="pt-w-prov"
+            triggerIcon
+            title="借用服务商的 Key"
+            value={selProvider}
+            options={[
+              ...providers.map((p) => ({ value: p.id, label: p.name, icon: <IcGlobe size={14} /> })),
+              { value: MANUAL, label: "手动输入 Base URL / Key…", icon: <IcGear size={14} /> },
+            ]}
+            onChange={(v) => pickProvider(v)}
+          />
+          {manual ? (
+            <>
+              <input
+                className="input pt-w-base"
+                placeholder="Base URL（如 https://api.xx.com/v1）"
+                value={manualBase}
+                onChange={(e) => patch({ manualBase: e.target.value })}
+              />
+              <input
+                className="input pt-w-key"
+                type="password"
+                placeholder="API Key"
+                value={manualKey}
+                onChange={(e) => patch({ manualKey: e.target.value })}
+              />
+            </>
+          ) : null}
+          <input
+            className="input pt-w-model"
+            placeholder="测试用模型名（如 gpt-image-2）"
+            value={testModel}
+            onChange={(e) => patch({ testModel: e.target.value })}
+          />
+          <button
+            className="btn primary"
+            disabled={calBusy || !draft.trim()}
+            title="真实发起一次生成请求（有费用），并按真实响应校准协议 JSON"
+            onClick={() => void runCalibrate()}
+          >
+            {calBusy ? <IcLoading size={15} /> : <IcCheck size={15} />} {calBusy ? "测试中…" : "真实测试并校准"}
           </button>
-          <span className="sec-desc" style={{ margin: 0 }}>
-            一键衔接：保存已校准协议 → {calDone.providerId ? "该服务商" : "新服务商"}的
-            {calDone.role === "video" ? "视频" : calDone.role === "audio" ? "音频" : "绘画"}槽位切到此协议 → 模型 {calDone.model} 加入槽位，配完即可用
-          </span>
-        </Row>
-      ) : null}
+          {calBusy ? (
+            <button className="btn" onClick={() => ctrl?.abort()} title="停止等待/轮询（已发出的提交请求所产生的费用无法撤回）">
+              停止测试
+            </button>
+          ) : null}
+        </div>
+        {calLog.length ? (
+          <div className="cal-log">
+            {calLog.map((l, i) => (
+              <div key={i}>{l}</div>
+            ))}
+          </div>
+        ) : null}
+        {calDone && !calBusy ? (
+          <div className="pt-apply-row">
+            <button className="btn primary" onClick={saveAndApply}>
+              <IcCheck size={15} />{" "}
+              {calDone.providerId
+                ? `保存协议并应用到「${providers.find((p) => p.id === calDone.providerId)?.name ?? "服务商"}」`
+                : "保存协议并新建服务商"}
+            </button>
+            <span className="pt-hint">
+              一键衔接：保存已校准协议 → {calDone.providerId ? "该服务商" : "新服务商"}的
+              {calDone.role === "video" ? "视频" : calDone.role === "audio" ? "音频" : "绘画"}槽位切到此协议 → 模型 {calDone.model} 加入槽位，配完即可用
+            </span>
+          </div>
+        ) : null}
+      </div>
     </>
   );
 }

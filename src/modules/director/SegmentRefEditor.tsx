@@ -337,7 +337,7 @@ export function SegmentRefEditor({
             );
           })
         ) : (
-          <div className="ds-card-desc">资产库里还没有{zone.label}素材，点空格上传本地文件</div>
+          <div className="ds-hint">资产库里还没有{zone.label}素材，点空格上传本地文件</div>
         )}
       </div>
     ) : null;
@@ -362,11 +362,11 @@ export function SegmentRefEditor({
               {hoverPrev.kind === "image" ? (
                 <img src={assetUrl(hoverAsset.path)} alt="" />
               ) : hoverPrev.kind === "video" ? (
-                hoverPrev.url ? <video src={hoverPrev.url} autoPlay muted loop controls /> : <span className="ds-card-desc">视频载入中…</span>
+                hoverPrev.url ? <video src={hoverPrev.url} autoPlay muted loop controls /> : <span className="ds-hint">视频载入中…</span>
               ) : hoverPrev.url ? (
                 <audio src={hoverPrev.url} autoPlay controls />
               ) : (
-                <span className="ds-card-desc">音频载入中…</span>
+                <span className="ds-hint">音频载入中…</span>
               )}
             </div>,
             document.body,
@@ -375,9 +375,9 @@ export function SegmentRefEditor({
       <input
         ref={fileRef}
         type="file"
+        hidden
         multiple
         accept={pendingZone?.accept}
-        style={{ display: "none" }}
         onChange={(e) => {
           const z = pendingZone;
           if (z && e.target.files?.length) void onFiles(z, e.target.files);

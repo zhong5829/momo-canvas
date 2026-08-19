@@ -15,6 +15,14 @@ dist-ssr
 # Claude Code hook runtime files
 .claude/last-restart.txt
 .claude/scheduled_tasks.lock
+.claude/*.cjs
+.claude/*.ps1
+.claude/control-pid.txt
+.claude/tmp*
+.claude/dev-server.log
+
+# 本地 Skill 包产物（应用内导入用，不入库）
+*.skill.zip
 
 # Editor directories and files
 .vscode/*

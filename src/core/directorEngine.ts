@@ -329,6 +329,8 @@ export function detectScriptKind(script: string, delimiter?: string): ScriptKind
   // 标题/标记扫描一律在「围栏内容遮罩」文本上做：提示词正文里的 ## 行、subject_definitions 字样
   // 不能被当成小节头，否则会把一段提示词切碎
   const masked = maskFencedBodies(t);
+  // 显式围栏包：<<<PROMPT_START>>>…<<<PROMPT_END>>> 一对即一段（用户手动标的段界，最可靠信号）
+  if (countPromptMarks(masked) >= 1) return "prompts";
   const h3Heads = masked.match(/^#{1,4}\s*H3-/gim)?.length ?? 0;
   const subjDefs = masked.match(/subject_definitions\s*:/g)?.length ?? 0;
   if (h3Heads >= 2 || subjDefs >= 2 || (h3Heads >= 1 && subjDefs >= 1)) return "prompts";
@@ -346,15 +348,20 @@ function countBareTitleHeads(t: string): number {
 }
 
 /**
- * 把围栏代码块的内部内容替换为等长空白（``` 行本身保留，外部索引不变）。
+ * 把围栏内容替换为等长空白（``` 行与 <<<PROMPT_START/END>>> 标记行本身保留，外部索引不变）。
  * 标题/标记扫描用遮罩文本，防止提示词正文里的 `## xxx` 行被误认成小节头把一段提示词切碎；
  * 围栏行保留意味着「正文带围栏块」的判定在遮罩文本上同样成立。
  */
 function maskFencedBodies(t: string): string {
-  return t.replace(/(^|\n)([ \t]*```[^\n]*\n)([\s\S]*?)([ \t]*```[ \t]*(?=\n|$))/g, (_all, nl: string, open: string, body: string, close: string) =>
-    nl + open + body.replace(/[^\n]/g, " ") + close,
-  );
+  return t
+    .replace(/<<<PROMPT_START>>>([\s\S]*?)<<<PROMPT_END>>>/gi, (_all, body: string) => "<<<PROMPT_START>>>" + body.replace(/[^\n]/g, " ") + "<<<PROMPT_END>>>")
+    .replace(/(^|\n)([ \t]*```[^\n]*\n)([\s\S]*?)([ \t]*```[ \t]*(?=\n|$))/g, (_all, nl: string, open: string, body: string, close: string) =>
+      nl + open + body.replace(/[^\n]/g, " ") + close,
+    );
 }
+
+/** 显式提示词围栏 <<<PROMPT_START>>> 的出现次数（一对 START/END = 一个片段） */
+const countPromptMarks = (t: string): number => t.match(/<<<PROMPT_START>>>/gi)?.length ?? 0;
 
 /** 统计「标题 + 代码围栏内容块」的小节数（通用提示词包特征；标题认 1-4 级） */
 function countFencedSections(t: string): number {
@@ -434,11 +441,13 @@ export function extractGlobalStyle(prefix: string): string | undefined {
   return out.length >= 20 ? out : undefined;
 }
 
-/** 统计成品提示词段数（识别条显示用）：H3 头 / subject_definitions / 带围栏块的通用小节 */
+/** 统计成品提示词段数（识别条显示用）：显式围栏 / H3 头 / subject_definitions / 带围栏块的通用小节 */
 export function countPromptSegments(script: string): number {
   const t = script.trim();
   if (!t) return 0;
   const masked = maskFencedBodies(t);
+  const pm = countPromptMarks(masked);
+  if (pm > 0) return pm;
   const heads = masked.match(/^#{1,4}\s*H3-/gim)?.length ?? 0;
   if (heads > 0) return heads;
   const sd = masked.match(/subject_definitions\s*:/g)?.length ?? 0;
@@ -448,9 +457,29 @@ export function countPromptSegments(script: string): number {
   return countFencedSections(t);
 }
 
-/** 收集片段起点：H3 头 → subject_definitions → 通用「标题」（序号标题或带围栏块的小节，认 1-4 级） */
+/** 收集片段起点：显式围栏 → H3 头 → subject_definitions → 通用「标题」（序号标题或带围栏块的小节，认 1-4 级） */
 function collectSegmentMarks(t: string): number[] {
   const masked = maskFencedBodies(t);
+  // 显式围栏 <<<PROMPT_START>>> 每处即一段起点（最可靠，优先于一切启发式）；
+  // 段起点回吃紧邻上方的标题行（## H3-01｜标题｜12 秒 / 裸标题 / # 第X分段），否则标题会落进前言或上一段
+  const pm = [...masked.matchAll(/<<<PROMPT_START>>>/gi)].map((m) => m.index!);
+  if (pm.length) {
+    return pm.map((idx) => {
+      let start = masked.lastIndexOf("\n", idx - 1) + 1; // 标记所在行的行首
+      for (let k = 0; k < 3; k++) {
+        if (start <= 0) break;
+        const prevEnd = start - 1; // 上一行的 \n 位置
+        const prevStart = masked.lastIndexOf("\n", prevEnd - 1) + 1;
+        const line = masked.slice(prevStart, prevEnd).trim();
+        if (!line || /^#{1,4}\s+\S/.test(line) || isBareTitleLine(line) || INDEX_HEAD_RE.test(line)) {
+          start = prevStart; // 空行与标题行都回吃；遇到 PROMPT_END 或正文行即停
+          continue;
+        }
+        break;
+      }
+      return start;
+    });
+  }
   const h3 = [...masked.matchAll(/^#{1,4}\s*H3-[\w-]+.*$/gim)].map((m) => m.index!);
   if (h3.length) return h3;
   const sd = [...masked.matchAll(/subject_definitions\s*:/g)].map((m) => m.index!);
@@ -512,21 +541,23 @@ export function importPromptSegments(script: string, maxSegmentSec: number): { s
       while (li < lines.length && !lines[li].trim()) li++;
       titleLine = (lines[li] ?? "").trim();
     }
-    const head = parseSegmentTitle(titleLine);
+    // 显式围栏段：<<<PROMPT_START>>>…<<<PROMPT_END>>> 之间即提示词本体；标记前的标题行照常解析
+    const marked = raw.match(/<<<PROMPT_START>>>([\s\S]*?)<<<PROMPT_END>>>/i);
+    // 标题行就是标记行本身（裸围栏段）时不参与标题解析，落到「提示词 N」兜底名
+    const head: { title?: string; durationSec?: number } = /<<<PROMPT_START>>>/i.test(titleLine) ? {} : parseSegmentTitle(titleLine);
     const dur = head.durationSec && head.durationSec >= 4 && head.durationSec <= 60 ? Math.round(head.durationSec) : maxSegmentSec;
-    // 成品提示词本体优先取 ```text 围栏（语言标记大小写不敏感；N/A 占位结尾行剥掉），其余语言围栏后备；
+    // 成品提示词本体优先取 ```text 围栏（语言标记大小写不敏感），其余语言围栏后备；
     // 上方的 **Purpose** 等元数据是中文规划信息，不进提示词（分镜卡折叠视图会按需解析展示六段正文）。
-    // 无围栏的裸标题包：标题行（markdown 头或 01-古刹闻客-11秒 段头）与 TEXT 包装行是结构行，不进提示词本体
+    // 无围栏的裸标题包：标题行（markdown 头或 01-古刹闻客-11秒 段头）是结构行，不进提示词本体
     const fenced = raw.match(/```text[ \t]*\r?\n([\s\S]*?)```/i) ?? raw.match(/```[a-zA-Z]*[ \t]*\r?\n([\s\S]*?)```/);
     const structuralTitle = /^#{1,4}\s+\S/.test(titleLine) || isBareTitleLine(titleLine);
-    let body = structuralTitle || fenced ? lines.slice(li + 1).join("\n") : text;
-    body = body.replace(/^[ \t]*(?:TEXT|PROMPT)[ \t]*\r?\n/i, "");
-    const promptBody = (fenced ? fenced[1] : body).replace(/\n[ \t]*n\/a[ \t]*(?:\r?\n)*$/i, "").trim();
+    const body = structuralTitle || fenced ? lines.slice(li + 1).join("\n") : text;
+    const promptBody = (marked ? marked[1] : fenced ? fenced[1] : body).trim();
     return {
       id: `seg_p_${i + 1}`,
       sceneId,
       durationSec: dur,
-      summary: head.title || titleLine.replace(/^#{1,4}\s*/, "").slice(0, 40) || `提示词 ${i + 1}`,
+      summary: head.title || (/<<<PROMPT_START>>>/i.test(titleLine) ? "" : titleLine.replace(/^#{1,4}\s*/, "").slice(0, 40)) || `提示词 ${i + 1}`,
       dialogue: [],
       shots: [],
       promptOverride: promptBody,

@@ -26,9 +26,10 @@ import { isVideoLoaderClass, isAudioLoaderClass } from "../../core/services/comf
 import { useAssets } from "../../core/stores/assetStore";
 import { errMsg, fileToDataUrl, isTauri } from "../../core/utils";
 import { RecipeSelect } from "./RecipeSelect";
+import { BatchSwitches } from "./BatchSwitches";
 import { SegmentRefEditor } from "./SegmentRefEditor";
 import { PopLayer } from "../../ui/PopSelect";
-import { IcChevronD, IcClapper, IcLoading, IcPlay, IcSparkles, IcBrain, IcText, IcFolder } from "../../ui/icons";
+import { IcChevronD, IcClapper, IcLoading, IcPlay, IcSparkles, IcBrain, IcText, IcFolder, IcLock, IcMusic } from "../../ui/icons";
 import type { DirectorProject, DirectorRecipe, DirectorScene, DirectorSegment } from "../../core/types";
 
 /** 片段是否已有被采用的成片 take（只读统计用） */
@@ -262,7 +263,7 @@ export function StoryboardPage({ project }: { project: DirectorProject }) {
       const r = await refineSegmentPrompts(project.id, undefined, (done, total) => setRefineProg({ done, total }));
       if (!r.ok && !r.failed && r.skipped) {
         toast(
-          `没有精炼任何片段：${r.skipped} 段均为成品直录（🔒 锁定）——提示词本身已是 H3 成品，无需精炼。如确要重炼，先在片段卡点「🔒 已锁定」解锁`,
+          `没有精炼任何片段：${r.skipped} 段均为成品直录（已锁定）——提示词本身已是 H3 成品，无需精炼。如确要重炼，先在片段卡点「已锁定」解锁`,
           "info",
         );
       } else {
@@ -346,7 +347,7 @@ export function StoryboardPage({ project }: { project: DirectorProject }) {
         </div>
       </div>
 
-      {/* 批量工具条：配方 / 精炼 / 生成 */}
+      {/* 批量工具条：两行布局——第一行主操作（配方/生成），第二行工具与开关 */}
       <div className="ds-card ds-batchbar">
         <div className="ds-batchbar-row">
           <span className="ds-ref-zone-label">项目默认配方</span>
@@ -355,13 +356,25 @@ export function StoryboardPage({ project }: { project: DirectorProject }) {
             应用到全部
           </button>
           {!project.recipes.length ? (
-            <span className="ds-opt-hint">可直接从「项目默认配方」选 ComfyUI 模板（自动建配方）</span>
+            <span className="ds-hint">可直接从「项目默认配方」选 ComfyUI 模板（自动建配方）</span>
           ) : null}
+          <span className="spacer" />
+          {genProg ? (
+            <button className="btn sm ghost" onClick={cancelBatch}>
+              取消生成
+            </button>
+          ) : null}
+          <button className="btn sm primary" disabled={!!genProg} onClick={() => void doGenerate("missing")}>
+            {genProg ? <IcLoading size={13} /> : <IcPlay size={13} />}
+            {genProg ? ` 生成中 ${genProg.done}/${genProg.total} ${genProg.name}` : " 全部交给生成"}
+          </button>
+        </div>
+        <div className="ds-batchbar-row">
           <input
             ref={dirRef}
             type="file"
+            hidden
             multiple
-            style={{ display: "none" }}
             {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
             onChange={(e) => {
               if (e.target.files?.length) void importRefFolderInput(e.target.files);
@@ -377,7 +390,6 @@ export function StoryboardPage({ project }: { project: DirectorProject }) {
             {folderBusy ? <IcLoading size={13} /> : <IcFolder size={13} />}
             {folderBusy ? " 导入中…" : " 参考图文件夹"}
           </button>
-          <span className="spacer" />
           <button
             className="btn sm"
             title="对规则切段产生的片段，用对话模型逐段提取摘要/时长/对白/镜头（已有内容或锁定的段自动跳过）"
@@ -396,42 +408,11 @@ export function StoryboardPage({ project }: { project: DirectorProject }) {
             {refineProg ? <IcLoading size={13} /> : <IcSparkles size={13} />}
             {refineProg ? ` 精炼中 ${refineProg.done}/${refineProg.total}` : " 批量精炼提示词"}
           </button>
-          {genProg ? (
-            <button className="btn sm ghost" onClick={cancelBatch}>
-              取消生成
-            </button>
-          ) : null}
-          <button className="btn sm primary" disabled={!!genProg} onClick={() => void doGenerate("missing")}>
-            {genProg ? <IcLoading size={13} /> : <IcPlay size={13} />}
-            {genProg ? ` 生成中 ${genProg.done}/${genProg.total} ${genProg.name}` : " 全部交给生成"}
-          </button>
           <button className="btn sm" disabled={!!genProg} onClick={() => void doGenerate("failed")}>
             重试失败
           </button>
-          <label
-            className="ds-opt"
-            title="每段生成结束后调用 ComfyUI /free 卸载模型并释放显存；H3 等大工作流防显存堆积，代价是下一段重新加载模型"
-          >
-            <input
-              type="checkbox"
-              className="nodrag"
-              checked={!!project.freeMemBetween}
-              onChange={(e) => updateProject(project.id, { freeMemBetween: e.target.checked })}
-            />
-            <span className="ds-opt-hint">每段后清显存</span>
-          </label>
-          <label
-            className="ds-opt"
-            title="批量生成连贯性：上一段生成完成后自动抽取其尾帧，作为下一段的首帧/首张参考图（本段显式首帧优先），与本段参考图一起投喂，保证跨段画面衔接；关闭则各段独立生成"
-          >
-            <input
-              type="checkbox"
-              className="nodrag"
-              checked={!!project.tailFrameRelay}
-              onChange={(e) => updateProject(project.id, { tailFrameRelay: e.target.checked })}
-            />
-            <span className="ds-opt-hint">尾帧接力</span>
-          </label>
+          <span className="spacer" />
+          <BatchSwitches project={project} />
         </div>
       </div>
 
@@ -561,7 +542,7 @@ function SegmentCard({
   /** 单段精炼：用项目 Skill 把本段重写成 H3 成品提示词（锁定段=成品直录，不覆盖） */
   const refineOne = async () => {
     if (segment.locked) {
-      toast("该片段已锁定（成品直录），不会被精炼覆盖；点片段头的「🔒 已锁定」解锁后可重炼", "info");
+      toast("该片段已锁定（成品直录），不会被精炼覆盖；点片段头的「已锁定」解锁后可重炼", "info");
       return;
     }
     setRefining(true);
@@ -611,7 +592,7 @@ function SegmentCard({
             title="成品直录锁定：精炼与重新拆分都不会覆盖本段提示词；点击解锁后可重新精炼"
             onClick={() => onPatch(segment.id, { locked: false })}
           >
-            🔒 已锁定
+            <IcLock size={11} /> 已锁定
           </button>
         ) : null}
         {h3Ready ? <span className="ds-badge ok">H3 提示词</span> : null}
@@ -701,7 +682,7 @@ function SegmentCard({
             </div>
             {editRaw ? (
               <textarea
-                className="input ds-h3-pop-edit"
+                className="textarea nodrag nowheel ds-h3-pop-edit"
                 rows={14}
                 value={segment.promptOverride ?? ""}
                 onChange={(e) => onPatch(segment.id, { promptOverride: e.target.value })}
@@ -748,7 +729,7 @@ function SegmentCard({
               <span className="ds-shot-size">{sh.shotSize}</span>
               <span className="ds-shot-cam">{sh.camera}</span>
               <span className="ds-shot-act">{sh.action}</span>
-              {sh.audio ? <span className="ds-shot-audio ds-card-desc">🔊 {sh.audio}</span> : null}
+              {sh.audio ? <span className="ds-shot-audio ds-card-desc"><IcMusic size={12} /> {sh.audio}</span> : null}
             </div>
           ))}
         </div>

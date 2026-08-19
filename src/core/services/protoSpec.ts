@@ -53,6 +53,11 @@ export const KNOWN_VARS: ReadonlySet<string> = new Set(
   [...COMMON_VARS, ...ROLE_VARS.image, ...ROLE_VARS.video, ...ROLE_VARS.audio].map((v) => v.name),
 );
 
+/** 占位符结构化清单（设置页「占位符参考」chips 用，与 varsDoc 同源，勿另抄一份） */
+export function varList(role: CustomProtocol["role"]): VarDoc[] {
+  return [...COMMON_VARS, ...ROLE_VARS[role]];
+}
+
 /** 喂给对话模型的占位符说明（按用途裁剪，生成/自愈共用同一份） */
 export function varsDoc(role: CustomProtocol["role"]): string {
   const list = [...COMMON_VARS, ...ROLE_VARS[role]];

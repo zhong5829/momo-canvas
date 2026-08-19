@@ -750,3 +750,21 @@ export const IcPose = (p: IconProps) => (
   </I>
 );
 
+/* 警告：三角 + 感叹号 */
+export const IcWarn = (p: IconProps) => (
+  <I {...p}>
+    <path d="M12 4.2 21 19.2H3z" />
+    <path d="M12 10v4.4" />
+    <circle cx="12" cy="16.8" r="0.4" fill="currentColor" stroke="none" />
+  </I>
+);
+
+/* 耗时：圆形秒表 */
+export const IcTimer = (p: IconProps) => (
+  <I {...p}>
+    <circle cx="12" cy="13.4" r="7.4" />
+    <path d="M12 9.6v3.8l2.6 1.8" />
+    <path d="M9.6 3h4.8" />
+  </I>
+);
+

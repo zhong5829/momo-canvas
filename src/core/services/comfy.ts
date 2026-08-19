@@ -409,7 +409,10 @@ export async function enrichParamsWithCombo(
   if (!info) return params;
   return params.map((p) => {
     const opts = comboOptionsFor(info, wf[p.nodeId]?.class_type ?? "", p.input);
-    return opts ? { ...p, options: opts } : p;
+    if (!opts) return p;
+    // 类型矫正：combo（object_info 定义是选项数组）一律按文本下拉渲染——数字枚举的 combo
+    // 会被值类型误判成 number 丢掉下拉；seed/image/toggle 的语义判定不动
+    return { ...p, options: opts, kind: p.kind === "text" || p.kind === "number" ? "text" : p.kind };
   });
 }
 

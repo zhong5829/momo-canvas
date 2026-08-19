@@ -5,9 +5,10 @@
  *  - 导出走 Tauri 保存对话框，浏览器预览退回 a[download]
  */
 import type { ComfyExposedParam, ComfyTemplate, ComfyVariant, ComfyWfNode } from "../../core/types";
-import { guessOutputNode, isApiWorkflow, listWorkflowInputs, fetchObjectInfo, normalizeHost, type WfInputInfo } from "../../core/services/comfy";
+import { guessOutputNode, isApiWorkflow, listWorkflowInputs, fetchObjectInfo, normalizeHost, comboOptionsFor, type WfInputInfo } from "../../core/services/comfy";
 import { xfetch } from "../../core/services/http";
 import { isFrontendWorkflow, convertFrontendWorkflow, convertApiToFrontend } from "./frontendConvert";
+import { layoutForComfy } from "./wfGraph";
 import { useComfy } from "../../core/stores/comfyStore";
 import { useSettings } from "../../core/stores/settingsStore";
 import { toast } from "../../core/stores/uiStore";
@@ -33,26 +34,45 @@ export function autoExposeMap(inputs: WfInputInfo[]): ExposeMap {
   return map;
 }
 
-/** 暴露表 → 参数列表（保存模板 / 自动建模板共用） */
-export function paramsFromExpose(workflow: Record<string, ComfyWfNode>, expose: ExposeMap): ComfyExposedParam[] {
+/** 暴露表 → 参数列表（保存模板 / 自动建模板共用）；有 object_info 时把 combo 选项随参数存下并矫正 kind（数字枚举 combo 不丢下拉，离线也有选项可用） */
+export function paramsFromExpose(
+  workflow: Record<string, ComfyWfNode>,
+  expose: ExposeMap,
+  objectInfo?: Record<string, any> | null,
+): ComfyExposedParam[] {
   const params: ComfyExposedParam[] = [];
   for (const i of listWorkflowInputs(workflow)) {
     const key = `${i.nodeId}.${i.input}`;
     const ex = expose[key];
     if (!ex) continue;
+    const options = objectInfo ? comboOptionsFor(objectInfo, i.classType, i.input) : undefined;
     params.push({
       key,
       nodeId: i.nodeId,
       input: i.input,
       label: ex.label || `${i.nodeTitle} · ${i.input}`,
-      kind: ex.kind,
+      kind: options?.length && (ex.kind === "text" || ex.kind === "number") ? "text" : ex.kind,
       value: i.value as string | number | boolean,
+      ...(options?.length ? { options } : {}),
     });
   }
   return params;
 }
 
-/** 原始 API 工作流 → 自动暴露参数的完整模板（批量导入时免手工勾选） */
+/** 给没有坐标的节点补 ComfyUI 尺寸的自动布局 pos/size（已有坐标的保留——位置始终跟随最后一次编辑） */
+export function applyComfyLayout(
+  wf: Record<string, ComfyWfNode>,
+  objectInfo?: Record<string, any> | null,
+): Record<string, ComfyWfNode> {
+  const layout = layoutForComfy(wf, objectInfo);
+  const out: Record<string, ComfyWfNode> = {};
+  for (const [id, n] of Object.entries(wf)) {
+    out[id] = { ...n, pos: n.pos ?? [layout.pos[id]?.x ?? 0, layout.pos[id]?.y ?? 0], size: n.size ?? layout.size[id] };
+  }
+  return out;
+}
+
+/** 原始 API 工作流 → 自动暴露参数的完整模板（批量导入时免手工勾选）；API 格式本身无坐标，用真实尺寸布局估一份存上 */
 export function autoTemplate(workflow: Record<string, ComfyWfNode>, name: string): ComfyTemplate {
   return {
     id: uid(8),
@@ -118,7 +138,8 @@ export async function importTemplateFilesAuto(files: Iterable<File>): Promise<{ 
     try {
       const json: unknown = JSON.parse(await f.text());
       if (isApiWorkflow(json)) {
-        upsert(autoTemplate(json, f.name.replace(/\.json$/i, "")));
+        // API 格式本身无坐标：用真实尺寸布局估一份 pos/size 存上，推回 ComfyUI 时不再全部挤左
+        upsert(autoTemplate(applyComfyLayout(json), f.name.replace(/\.json$/i, "")));
         saved++;
         continue;
       }
@@ -128,7 +149,8 @@ export async function importTemplateFilesAuto(files: Iterable<File>): Promise<{ 
         const info = host ? await fetchObjectInfo(host) : null;
         if (!info) throw new Error("导入前端格式工作流需要 ComfyUI 在线（用于读取节点定义），请先启动 ComfyUI 并在设置里配置地址");
         const { workflow, warnings } = convertFrontendWorkflow(json, info);
-        upsert(autoTemplate(workflow, f.name.replace(/\.json$/i, "")));
+        // 转换已保留节点坐标（含子图展开的内部节点），applyComfyLayout 只兜底缺坐标的
+        upsert(autoTemplate(applyComfyLayout(workflow, info), f.name.replace(/\.json$/i, "")));
         saved++;
         for (const w of warnings) errs.push(`${f.name}：⚠️ ${w}`);
         continue;
@@ -280,6 +302,13 @@ async function mergeWorkflowText(tpl: ComfyTemplate, text: string): Promise<{ me
   } else {
     throw new Error("文件既不是 API 格式工作流，也不是 ComfyUI 前端格式（nodes/links）");
   }
+  // 位置回写/跟随：前端格式转换已把 ComfyUI 里编辑后的 pos/size 写进节点（含子图展开前缀 id）；
+  // 缺坐标的节点（API 格式合并 / 新增节点）沿用模板旧坐标，都没有就留给下次推送时布局兜底
+  for (const [id, n] of Object.entries(workflow)) {
+    const old = tpl.workflow[id];
+    if (!n.pos && old?.pos) n.pos = old.pos;
+    if (!n.size && old?.size) n.size = old.size;
+  }
   const params = tpl.params.filter((p) => {
     const n = workflow[p.nodeId];
     return !!n && p.input in (n.inputs ?? {});
@@ -344,7 +373,7 @@ export async function startComfyRoundTrip(tpl: ComfyTemplate): Promise<string> {
     // ComfyUI 工作流库只认前端格式（nodes/links）：API 格式点开是空白画布，先转换再推
     const info = await fetchObjectInfo(host);
     if (!info) throw new Error("需要 ComfyUI 在线（读取节点定义做格式转换）——请确认 ComfyUI 已启动、设置里的服务地址正确");
-    const text = JSON.stringify(convertApiToFrontend(tpl.workflow, info));
+    const text = JSON.stringify(convertApiToFrontend(tpl.workflow, info, { spacing: "comfy", savedPos: true }));
     try {
       await pushWorkflowToComfy(host, relPath, text);
     } catch (e) {

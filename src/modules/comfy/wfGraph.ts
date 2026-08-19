@@ -422,8 +422,15 @@ export type WfLayout = {
   height: number;
 };
 
-/** 最长路径分层 + 一趟重心排序的左→右布局 */
-export function layoutWorkflow(wf: Record<string, ComfyWfNode>): WfLayout {
+/**
+ * 最长路径分层 + 一趟重心排序（layoutWorkflow / layoutForComfy 共用）：
+ * 返回拓扑边、每列（层）的节点 id、每列内的行序。环兜底：访问中再遇到按 0 处理。
+ */
+function layersOf(wf: Record<string, ComfyWfNode>): {
+  edges: WfLayout["edges"];
+  cols: Map<number, string[]>;
+  maxLayer: number;
+} {
   const ids = Object.keys(wf);
   const edges: WfLayout["edges"] = [];
   const deps = new Map<string, string[]>(); // node ← 其上游
@@ -437,7 +444,6 @@ export function layoutWorkflow(wf: Record<string, ComfyWfNode>): WfLayout {
     }
   }
 
-  // 最长路径分层（环兜底：访问中再遇到按 0 处理）
   const layer = new Map<string, number>();
   const visiting = new Set<string>();
   const layerOf = (id: string): number => {
@@ -476,7 +482,12 @@ export function layoutWorkflow(wf: Record<string, ComfyWfNode>): WfLayout {
     col.forEach((id, i) => rowIdx.set(id, i));
     cols.set(l, col);
   }
+  return { edges, cols, maxLayer };
+}
 
+/** 最长路径分层 + 一趟重心排序的左→右布局 */
+export function layoutWorkflow(wf: Record<string, ComfyWfNode>): WfLayout {
+  const { edges, cols, maxLayer } = layersOf(wf);
   const pos: WfLayout["pos"] = {};
   let width = 0;
   let height = 0;
@@ -490,4 +501,67 @@ export function layoutWorkflow(wf: Record<string, ComfyWfNode>): WfLayout {
     }
   }
   return { pos, edges, width: width + 8, height: height + 8 };
+}
+
+/* ---------------- ComfyUI 真实尺寸布局（推送往返编辑用，不影响上面的示意图布局） ---------------- */
+
+const CW = 320; // 节点宽默认
+const CX_GAP = 120; // 列间距
+const CY_GAP = 40; // 列内节点纵向间距
+const CH_BASE = 90; // 节点高基础（标题栏 + 输出槽区）
+const CH_WIDGET = 26; // 每个 widget
+const CH_INPUT = 22; // 每个连接输入槽
+
+/** 节点尺寸粗估：有 object_info 按定义数（widget 26px、连接输入槽 22px），没有按 inputs 键数当连接槽粗估 */
+function estimateComfySize(node: ComfyWfNode, objectInfo?: Record<string, any> | null): [number, number] {
+  const oi = objectInfo?.[node.class_type]?.input;
+  if (oi) {
+    let widgets = 0;
+    let conns = 0;
+    for (const group of [oi.required, oi.optional]) {
+      for (const def of Object.values<any>(group ?? {})) {
+        const t = Array.isArray(def) ? def[0] : def?.type;
+        // 数组 = combo 选项表，也是 widget；全大写类型名 = 连接槽；其余（INT/FLOAT/STRING…）是 widget
+        const widget = Array.isArray(t) || !(typeof t === "string" && /^[A-Z][A-Z0-9_]*$/.test(t));
+        if (widget) widgets++;
+        else conns++;
+      }
+    }
+    return [CW, CH_BASE + widgets * CH_WIDGET + conns * CH_INPUT];
+  }
+  const keys = Object.keys(node.inputs ?? {}).filter((k) => !isConn(node.inputs?.[k]));
+  return [CW, CH_BASE + keys.length * CH_INPUT];
+}
+
+export type ComfyLayout = WfLayout & { size: Record<string, [number, number]> };
+
+/**
+ * ComfyUI 画布尺寸的自动布局：与 layoutWorkflow 同一套分层/重心排序，
+ * 但列距按前一列最大节点宽 + 120、行距按上一节点估高 + 40——真实节点（宽 250~400、高 150~400）不再重叠。
+ * 额外返回每节点的估算 size。
+ */
+export function layoutForComfy(wf: Record<string, ComfyWfNode>, objectInfo?: Record<string, any> | null): ComfyLayout {
+  const { edges, cols, maxLayer } = layersOf(wf);
+  const size: Record<string, [number, number]> = {};
+  for (const id of Object.keys(wf)) size[id] = estimateComfySize(wf[id], objectInfo);
+
+  const pos: WfLayout["pos"] = {};
+  let width = 0;
+  let height = 0;
+  let x = 0;
+  for (let l = 0; l <= maxLayer; l++) {
+    const col = cols.get(l) ?? [];
+    let y = 0;
+    let colW = CW;
+    for (const id of col) {
+      const [w, h] = size[id];
+      pos[id] = { x, y };
+      colW = Math.max(colW, w);
+      y += h + CY_GAP;
+      height = Math.max(height, y - CY_GAP);
+    }
+    width = Math.max(width, x + colW);
+    x += colW + CX_GAP;
+  }
+  return { pos, size, edges, width: width + 8, height: height + 8 };
 }

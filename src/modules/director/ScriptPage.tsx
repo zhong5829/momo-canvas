@@ -14,7 +14,7 @@ import { splitScript, structuredSplit, hasExternalSegments, projectProgress, det
 import { buildSkillSystem } from "../../core/skillEngine";
 import { breakdownPrompt, type PromptBreakdown, newPromptRecipe, applyRecipeToPrompt } from "../../core/directorAnalysis";
 import { errMsg } from "../../core/utils";
-import { IcLoading, IcWand, IcSparkles, IcText } from "../../ui/icons";
+import { IcLoading, IcWand, IcSparkles, IcText, IcClapper, IcWarn } from "../../ui/icons";
 import { PopSelect } from "../../ui/PopSelect";
 import type { DirectorProject } from "../../core/types";
 
@@ -199,7 +199,7 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
     try {
       const r = await refineSegmentPrompts(project.id, undefined, (done, total) => setRefining({ done, total }));
       if (!r.ok && !r.failed && r.skipped) {
-        toast(`没有精炼任何片段：${r.skipped} 段均为成品直录（🔒 锁定），提示词已是成品无需精炼`, "info");
+        toast(`没有精炼任何片段：${r.skipped} 段均为成品直录（已锁定），提示词已是成品无需精炼`, "info");
       } else {
         toast(
           `精炼完成：成功 ${r.ok} 段${r.failed ? `，失败 ${r.failed} 段（详见报错中心）` : ""}${r.skipped ? `，跳过 ${r.skipped} 段（已锁定成品）` : ""}`,
@@ -306,15 +306,17 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
                 className="nodrag"
                 title="剧本形态决定拆分方式：完整剧本走 AI 拆分；已分段脚本走标记检测；成品提示词直接入分镜"
                 value={kindOverride === "auto" ? autoKind : kindOverride}
+                triggerIcon
                 options={(["full", "segmented", "prompts"] as const).map((k) => ({
                   value: k,
                   label: `${KIND_LABEL[k]}${kindOverride === "auto" && k === autoKind ? "（自动）" : ""}`,
+                  icon: k === "full" ? <IcText size={14} /> : k === "segmented" ? <IcClapper size={14} /> : <IcSparkles size={14} />,
                 }))}
                 onChange={(v) => setKindOverride(v === autoKind ? "auto" : (v as ScriptKind))}
               />
               <span className="ds-opt-hint">
                 {kind === "prompts"
-                  ? `检测到约 ${promptSegCount} 段提示词（H3 六段式、「标题 + 围栏提示词块」或「序号-标题-时长」段头的通用包均可），可直接入分镜`
+                  ? `检测到约 ${promptSegCount} 段提示词（<<<PROMPT_START>>> 围栏段、H3 六段式、「标题 + 围栏提示词块」或「序号-标题-时长」段头的通用包均可），可直接入分镜`
                   : kind === "segmented"
                     ? "含分段标记，可一键检测分段；也可让 AI 重新理解全文"
                     : "完整剧本将由 AI 拆分为场/片段/镜头，或先用标记手动分段"}
@@ -325,8 +327,8 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
             <input
               ref={fileRef}
               type="file"
+              hidden
               accept=".txt,.md,.markdown,text/plain"
-              style={{ display: "none" }}
               onChange={(e) => {
                 const f = e.target.files?.[0];
                 if (f) void importFile(f);
@@ -451,7 +453,7 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
               ) : null}
               {savedRecipes.length ? (
                 <div className="ds-saved-recipes">
-                  <div className="ds-card-desc">已保存配方（点击追加到剧本末尾作为全局风格参考）</div>
+                  <div className="ds-hint">已保存配方（点击追加到剧本末尾作为全局风格参考）</div>
                   {savedRecipes.map((r) => (
                     <button
                       key={r.id}
@@ -514,7 +516,7 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
                 ) : null}
               </div>
               {(project.skillBindings ?? []).some((b) => b.enabled) ? (
-                <div style={{ marginTop: 10 }}>
+                <div className="ds-skill-ops">
                   <button
                     className="btn sm primary"
                     disabled={!!refining || !progress.total}
@@ -523,7 +525,7 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
                     {refining ? <IcLoading size={13} /> : <IcSparkles size={13} />}
                     {refining ? ` 精炼中 ${refining.done}/${refining.total}` : " 用 Skill 精炼全部分镜提示词"}
                   </button>
-                  <div className="ds-card-desc" style={{ marginTop: 4 }}>
+                  <div className="ds-hint">
                     {progress.total
                       ? "按勾选的 Skill 规范逐段产出 H3 成品提示词，结果写入各分镜的提示词覆盖"
                       : "先拆分或直录出片段，再执行精炼"}
@@ -531,7 +533,10 @@ export function ScriptPage({ project }: { project: DirectorProject }) {
                   {/* 风格规则重复预警：项目风格锚定与 Skill 指令并存时，生成提示词里风格要求会叠加 */}
                   {project.ruleSet?.positive.style?.trim() ? (
                     <div className="ds-style-dup">
-                      ⚠ 项目已有全局风格锚定（来自提示词包前言）。若 Skill 指令里也写了风格要求，生成时同一段提示词会出现两份风格描述——建议只保留一处（清空项目规则风格，或精简 Skill 指令中的风格部分）。
+                      <IcWarn size={14} />
+                      <span>
+                        项目已有全局风格锚定（来自提示词包前言）。若 Skill 指令里也写了风格要求，生成时同一段提示词会出现两份风格描述——建议只保留一处（清空项目规则风格，或精简 Skill 指令中的风格部分）。
+                      </span>
                     </div>
                   ) : null}
                 </div>

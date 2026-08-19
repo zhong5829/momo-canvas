@@ -1049,6 +1049,233 @@
   word-break: break-all;
   user-select: text;
 }
+.pt-card > .cal-log {
+  margin-top: 0; /* 卡片自身 gap 已承担间距 */
+}
+
+/* ---- 协议页三卡片（协议管理 / 编辑协议 / 测试与校准） ---- */
+.pt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  background: var(--input-bg);
+}
+.pt-card-title {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--text-2);
+}
+/* 卡内小节标签（比卡标题弱一档） */
+.pt-sub {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+/* 卡内提示一律 11.5px 灰字（旧裸 .hint 在设置页无样式命中，曾以 15px 正文显示） */
+.pt-hint {
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+.pt-hint.warn {
+  color: color-mix(in srgb, var(--warn) 85%, var(--text-1));
+}
+.pt-hint.ok {
+  color: var(--text-2);
+}
+/* 体检提示行：图标 + 文字（自适应）+ 可选补全按钮（不收缩，放不下时整体折行） */
+.pt-hint.row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.pt-hint.row > svg {
+  flex: none;
+  margin-top: 3px;
+}
+.pt-hint.row > span {
+  flex: 1;
+  min-width: 200px;
+}
+.pt-hint.row > .btn {
+  flex: none;
+}
+/* 自愈开关行 */
+.pt-switch-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.pt-switch-txt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+/* 已保存协议 chips */
+.pt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* 编辑协议两栏：窄窗口折单列 */
+.pt-cols {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.pt-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+@media (max-width: 900px) {
+  .pt-cols {
+    flex-direction: column;
+  }
+}
+.pt-doc {
+  min-height: 240px;
+}
+.pt-json {
+  min-height: 260px;
+  font-family: Consolas, monospace;
+  font-size: 12.5px;
+}
+/* 占位符参考：可折叠 chips（点击复制） */
+.pt-json-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pt-vars-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast);
+}
+.pt-vars-toggle:hover,
+.pt-vars-toggle.on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.pt-vars-toggle svg {
+  transition: transform var(--t-fast);
+}
+.pt-vars-toggle.on svg {
+  transform: rotate(180deg);
+}
+.pt-var-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pt-var-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  color: var(--text-2);
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  cursor: copy;
+  transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+.pt-var-chip:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+/* 协议用途：分段控件（与导演台 .ds-aspect-seg 同款形态） */
+.pt-role-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pt-spacer {
+  flex: 1;
+}
+.pt-seg {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  background: var(--bg-app);
+  flex: 0 0 auto;
+}
+.pt-seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: calc(var(--r-md) - 2px);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: color var(--t-fast), background var(--t-fast);
+}
+.pt-seg button:hover:not(.on) {
+  color: var(--text-1);
+}
+.pt-seg button.on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+/* 校准控件行：宽度用 flex 比例，不写死 px */
+.pt-cal-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pt-w-prov {
+  flex: 1.3 1 180px;
+  min-width: 160px;
+}
+.pt-w-base {
+  flex: 1.4 1 200px;
+  min-width: 170px;
+}
+.pt-w-key {
+  flex: 1 1 140px;
+  min-width: 120px;
+}
+.pt-w-model {
+  flex: 1 1 160px;
+  min-width: 140px;
+}
+/* 校准通过后的一键应用行 */
+.pt-apply-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pt-apply-row .pt-hint {
+  flex: 1;
+  min-width: 240px;
+}
 
 /* ---- 服务商卡片 ---- */
 .prov-card {
@@ -1779,6 +2006,19 @@
 }
 .wfge-check .k { font-size: 12.5px; font-weight: 600; }
 .wfge-check .raw { font-size: 10.5px; color: var(--text-3); }
+/* 已暴露参数的视觉分组：卡面描边泛强调色 + 「已暴露」小徽标 */
+.wfge-widget.on {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.wfge-exposed {
+  font-size: 10.5px;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 5px;
+  padding: 0 5px;
+  flex: none;
+}
 
 /* ---------- 运行日志中心 ---------- */
 .rl-pop {
@@ -1986,7 +2226,7 @@
 }
 
 /* ---------- 协议预设（两列小卡片） ---------- */
-/* 中转站预设：一行 5-6 个小卡片（说明放 title 悬浮看，卡片本身只留标题 + 按钮，不占版面） */
+/* 中转站预设：一行数个小卡片（标题 + 一行省略说明 + 按钮；完整说明仍可 title 悬浮查看） */
 .preset-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
@@ -2120,9 +2360,16 @@
   font-size: 12px;
   line-height: 1.45;
 }
-/* 说明文字收进 title 提示，卡片里不再铺开（一行放 5-6 个的前提） */
+/* 预设说明：11.5px 灰字一行省略，完整内容仍可 title 悬浮查看 */
 .preset-row .pr-info span {
-  display: none;
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .preset-row .btn {
   align-self: stretch;

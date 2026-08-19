@@ -23,6 +23,7 @@ import { layoutWorkflow, zhInput, zhNode, WFG_H, WFG_W, connectedComponents } fr
 import { errMsg, uid } from "../../core/utils";
 import { IcClose, IcDownload, IcEdit, IcFlow, IcRefresh, IcTrash, IcUpload } from "../../ui/icons";
 import {
+  applyComfyLayout,
   autoExposeMap,
   comfyEditFilename,
   importTemplateFilesAuto,
@@ -198,12 +199,14 @@ export function TemplateManager() {
   /** 识别单份 JSON：原始工作流 → 进编辑器勾参数；模板/模板包 → 直接保存 */
   const routeImport = (json: unknown, nameHint: string): { drafted: boolean; saved: number } => {
     if (isApiWorkflow(json)) {
+      // API 格式本身无坐标：用真实尺寸布局估一份 pos/size 存上，推回 ComfyUI 时不再全部挤左
+      const workflow = applyComfyLayout(json);
       setDraft({
         id: uid(8),
         name: nameHint,
-        workflow: json,
-        outputNodeId: guessOutputNode(json),
-        expose: autoExposeMap(listWorkflowInputs(json)),
+        workflow,
+        outputNodeId: guessOutputNode(workflow),
+        expose: autoExposeMap(listWorkflowInputs(workflow)),
         disabledNodes: [],
       });
       return { drafted: true, saved: 0 };
@@ -279,7 +282,7 @@ export function TemplateManager() {
       toast("请给模板起个名字", "err");
       return;
     }
-    const params = paramsFromExpose(draft.workflow, draft.expose);
+    const params = paramsFromExpose(draft.workflow, draft.expose, objectInfo);
     // 分支优先级：draft 手动编辑过的 variants > 自动检测连通分量
     const variants = draft.variants?.length
       ? draft.variants
@@ -787,16 +790,20 @@ function NodeDetail({
     const expose = { ...draft.expose };
     if (expose[key]) delete expose[key];
     else {
+      // combo（object_info 定义是选项数组）一律文本下拉——数字枚举的 combo 不能被值类型误判成 number
+      const combo = !!comboOptionsFor(objectInfo, node.class_type, input)?.length;
       const kind: ComfyParamKind =
         /loadimage/i.test(node.class_type) && input === "image"
           ? "image"
           : input.toLowerCase().includes("seed")
             ? "seed"
-            : typeof value === "boolean"
-              ? "toggle"
-              : typeof value === "number"
-                ? "number"
-                : "text";
+            : combo
+              ? "text"
+              : typeof value === "boolean"
+                ? "toggle"
+                : typeof value === "number"
+                  ? "number"
+                  : "text";
       expose[key] = { label: `${zhNode(node)} · ${zhInput(input)}`, kind };
     }
     setDraft({ ...draft, expose });
@@ -804,7 +811,10 @@ function NodeDetail({
 
   const entries = Object.entries(node.inputs ?? {});
   const conns = entries.filter(([, v]) => isConn(v)) as [string, [string, number]][];
-  const widgets = entries.filter(([, v]) => !isConn(v));
+  // 已暴露的参数排前面（视觉分组），组内保持原顺序（sort 稳定）
+  const widgets = entries
+    .filter(([, v]) => !isConn(v))
+    .sort((a, b) => Number(!!draft.expose[`${sel}.${b[0]}`]) - Number(!!draft.expose[`${sel}.${a[0]}`]));
 
   return (
     <div className="wfge-side">
@@ -851,13 +861,14 @@ function NodeDetail({
             const key = `${sel}.${input}`;
             const ex = draft.expose[key];
             return (
-              <div key={input} className="wfge-widget">
+              <div key={input} className={`wfge-widget${ex ? " on" : ""}`}>
                 <div className="wfge-wrow">
                   <label className="wfge-check" title="勾选后显示在画布节点上，可被上游自动填充">
                     <input type="checkbox" checked={!!ex} onChange={() => toggleExpose(input, value)} />
                     <span className="k">{zhInput(input)}</span>
                     {zhInput(input) !== input ? <span className="raw">{input}</span> : null}
                   </label>
+                  {ex ? <span className="wfge-exposed">已暴露</span> : null}
                   <WidgetValue value={value} options={comboOptionsFor(objectInfo, node.class_type, input)} onChange={(v) => setVal(input, v)} />
                 </div>
                 {ex ? (
@@ -901,8 +912,20 @@ function NodeDetail({
   );
 }
 
-/** 按值类型渲染默认值编辑控件（改的是模板里的默认值） */
+/** 按值类型渲染默认值编辑控件（改的是模板里的默认值）；combo（有可选项）优先于值类型——数字枚举的 combo 也渲染下拉 */
 function WidgetValue({ value, onChange, options }: { value: unknown; onChange: (v: unknown) => void; options?: string[] }) {
+  if (options?.length) {
+    const s = String(value ?? "");
+    return (
+      <PopSelect
+        style={{ flex: 1, minWidth: 0 }}
+        title="下拉选项来自 ComfyUI 节点定义（object_info）"
+        value={options.includes(s) ? s : options[0]}
+        options={options.map((o) => ({ value: o, label: o }))}
+        onChange={(v) => onChange(v)}
+      />
+    );
+  }
   if (typeof value === "boolean") return <Switch on={value} onChange={(b) => onChange(b)} />;
   if (typeof value === "number") {
     return (
@@ -915,23 +938,6 @@ function WidgetValue({ value, onChange, options }: { value: unknown; onChange: (
     );
   }
   const s = String(value ?? "");
-  // combo 类型：有可选项 → 渲染下拉（选项来自 ComfyUI /object_info），否则文本框
-  if (options?.length) {
-    return (
-      <select
-        className="input"
-        title="下拉选项来自 ComfyUI 节点定义（object_info）"
-        value={options.includes(s) ? s : options[0]}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-    );
-  }
   if (s.length > 42 || s.includes("\n")) {
     return <textarea className="textarea" rows={2} value={s} onChange={(e) => onChange(e.target.value)} />;
   }

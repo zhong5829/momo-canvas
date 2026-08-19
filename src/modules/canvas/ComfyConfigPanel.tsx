@@ -8,7 +8,7 @@ import { useBoard } from "../../core/stores/boardStore";
 import { useComfyTemplates } from "../../core/stores/comfyStore";
 import { useUi } from "../../core/stores/uiStore";
 import { collectUpstream, runFlow } from "../../core/runner";
-import { buildImageEntries, COMFY_SLOT_NONE, effectiveParams, enrichParamsWithCombo, findVariant } from "../../core/services/comfy";
+import { buildImageEntries, COMFY_SLOT_NONE, effectiveParams, enrichParamsWithCombo, fetchObjectInfo, findVariant } from "../../core/services/comfy";
 import { useSettings } from "../../core/stores/settingsStore";
 import { PopSelect } from "../../ui/PopSelect";
 import { Thumb } from "../../ui/Thumb";
@@ -167,19 +167,25 @@ export function ComfyConfigPanel() {
   });
   const tplEarly = templates.find((t) => t.id === curTplId);
   const [comboOptions, setComboOptions] = useState<Record<string, string[]> | null>(null);
+  // object_info 是否拉取成功（false = ComfyUI 离线/失败）：疑似 combo 的参数据此显示提示
+  const [comboOffline, setComboOffline] = useState(false);
   useEffect(() => {
     let on = true;
     if (!tplEarly) {
       setComboOptions(null);
+      setComboOffline(false);
       return;
     }
     const base = effectiveParams(tplEarly, curVariantId);
-    void enrichParamsWithCombo(comfyHost, tplEarly.workflow, base).then((r) => {
+    void (async () => {
+      const info = await fetchObjectInfo(comfyHost);
+      const r = await enrichParamsWithCombo(comfyHost, tplEarly.workflow, base);
       if (!on) return;
+      setComboOffline(!info);
       const m: Record<string, string[]> = {};
       for (const p of r) if (p.options?.length) m[p.key] = p.options;
       setComboOptions(m);
-    });
+    })();
     return () => {
       on = false;
     };
@@ -296,6 +302,7 @@ export function ComfyConfigPanel() {
                   value={branchParams?.[p.key]}
                   onChange={(v) => setParam(p.key, v)}
                   options={comboOptions?.[p.key]}
+                  comboOffline={comboOptions !== null && comboOffline}
                 />
               ))}
             </div>

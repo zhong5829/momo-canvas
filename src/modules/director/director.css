@@ -520,9 +520,14 @@
   width: 110px;
 }
 .ds-opt-hint {
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text-3);
-  opacity: 0.85;
+}
+/* 导演台统一提示文字：灰色小字（与 .gp-hint/.pt-hint 同规格） */
+.ds-hint {
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.6;
 }
 
 /* 参考图卡（生成页）：顺序 + 接入点 + 作用域 —— 卡片横排（一行多个，省空间） */
@@ -727,9 +732,9 @@
 .ds-seg-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
   margin-bottom: 4px;
-  white-space: nowrap;
 }
 /* 配方下拉触发器：同区域固定宽度，不随所选配方文字长短变化 */
 .ds-seg-head .ds-seg-recipe {
@@ -1423,7 +1428,7 @@
   background: var(--panel);
   border: 1px solid var(--panel-border);
   border-radius: var(--r-lg, 12px);
-  box-shadow: 0 14px 40px color-mix(in srgb, #000 25%, transparent);
+  box-shadow: var(--panel-shadow);
   padding: 16px 18px;
   display: flex;
   flex-direction: column;
@@ -1611,13 +1616,22 @@
 
 /* ---- 预处理分镜卡片：批量工具条 + 参考槽编辑器 ---- */
 .ds-batchbar {
-  padding: 8px 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
 }
 .ds-batchbar-row {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  row-gap: 8px;
+}
+/* 两行之间：呼吸间距 + 细分隔线，主操作行与工具行分层 */
+.ds-batchbar-row + .ds-batchbar-row {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--panel-border);
 }
 .ds-batchbar-row .spacer {
   flex: 1;
@@ -1992,7 +2006,7 @@
   background: var(--panel-solid, var(--panel));
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--panel-shadow);
 }
 .ds-ref-preview-name {
   font-size: 11.5px;

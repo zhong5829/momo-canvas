@@ -4,6 +4,7 @@ import { NodeShell, PortIn, PortOut } from "../NodeShell";
 import { EditSurface } from "../EditSurface";
 import { IcCopy, IcDice, IcDownload, IcFlow, IcLoading, IcRows } from "../../../ui/icons";
 import { Switch } from "../../../ui/kit";
+import { PopSelect } from "../../../ui/PopSelect";
 import { useBoard } from "../../../core/stores/boardStore";
 import { useComfyTemplates } from "../../../core/stores/comfyStore";
 import { useSettings } from "../../../core/stores/settingsStore";
@@ -155,45 +156,59 @@ export const ComfyNode = memo(function ComfyNode({ id, data, selected }: NodePro
   );
 });
 
+/** 疑似 combo 的输入名（离线拿不到 object_info 时按名字猜，命中才显示「需在线拉取选项」提示） */
+const COMBOISH_INPUT = /^(sampler_name|scheduler|.*_name|aspect_ratio|upscale_method|interpolation|resize_mode|weight_type)$/i;
+
 export function ParamField({
   p,
   value,
   onChange,
   options,
+  comboOffline,
 }: {
   p: ComfyExposedParam;
   value: string | number | undefined;
   onChange: (v: string | number | boolean) => void;
   /** combo 参数的可选项（来自 ComfyUI /object_info；有则渲染下拉而非文本框） */
   options?: string[];
+  /** true = 本次拉取 object_info 失败（ComfyUI 离线）：疑似 combo 的参数显示提示而非默默退成文本框 */
+  comboOffline?: boolean;
 }) {
   const v = value !== undefined ? value : (p.value as string | number);
   const label = (
     <label style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-2)" }}>{p.label}</label>
   );
+  // combo 下拉优先于 kind 分派：数字枚举的 combo 会被值类型误判成 number（存储的 p.options 作离线兜底）
+  const opts = options?.length ? options : p.options;
+  if (opts?.length && p.kind !== "seed" && p.kind !== "image" && p.kind !== "toggle") {
+    const cur = String(v ?? opts[0]);
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {label}
+        <PopSelect
+          className="nodrag"
+          title={`${p.label}（选项来自 ComfyUI 节点定义）`}
+          value={opts.includes(cur) ? cur : opts[0]}
+          options={opts.map((o) => ({ value: o, label: o }))}
+          onChange={(v2) => onChange(v2)}
+          up
+        />
+      </div>
+    );
+  }
+  // 离线且疑似 combo：选项拉不到，给当前值 + 提示，不默默退成文本框（combo 的值必须命中选项表，手填文本没意义）
+  if (comboOffline && (p.kind === "text" || p.kind === "number") && COMBOISH_INPUT.test(p.input)) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {label}
+        <div className="gp-hint" style={{ lineHeight: 1.6 }}>
+          当前：{String(v ?? "（空）")} —— 疑似下拉参数，需 ComfyUI 在线才能拉取选项
+        </div>
+      </div>
+    );
+  }
   switch (p.kind) {
     case "text":
-      if (options?.length) {
-        const cur = String(v ?? p.options?.[0] ?? options[0]);
-        return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {label}
-            <select
-              className="input nodrag"
-              style={{ minHeight: 34 }}
-              title="下拉选项来自 ComfyUI 节点定义（object_info）"
-              value={options.includes(cur) ? cur : options[0]}
-              onChange={(e) => onChange(e.target.value)}
-            >
-              {options.map((o) => (
-                <option key={o} value={o}>
-                  {o}
-                </option>
-              ))}
-            </select>
-          </div>
-        );
-      }
       return (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           {label}

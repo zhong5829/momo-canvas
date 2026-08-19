@@ -10,7 +10,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { ComfyWfNode } from "../../core/types";
 import { pruneDisabled } from "../../core/services/comfy";
-import { layoutWorkflow } from "./wfGraph";
+import { layoutForComfy, layoutWorkflow } from "./wfGraph";
 
 /** 前端格式判定：nodes + links 数组（API 格式没有这两个顶层数组） */
 export function isFrontendWorkflow(json: unknown): boolean {
@@ -25,8 +25,18 @@ type FNode = {
   type: string;
   title?: string;
   mode?: number;
+  pos?: unknown;
+  size?: unknown;
   inputs?: Array<{ name: string; type?: string; link?: number | null; label?: string; widget?: { name: string } }>;
   widgets_values?: unknown[];
+};
+
+/** 前端节点的 pos/size 字段兼容数组与 {0:x,1:y} 对象两种形态（LiteGraph 序列化版本差异） */
+const num2 = (v: unknown): [number, number] | undefined => {
+  if (Array.isArray(v) && typeof v[0] === "number" && typeof v[1] === "number") return [v[0], v[1]];
+  if (v && typeof v === "object" && typeof (v as any)[0] === "number" && typeof (v as any)[1] === "number")
+    return [(v as any)[0], (v as any)[1]];
+  return undefined;
 };
 
 /** links 数组兼容两种形态：主图是数组元组 [id,src,srcSlot,dst,dstSlot,type]，子图里是对象 */
@@ -47,18 +57,36 @@ const isWidgetType = (t: unknown) => Array.isArray(t) || WIDGET_TYPES.has(t as s
 const isConnType = (t: unknown): boolean =>
   typeof t === "string" && /^[A-Z][A-Z0-9_]*$/.test(t) && !WIDGET_TYPES.has(t);
 
-/** 某节点类型的 widget 名序（object_info 定义序：required 键序 + optional 键序；combo/动态下拉也是 widget） */
-function widgetNamesOf(classType: string, objectInfo: Record<string, any>): string[] {
+export type WidgetSlot = { name: string; cag: boolean };
+
+/**
+ * 某节点类型的 widgets_values 布局（前端格式 ⇄ API 格式转换共用的唯一规则来源）：
+ *  - widget 名序 = object_info 定义序（required + optional，combo/动态下拉也是 widget）
+ *  - forceInput 的 widget 在 ComfyUI 序列化里**不占** widgets_values 位（跳过）
+ *  - 带 control_after_generate 标记的 widget（KSampler.seed 等）后面紧跟一个注入位（"fixed"/"increment"…），取值/回填都要 +1
+ * 返回：slots = 占位的 widget 序（cag = 后面有注入位）；index = widget 名 → 在 widgets_values 里的正确下标
+ */
+export function widgetLayoutOf(
+  classType: string,
+  objectInfo: Record<string, any>,
+): { slots: WidgetSlot[]; index: Map<string, number> } {
   const oi = objectInfo[classType];
-  if (!oi?.input) return [];
-  const names: string[] = [];
-  for (const group of [oi.input.required, oi.input.optional]) {
+  const slots: WidgetSlot[] = [];
+  const index = new Map<string, number>();
+  let wvIdx = 0;
+  for (const group of [oi?.input?.required, oi?.input?.optional]) {
     for (const [name, def] of Object.entries<any>(group ?? {})) {
       const t = Array.isArray(def) ? def[0] : def?.type;
-      if (isWidgetType(t)) names.push(name);
+      if (!isWidgetType(t)) continue;
+      const opts = Array.isArray(def) ? def[1] : def?.options;
+      if (opts?.forceInput) continue; // 强制连线：序列化里不占位
+      const cag = !!opts?.control_after_generate;
+      slots.push({ name, cag });
+      index.set(name, wvIdx);
+      wvIdx += cag ? 2 : 1;
     }
   }
-  return names;
+  return { slots, index };
 }
 
 /** 纯展示节点（无执行意义，剔除） */
@@ -88,6 +116,9 @@ export function convertFrontendWorkflow(
    * innerIds 是当前子图的内部节点 id 集（判定 link 源是否内部节点）；
    * sgInputValues 是子图接口槽的值表（origin_id === -10 时取值）。
    */
+  /** 连接槽但带了 widget（可切换输入/控件两用）：即使定义里 forceInput 也仍在序列化里占位，要补回来 */
+  const asWidget = (n: FNode, name: string) => (n.inputs ?? []).some((i) => i.widget?.name === name);
+
   const convertNode = (
     n: FNode,
     linksMap: Map<number, FLink>,
@@ -96,11 +127,20 @@ export function convertFrontendWorkflow(
     sgInputValues: Map<number, unknown> | null,
   ): ComfyWfNode => {
     const inputs: Record<string, unknown> = {};
-    const widgetNames = widgetNamesOf(n.type, objectInfo);
+    // widgets_values 取值规则与反向 convertApiToFrontend 一致（widgetLayoutOf 唯一来源）：
+    // forceInput 的 widget 不占位（除非 node.inputs[].widget 把它又摆回了控件）；seed 类后的注入位已计入下标
+    const layout = widgetLayoutOf(n.type, objectInfo);
+    const wvLen = layout.slots.reduce((s, x) => s + (x.cag ? 2 : 1), 0); // 布局占满后，asWidget 补偿位从这里往后顺延
+    const extraIdx = new Map<string, number>();
     const wv = n.widgets_values ?? [];
     const widgetValue = (name: string) => {
-      const idx = widgetNames.indexOf(name);
-      return idx >= 0 && idx < wv.length ? wv[idx] : undefined;
+      let idx = layout.index.get(name);
+      if (idx === undefined && asWidget(n, name)) {
+        idx = extraIdx.get(name) ?? wvLen + extraIdx.size;
+        extraIdx.set(name, idx);
+      }
+      if (idx === undefined) return undefined;
+      return idx < wv.length ? wv[idx] : undefined;
     };
     for (const inp of n.inputs ?? []) {
       if (inp.link != null) {
@@ -123,18 +163,24 @@ export function convertFrontendWorkflow(
         if (v !== undefined) inputs[inp.name] = v;
       }
     }
-    // 独立 widget（不在 inputs 数组里的 widget 型输入，按定义序从 widgets_values 取值）
-    for (const name of widgetNames) {
+    // 独立 widget（不在 inputs 数组里的 widget 型输入，按序列化位序从 widgets_values 取值）
+    for (const { name } of layout.slots) {
       if (inputs[name] !== undefined) continue;
-      if ((n.inputs ?? []).some((i) => i.widget?.name === name)) continue;
+      if (asWidget(n, name)) continue;
       const v = widgetValue(name);
       if (v !== undefined) inputs[name] = v;
     }
-    return {
+    const out: ComfyWfNode = {
       class_type: n.type,
       inputs,
       _meta: { title: n.title || n.type },
     };
+    // 画布坐标保留（双向位置跟随的存储位；子图内部节点带的是展开后的相对坐标，够用）
+    const fp = num2(n.pos);
+    const fs = num2(n.size);
+    if (fp) out.pos = fp;
+    if (fs) out.size = fs;
+    return out;
   };
 
   /** 子图实例展开：内部节点并入主图，接口槽映射为值或连线 */
@@ -215,10 +261,20 @@ export function convertFrontendWorkflow(
  * API 格式 → ComfyUI 前端格式（graph JSON）。送 ComfyUI 界面编辑用——工作流库只认 nodes/links
  * 结构，API 格式点开是空白画布。需要在线 /object_info 提供 widget 名序/类型与默认值。
  *  - 数字节点键保持原值（往返同步后模板参数的 nodeId 不变）；非数字键（子图展开产物 sg0_5）从最大数字之后编号
- *  - widget 值按定义序（required + optional）回填；被连线占用的 widget 槽留类型默认值占位（界面以连线为准）
+ *  - widget 值按 widgetLayoutOf 的序列化位序回填（forceInput 不占位）；被连线占用的 widget 槽留类型默认值占位（界面以连线为准）
  *  - 带 control_after_generate 标记的 widget（KSampler.seed 等）后一位补 "fixed"（前端序列化如此，缺了会错位）
+ *  - opts.spacing="comfy" 时用真实节点尺寸布局并补 size；opts.savedPos 时优先用 ComfyWfNode 里存的坐标/尺寸
  */
-export function convertApiToFrontend(api: Record<string, ComfyWfNode>, objectInfo: Record<string, any>): any {
+export function convertApiToFrontend(
+  api: Record<string, ComfyWfNode>,
+  objectInfo: Record<string, any>,
+  opts?: {
+    /** "comfy" = 用真实节点尺寸的布局 layoutForComfy（往返推送用）；默认沿用 MOMO 示意图布局 */
+    spacing?: "comfy";
+    /** true 且节点存了 pos/size（前端导入/上次合并保留的坐标）时优先用存储值，布局只兜底缺失节点 */
+    savedPos?: boolean;
+  },
+): any {
   const keys = Object.keys(api);
   // 节点 id：数字键原样（保参数引用），非数字键顺延
   const idOf = new Map<string, number>();
@@ -342,17 +398,20 @@ export function convertApiToFrontend(api: Record<string, ComfyWfNode>, objectInf
     }
   }
 
-  // 第三遍：节点体（widgets_values 按定义序回填 + control_after_generate 占位）+ outputs[]
-  const pos = layoutWorkflow(api).pos;
+  // 第三遍：节点体（widgets_values 按 widgetLayoutOf 的序列化位序回填，forceInput 不占位、
+  // control_after_generate 后补 "fixed"）+ outputs[] + pos/size
+  const comfySpacing = opts?.spacing === "comfy";
+  const cl = comfySpacing ? layoutForComfy(api, objectInfo) : null;
+  const pos = cl ? cl.pos : layoutWorkflow(api).pos;
   const nodes = skeleton.map((s, i) => {
     const wv: unknown[] = [];
-    for (const d of s.defs) {
-      if (!d.widget) continue;
-      const v = (s.node.inputs ?? {})[d.name];
+    const layout = widgetLayoutOf(s.node.class_type, objectInfo);
+    for (const slot of layout.slots) {
+      const d = s.defs.find((x) => x.name === slot.name);
+      const v = (s.node.inputs ?? {})[slot.name];
       const linked = isLink(v);
-      wv.push(!linked && v !== undefined ? v : defaultOf(d.def));
-      const opts = Array.isArray(d.def) ? d.def[1] : d.def?.options;
-      if (opts?.control_after_generate && !linked) wv.push("fixed");
+      wv.push(!linked && v !== undefined ? v : d ? defaultOf(d.def) : "");
+      if (slot.cag && !linked) wv.push("fixed");
     }
     const spec = objectInfo[s.node.class_type]?.output;
     const outputs = (Array.isArray(spec) ? spec : [["OUTPUT", "*"]] as Array<[string, string]>).map(
@@ -363,12 +422,16 @@ export function convertApiToFrontend(api: Record<string, ComfyWfNode>, objectInf
         slot_index: slot,
       }),
     );
-    const p = pos[s.key] ?? { x: 0, y: 0 };
+    // 位置：savedPos 且模板里存了坐标 → 用存储坐标（ComfyUI 里编辑过的位置原样保留）；否则布局兜底
+    const saved = opts?.savedPos ? s.node.pos : undefined;
+    const lp = pos[s.key];
+    const p: [number, number] = saved ?? [lp?.x ?? 0, lp?.y ?? 0];
+    const sz = opts?.savedPos && s.node.size ? s.node.size : cl?.size[s.key];
     const title = s.node._meta?.title;
     const out: Record<string, unknown> = {
       id: idOf.get(s.key)!,
       type: s.node.class_type,
-      pos: [p.x, p.y],
+      pos: [p[0], p[1]],
       flags: {},
       order: i,
       mode: 0,
@@ -377,6 +440,7 @@ export function convertApiToFrontend(api: Record<string, ComfyWfNode>, objectInf
       properties: { "Node name for S&R": s.node.class_type },
       widgets_values: wv,
     };
+    if (sz) out.size = [sz[0], sz[1]];
     if (title && title !== s.node.class_type) out.title = title;
     return out;
   });
