@@ -54,7 +54,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUzMjRFNzg4MzAxQzVBNQpSV1NseFFHRGVFNHlCV20xV2Ntby82ZTlZdmV1QXdBTW45U3JSS1licXJXVzMvMTRLRWFtZDEwcgo=",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEExRUM3N0Y4ODM5QkMzOTEKUldTUnc1dUQrSGZzb1o5aFdna2o3Mndsb1NaTlNldHdiZVF1WVpMNzdXQjhzSlQ4ZUVIZ1RxcVEK",
       "endpoints": [
         "https://github.com/zhong5829/momo-canvas/releases/latest/download/latest.json"
       ]
