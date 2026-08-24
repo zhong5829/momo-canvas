@@ -1,6 +1,6 @@
 import { memo, useMemo, useRef } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { NodeShell, PortOut } from "../NodeShell";
+import { NodeShell, PortIn, PortOut } from "../NodeShell";
 import { IcLoading, IcSparkles, IcText } from "../../../ui/icons";
 import { useBoard } from "../../../core/stores/boardStore";
 import { collectImageRefsFor, runFlow } from "../../../core/runner";
@@ -178,6 +178,7 @@ export const PromptNode = memo(function PromptNode({ id, data, selected }: NodeP
           </>
         )}
       </div>
+      <PortIn />
       <PortOut kind="text" />
     </NodeShell>
   );

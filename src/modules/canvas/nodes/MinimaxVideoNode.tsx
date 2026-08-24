@@ -5,7 +5,7 @@
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { NodeShell, PortIn, PortOut } from "../NodeShell";
-import { IcDownload, IcLoading, IcVideo } from "../../../ui/icons";
+import { IcDownload, IcLoading, IcText, IcVideo } from "../../../ui/icons";
 import { useBoard } from "../../../core/stores/boardStore";
 import { resolveModelCard, useSettings } from "../../../core/stores/settingsStore";
 import { toast } from "../../../core/stores/uiStore";
@@ -14,6 +14,7 @@ import { saveVideoAs } from "../../../core/services/imageSaver";
 import { errMsg } from "../../../core/utils";
 import { ModelPicker } from "../../../ui/ModelPicker";
 import { OptGrid, Switch } from "../../../ui/kit";
+import { PopSelect, type PopOption } from "../../../ui/PopSelect";
 import type { MinimaxVideoData } from "../../../core/types";
 
 const MODES: { value: MinimaxVideoData["mode"]; label: string }[] = [
@@ -25,8 +26,9 @@ const MODES: { value: MinimaxVideoData["mode"]; label: string }[] = [
 ];
 
 const RESOLUTIONS = ["480p", "720p"];
-const SECONDS = ["5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"];
 const ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21", "4:5", "5:4"];
+const RESOLUTION_OPTS: PopOption[] = RESOLUTIONS.map((r) => ({ value: r, label: r, icon: <IcVideo size={14} /> }));
+const ASPECT_OPTS: PopOption[] = ASPECTS.map((a) => ({ value: a, label: a, icon: <IcText size={14} /> }));
 
 const MODE_TIP: Record<string, string> = {
   t2va: "文生视频：只接文本提示词",
@@ -91,35 +93,26 @@ export const MinimaxVideoNode = memo(function MinimaxVideoNode({ id, data, selec
 
         <div className="llm-row">
           <span className="llm-lab">分辨率</span>
-          <div className="chips nodrag">
-            {RESOLUTIONS.map((r) => (
-              <button key={r} className={`chip ${d.resolution === r ? "on" : ""}`} onClick={() => upd(id, { resolution: r })}>
-                {r}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="llm-row">
-          <span className="llm-lab">秒数</span>
-          <div className="chips nodrag">
-            {SECONDS.map((s) => (
-              <button key={s} className={`chip ${d.seconds === s ? "on" : ""}`} onClick={() => upd(id, { seconds: s })}>
-                {s}
-              </button>
-            ))}
-          </div>
+          <PopSelect value={d.resolution} options={RESOLUTION_OPTS} onChange={(v) => upd(id, { resolution: v })} triggerIcon />
         </div>
 
         <div className="llm-row">
           <span className="llm-lab">比例</span>
-          <div className="chips nodrag">
-            {ASPECTS.map((a) => (
-              <button key={a} className={`chip ${d.aspect === a ? "on" : ""}`} onClick={() => upd(id, { aspect: a })}>
-                {a}
-              </button>
-            ))}
-          </div>
+          <PopSelect value={d.aspect} options={ASPECT_OPTS} onChange={(v) => upd(id, { aspect: v })} triggerIcon />
+        </div>
+
+        <div className="llm-row">
+          <span className="llm-lab">秒数</span>
+          <input
+            type="range"
+            className="range nodrag"
+            min={5}
+            max={15}
+            step={1}
+            value={Number(d.seconds)}
+            onChange={(e) => upd(id, { seconds: String(e.target.value) })}
+          />
+          <b className="llm-val">{d.seconds}s</b>
         </div>
 
         <div className="llm-row">

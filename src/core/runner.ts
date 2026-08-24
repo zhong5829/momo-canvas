@@ -1494,6 +1494,7 @@ export async function runMinimaxVideo(id: string) {
       gen: { nodeKind: "minimaxVideo", prompt, modelId: modelKey(card.id, card.model) },
     });
     const local = saved && isTauri ? assetUrl(saved.path) : url;
+    usePromptHist.getState().record(prompt);
     upd(id, { status: "done", resultUrl: local, resultUrls: [local], picked: 0, progress: undefined });
     useUsage.getState().record(card, { ok: true, videoSec: Number(data.seconds ?? "5"), durMs: Date.now() - t0 });
   } catch (e) {

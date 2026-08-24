@@ -20,7 +20,7 @@ export function GenPromptBar({
   trailing,
 }: {
   nodeId: string;
-  kind: "imageGen" | "videoGen" | "audioGen";
+  kind: "imageGen" | "videoGen" | "minimaxVideo" | "audioGen";
   /** 底部工具栏左侧 chips（模型选择 / 参数 / 语言 / 更多…） */
   toolbar?: ReactNode;
   /** 底部工具栏右侧、发送按钮之前的 chips（如数量） */
@@ -45,13 +45,17 @@ export function GenPromptBar({
       ? upTextN > 0
         ? "已接上游文本，留空自动使用；在此输入则优先生效…"
         : "描述你想生成的画面…"
-      : kind === "videoGen"
+      : kind === "minimaxVideo"
         ? upTextN > 0
           ? "已接上游文本，留空自动使用；在此输入则优先生效…"
-          : "描述你想生成的视频画面与运动…"
-        : upTextN > 0
-          ? "已接上游文本（分镜台词可直通），留空自动朗读…"
-          : "输入要朗读的文本 / 音乐描述…";
+          : "MiniMax H3 视频描述（可直贴官方 H3 三段/六段式）…"
+        : kind === "videoGen"
+          ? upTextN > 0
+            ? "已接上游文本，留空自动使用；在此输入则优先生效…"
+            : "描述你想生成的视频画面与运动…"
+          : upTextN > 0
+            ? "已接上游文本（分镜台词可直通），留空自动朗读…"
+            : "输入要朗读的文本 / 音乐描述…";
   return (
     <>
       <div className="gd-main glass">

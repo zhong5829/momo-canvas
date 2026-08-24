@@ -55,6 +55,7 @@ import { ChatNode } from "./nodes/ChatNode";
 import { ImageGenNode } from "./nodes/ImageGenNode";
 import { VideoGenNode } from "./nodes/VideoGenNode";
 import { MinimaxVideoNode } from "./nodes/MinimaxVideoNode";
+import { MinimaxVideoConfigPanel } from "./MinimaxConfigPanel";
 import { ComfyNode } from "./nodes/ComfyNode";
 import { LlmTextNode } from "./nodes/LlmTextNode";
 import { CombineNode } from "./nodes/CombineNode";
@@ -1302,18 +1303,19 @@ export function SmartCanvas() {
         </div>
       ) : null}
 
-      {/* 底部参数栏整体兜在 ErrorBoundary 里：任何面板渲染异常只坏面板本身，不整窗白屏 */}
+      {/* 底部各参数面板独立兜 ErrorBoundary：任一面板渲染异常只坏它自己，不连带其它节点面板 */}
       {!zen ? (
-        <ErrorBoundary name="底部参数栏">
-          <GenConfigPanel />
-          <VideoConfigPanel />
-          <AudioConfigPanel />
-          <CharConfigPanel />
-          <EcomConfigPanel />
-          <ComfyConfigPanel />
-          <EnhanceConfigPanel />
-          <VectorizeConfigPanel />
-        </ErrorBoundary>
+        <>
+          <ErrorBoundary name="生成图像面板"><GenConfigPanel /></ErrorBoundary>
+          <ErrorBoundary name="生成视频面板"><VideoConfigPanel /></ErrorBoundary>
+          <ErrorBoundary name="生成音频面板"><AudioConfigPanel /></ErrorBoundary>
+          <ErrorBoundary name="角色卡面板"><CharConfigPanel /></ErrorBoundary>
+          <ErrorBoundary name="电商长图面板"><EcomConfigPanel /></ErrorBoundary>
+          <ErrorBoundary name="ComfyUI面板"><ComfyConfigPanel /></ErrorBoundary>
+          <ErrorBoundary name="超清放大面板"><EnhanceConfigPanel /></ErrorBoundary>
+          <ErrorBoundary name="智能矢量面板"><VectorizeConfigPanel /></ErrorBoundary>
+          <ErrorBoundary name="MiniMax H3面板"><MinimaxVideoConfigPanel /></ErrorBoundary>
+        </>
       ) : null}
 
       <AddNodeMenu />
