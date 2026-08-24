@@ -22,6 +22,7 @@ import { useComfy } from "./stores/comfyStore";
 import { resolveModelCard } from "./stores/settingsStore";
 import { generateImage } from "./services/imageGen";
 import { generateVideo } from "./services/videoGen";
+import { generateMinimaxVideo } from "./services/minimaxVideo";
 import { runComfyTemplate, analyzeCapsV3, isImageLoaderClass, isVideoLoaderClass, isAudioLoaderClass, freeComfyMemory, pruneNodesWithServants, defaultParamValues } from "./services/comfy";
 import { compilePrompt, compileNegative, segmentShotContexts } from "./directorPrompt";
 import { buildSkillSystem } from "./skillEngine";
@@ -330,6 +331,54 @@ export async function executeImageTake(
 /**
  * 执行单个 Take 的视频生成。
  */
+type H3Mode = "auto" | "t2va" | "i2va" | "fl2va" | "l2va" | "ref2va";
+/** MiniMax H3 支持的画幅（9 种），越界回落 16:9 */
+const H3_ASPECTS = new Set(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21", "4:5", "5:4"]);
+
+/** 按素材自动推断 H3 生模式：首尾帧→fl2va / 仅首帧→i2va / 仅尾帧→l2va / 参考图或音频→ref2va / 无→t2va */
+function inferH3Mode(media: ResolvedMedia | null | undefined): Exclude<H3Mode, "auto"> {
+  const first = media?.images.firstFrame;
+  const last = media?.images.lastFrame;
+  const refs = media?.images.refs?.length ?? 0;
+  const auds = media?.audios?.length ?? 0;
+  if (last && !first) return "l2va";
+  if (first && last) return "fl2va";
+  if (first) return "i2va";
+  if (refs > 0 || auds > 0) return "ref2va";
+  return "t2va";
+}
+
+/** 显式选中的 H3 模式缺对应素材时报错（用户已显式选择，不静默回退） */
+function ensureH3Media(mode: Exclude<H3Mode, "auto">, media: ResolvedMedia | null | undefined): void {
+  if (mode === "t2va") return;
+  if (mode === "i2va" && !media?.images.firstFrame)
+    throw new Error("MiniMax H3「首帧」模式需要本段有首帧素材（上游图 或 上一段尾帧接力）");
+  if (mode === "l2va" && !media?.images.lastFrame)
+    throw new Error("MiniMax H3「尾帧」模式需要本段有尾帧素材");
+  if (mode === "fl2va") {
+    if (!media?.images.firstFrame) throw new Error("MiniMax H3「首尾帧」模式需要本段有首帧素材");
+    if (!media?.images.lastFrame) throw new Error("MiniMax H3「首尾帧」模式需要本段有尾帧素材");
+  }
+  if (mode === "ref2va" && !((media?.images.refs?.length ?? 0) > 0 || (media?.audios?.length ?? 0) > 0))
+    throw new Error("MiniMax H3「多参考」模式至少需要一张参考图或一个音频");
+}
+
+/** 按 mode 从槽位素材打包 images（fl2va=首帧+尾帧 / i2va=首帧 / l2va=尾帧 / ref2va=参考图≤9） */
+function packH3Images(media: ResolvedMedia | null | undefined, mode: Exclude<H3Mode, "auto">): string[] {
+  switch (mode) {
+    case "fl2va":
+      return [media?.images.firstFrame, media?.images.lastFrame].filter(Boolean) as string[];
+    case "i2va":
+      return media?.images.firstFrame ? [media.images.firstFrame] : [];
+    case "l2va":
+      return media?.images.lastFrame ? [media.images.lastFrame] : [];
+    case "ref2va":
+      return media?.images.refs?.slice(0, 9) ?? [];
+    default:
+      return [];
+  }
+}
+
 export async function executeVideoTake(
   projectId: string,
   segment: DirectorSegment,
@@ -361,6 +410,7 @@ export async function executeVideoTake(
     const finalPrompt = refNote ? `${refNote}\n\n${prompt}` : prompt;
     let videoUrl: string;
     let modelLabel: string;
+    let h3Info: Record<string, unknown> | undefined;
     if (comfyTpl) {
       // ComfyUI 配方：走 runComfyTemplate（视频分支；提示词 + 图/视/音参考全部透传模板）
       // 首尾帧模板按需降级：缺首帧/尾帧素材时忽略对应 LoadImage，退化为 T2V/I2V（接力帧顶上的 firstFrame 不算缺）
@@ -388,23 +438,46 @@ export async function executeVideoTake(
       videoUrl = r.videos[0] ?? "";
       modelLabel = `ComfyUI · ${tpl.name}`;
     } else {
-      // 远程配方或无配方：走 generateVideo；时长按配方能力 clamp，不能超上限（方案 §7.6）
+      // 远程配方或无配方：走 generateVideo / MiniMax H3 API；时长按配方能力 clamp，不能超上限（方案 §7.6）
       onSub?.("已提交远程生成任务…");
       const card = recipe?.providerModelKey
         ? resolveModelCard("video", recipe.providerModelKey)
         : resolveModelCard("video");
       const maxDur = recipe?.capabilitySnapshot?.maxDurationSec;
       const duration = maxDur ? String(Math.min(segment.durationSec, maxDur)) : String(segment.durationSec);
-      // 首帧 = 本段显式首帧 ?? 上一段尾帧（显式优先已在接力注入时处理）
-      videoUrl = await generateVideo(card, {
-        prompt: finalPrompt,
-        aspect: project.aspect,
-        duration,
-        image: media?.images.firstFrame,
-        lastFrame: media?.images.lastFrame,
-        refImages: media?.images.refs.length ? media.images.refs : undefined,
-      });
-      modelLabel = card.model;
+      if (/minimax[-_]?h3/i.test(card.model)) {
+        // MiniMax H3 API：模式按 project.h3Mode（显式）或素材自动推断；缺素材/超时长直接报错
+        const dur = segment.durationSec;
+        if (dur < 5 || dur > 15 || !Number.isInteger(dur))
+          throw new Error(`片段时长 ${dur}s 超出 MiniMax H3 支持的 5–15 秒（整数），请先调整片段时长`);
+        const mode =
+          (project.h3Mode ?? "auto") === "auto" ? inferH3Mode(media) : (project.h3Mode as Exclude<H3Mode, "auto">);
+        ensureH3Media(mode, media);
+        videoUrl = await generateMinimaxVideo(card, {
+          prompt: finalPrompt,
+          mode,
+          resolution: (project.resolutionMP ?? 1) <= 0.5 ? "480p" : "720p",
+          seconds: String(dur),
+          aspect: H3_ASPECTS.has(project.aspect) ? project.aspect : "16:9",
+          promptOptimization: false,
+          images: packH3Images(media, mode),
+          audios: mode === "ref2va" ? media?.audios?.slice(0, 3) ?? [] : [],
+          onProgress: onSub,
+        });
+        modelLabel = card.model;
+        h3Info = { h3Mode: mode, h3Seconds: String(dur) };
+      } else {
+        // 首帧 = 本段显式首帧 ?? 上一段尾帧（显式优先已在接力注入时处理）
+        videoUrl = await generateVideo(card, {
+          prompt: finalPrompt,
+          aspect: project.aspect,
+          duration,
+          image: media?.images.firstFrame,
+          lastFrame: media?.images.lastFrame,
+          refImages: media?.images.refs.length ? media.images.refs : undefined,
+        });
+        modelLabel = card.model;
+      }
     }
     if (!videoUrl) throw new Error("视频生成未返回结果");
     // 落资产库
@@ -422,7 +495,7 @@ export async function executeVideoTake(
       assetId: asset.id,
       promptSnapshot: finalPrompt,
       recipeSnapshot: recipe,
-      paramSnapshot: recipe?.defaultParams,
+      paramSnapshot: h3Info ? { ...(recipe?.defaultParams ?? {}), ...h3Info } : recipe?.defaultParams,
       skillSnapshots: snapshots.length ? snapshots : undefined,
       slotSnapshot: media?.snapshot,
     });

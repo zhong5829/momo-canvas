@@ -64,6 +64,13 @@ export function RecipeManagerDialog({ projectId, onClose }: { projectId: string;
       ),
     [providers],
   );
+  const imageModels = useMemo(
+    () =>
+      providers.flatMap((p) =>
+        (p.models.image?.models ?? []).map((m) => ({ key: `${p.id}::${m}`, label: `${p.name} · ${m}` })),
+      ),
+    [providers],
+  );
   // Esc 关闭；打开即清理模板已删除的死配方
   useEffect(() => {
     pruneDeadRecipes(projectId);
@@ -236,12 +243,16 @@ export function RecipeManagerDialog({ projectId, onClose }: { projectId: string;
                       </label>
                     ) : (
                       <label className="ds-threed-field">
-                        远程视频模型
+                        远程{r.output === "image" ? "图片" : "视频"}模型
                         <PopSelect
                           value={r.providerModelKey ?? ""}
                           placeholder="（选择模型）"
                           triggerIcon
-                          options={videoModels.map((m) => ({ value: m.key, label: m.label, icon: <IcGlobe size={14} /> }))}
+                          options={(r.output === "image" ? imageModels : videoModels).map((m) => ({
+                            value: m.key,
+                            label: m.label,
+                            icon: r.output === "image" ? <IcImage size={14} /> : <IcGlobe size={14} />,
+                          }))}
                           onChange={(v) => updateRecipe(r.id, { providerModelKey: v || undefined })}
                         />
                       </label>

@@ -188,6 +188,23 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
               <button className="btn sm primary" onClick={() => doBatch(batchOp)}>
                 <IcZap size={14} /> 开始批量生成
               </button>
+              <PopSelect
+                className="dsg-batch-scope"
+                title="MiniMax H3 生成模式（仅所选视频模型为 minimax-h3 时生效）"
+                value={project.h3Mode ?? "auto"}
+                triggerIcon
+                options={[
+                  { value: "auto", label: "H3 自动", desc: "按素材推断", icon: <IcRefresh size={14} /> },
+                  { value: "t2va", label: "文生", icon: <IcClapper size={14} /> },
+                  { value: "i2va", label: "首帧", icon: <IcFilmFrame size={14} /> },
+                  { value: "fl2va", label: "首尾帧", icon: <IcFilmFrame size={14} /> },
+                  { value: "l2va", label: "尾帧", icon: <IcFilmFrame size={14} /> },
+                  { value: "ref2va", label: "多参考", icon: <IcMic size={14} /> },
+                ]}
+                onChange={(v) =>
+                  useDirector.getState().updateProject(project.id, { h3Mode: v as NonNullable<DirectorProject["h3Mode"]> })
+                }
+              />
               <BatchSwitches project={project} />
             </>
           )}

@@ -1741,6 +1741,8 @@ export type DirectorProject = {
   freeMemBetween?: boolean;
   /** 尾帧接力（批量生成连贯性开关）：上一段生成完成后自动抽尾帧，作为下一段的首帧/首张参考图（本段显式首帧优先），保证跨段画面衔接；关闭则各段独立生成 */
   tailFrameRelay?: boolean;
+  /** 导演台 MiniMax H3 生成：片段生成模式（auto=按素材自动推断；显式=手动选择，缺所需素材会报错） */
+  h3Mode?: "auto" | "t2va" | "i2va" | "fl2va" | "l2va" | "ref2va";
   /** 项目默认生成配方 id（分镜页批量工具条选定；片段 recipeId > 项目默认 > 远程默认模型） */
   defaultRecipeId?: string;
   /** 时间线（采用版本顺序） */
