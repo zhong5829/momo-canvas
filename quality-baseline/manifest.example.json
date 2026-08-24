@@ -1,0 +1,19 @@
+{
+  "说明": "复制为 manifest.json，把 reference/candidate 指向固定黄金图和本次构建结果；门禁失败会返回非零退出码。",
+  "samples": [
+    {
+      "name": "海报文字边缘",
+      "reference": "reference/poster.png",
+      "candidate": "candidate/poster.png",
+      "elapsedMs": 4000,
+      "thresholds": {
+        "psnr": 30.0,
+        "ssim": 0.94,
+        "edgeIoU": 0.82,
+        "maxMeanDeltaE": 4.0,
+        "maxBytesRatio": 5.0,
+        "maxTimeMs": 8000
+      }
+    }
+  ]
+}

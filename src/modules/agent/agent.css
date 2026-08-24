@@ -1,0 +1,542 @@
+/* 创作助手面板 —— 停靠画布右侧的聊天/Agent 栏 */
+.agent-panel {
+  position: absolute;
+  top: var(--tb-h);
+  right: 0;
+  bottom: 0;
+  width: 400px;
+  max-width: 92vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-canvas);
+  border-left: 1px solid var(--panel-border);
+  box-shadow: -16px 0 40px rgba(8, 12, 24, 0.22);
+  /* 压过画布工具条/生成记录（60-80），低于标题栏（100）与灯箱（620） */
+  z-index: 95;
+}
+/* 拖文件悬在面板上：整栏高亮提示可松手 */
+.agent-panel.ag-drag {
+  box-shadow: inset 0 0 0 2px var(--accent), -16px 0 40px rgba(8, 12, 24, 0.22);
+}
+.agent-panel.ag-drag::after {
+  content: "松手放入：图片作参考图 · 视频落到画布 · 文字填入输入框";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 40px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--bg-canvas) 78%, transparent);
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* 模式切换：聊天 / Agent */
+.ag-seg {
+  display: inline-flex;
+  flex: none;
+  gap: 1px;
+  padding: 2px;
+  border-radius: var(--r-full);
+  background: var(--input-bg);
+}
+.ag-seg button {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--r-full);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--text-3);
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.ag-seg button:hover {
+  color: var(--text-1);
+}
+.ag-seg button.on {
+  background: var(--panel);
+  color: var(--text-1);
+  box-shadow: 0 1px 4px rgba(10, 16, 32, 0.18);
+}
+.ag-head .icon-btn.on {
+  color: var(--accent);
+  background: var(--grad-brand-soft);
+}
+
+/* 聊天模式：消息操作行（在画布生图 / 复制） */
+.ag-msg-acts {
+  display: flex;
+  gap: 6px;
+}
+/* 聊天模式：思考过程折叠块 */
+.ag-think {
+  font-size: var(--fs-sm);
+}
+.ag-think-toggle {
+  color: var(--text-3);
+  font-size: 12px;
+  padding: 2px 0;
+}
+.ag-think-toggle:hover {
+  color: var(--text-1);
+}
+.ag-think-body {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--panel-border);
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.ag-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--panel-border);
+  color: var(--text-1);
+}
+.ag-head > svg {
+  color: var(--accent-2);
+  flex: none;
+}
+.ag-head > b {
+  white-space: nowrap;
+  flex: none;
+  font-size: 14px;
+}
+.ag-head .icon-btn {
+  flex: none;
+}
+.ag-sub {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+/* 模型直选行：对话 / 绘画 / 视频 并排一行（图标 + 模型名胶囊，窄面板下等分收缩） */
+.ag-models {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.ag-mslot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.ag-mslot > svg {
+  flex: none;
+  color: var(--text-3);
+}
+.ag-models .model-picker {
+  flex: 1;
+  min-width: 0;
+}
+.ag-models .model-picker .pop-trigger {
+  min-height: 28px;
+  padding: 3px 8px;
+  gap: 3px;
+  font-size: 11.5px;
+  border-radius: var(--r-full);
+}
+/* 弹层不跟着触发器变窄 */
+.ag-models .pop-layer {
+  min-width: 240px;
+}
+
+.ag-msgs {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 0;
+}
+
+/* 消息列：侧栏全宽 */
+.ag-msg {
+  margin: 0 0 14px;
+  padding: 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ag-msg.user {
+  align-items: flex-end;
+}
+.ag-msg.assistant {
+  align-items: flex-start;
+}
+
+.ag-bubble {
+  max-width: 100%;
+  padding: 10px 14px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-base);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* 全局 base.css 禁用了文字选择，消息气泡单独放开：框选后右键可建节点 */
+  user-select: text;
+  cursor: text;
+}
+.ag-msg.user .ag-bubble {
+  background: var(--grad-brand);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.ag-msg.assistant .ag-bubble {
+  background: var(--panel-solid);
+  border: 1px solid var(--panel-border);
+  color: var(--text-1);
+  border-bottom-left-radius: 4px;
+}
+.ag-bubble.dim {
+  color: var(--text-3);
+}
+
+.ag-uimgs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.ag-uimgs img,
+.ag-uimgs canvas,
+.ag-uimgs > * {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+}
+
+/* 过程轨迹 */
+.ag-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-sm);
+}
+.ag-step {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-3);
+}
+.ag-step.running {
+  color: var(--accent);
+}
+.ag-step.error {
+  color: var(--danger);
+}
+.ag-step.running svg {
+  animation: ag-spin 0.9s linear infinite;
+}
+@keyframes ag-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 抉择卡片 */
+.ag-question {
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: var(--r-md);
+  background: var(--grad-brand-soft);
+  border: 1px solid var(--panel-border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ag-question.answered {
+  opacity: 0.75;
+}
+.ag-q-text {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--text-1);
+  line-height: 1.6;
+}
+.ag-q-text svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--accent-2);
+}
+.ag-q-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ag-q-opt {
+  padding: 7px 14px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--panel-border);
+  background: var(--panel-solid);
+  color: var(--text-1);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: all var(--t-fast);
+}
+.ag-q-opt:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+.ag-q-custom {
+  display: flex;
+  gap: 8px;
+}
+.ag-q-custom .input {
+  flex: 1;
+}
+.ag-q-answer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ok);
+  font-size: var(--fs-sm);
+}
+
+/* 生成结果 */
+.ag-results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.ag-result {
+  width: 300px;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--panel-solid);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--node-shadow);
+}
+.ag-result img,
+.ag-result video,
+.ag-result canvas {
+  width: 100%;
+  display: block;
+  cursor: zoom-in;
+}
+.ag-result video {
+  cursor: default;
+  max-height: 260px;
+  background: #000;
+}
+.ag-res-prompt {
+  padding: 8px 10px 0;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.ag-res-acts {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px 10px;
+}
+
+/* 欢迎页 */
+.ag-welcome {
+  max-width: 640px;
+  margin: 8vh auto 0;
+  text-align: center;
+  color: var(--text-2);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 0 24px;
+}
+.ag-welcome > svg {
+  color: var(--accent-2);
+}
+.ag-welcome h2 {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 24px;
+}
+.ag-welcome p {
+  margin: 0;
+  line-height: 1.8;
+}
+.ag-sugg {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ag-sugg-chip {
+  padding: 8px 14px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--panel-border);
+  background: var(--panel-solid);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: all var(--t-fast);
+}
+.ag-sugg-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ============ 语音通话浮层 ============ */
+.ag-call {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 16px 14px;
+  border-top: 1px solid var(--panel-border);
+  background: var(--grad-brand-soft);
+}
+.ag-call-orb {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: var(--grad-brand);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 16%, transparent);
+  /* 音量驱动的缩放：跟手更真实，别用过渡把节奏拖慢 */
+  transition: transform 80ms linear, box-shadow var(--t-fast);
+}
+.ag-call-orb.recognizing,
+.ag-call-orb.thinking {
+  background: var(--panel-solid);
+  color: var(--accent);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 10%, transparent);
+  animation: ag-pulse 1.4s ease-in-out infinite;
+}
+.ag-call-orb.speaking {
+  box-shadow: 0 0 0 10px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+@keyframes ag-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+.ag-call-phase {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-1);
+}
+.ag-call-heard {
+  max-width: 100%;
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.6;
+  text-align: center;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.ag-call-hangup {
+  min-height: 30px;
+  padding: 0 14px;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+
+/* 输入区 */
+.ag-input-wrap {
+  max-width: 828px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 10px 24px 16px;
+}
+.ag-attach {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ag-att-item {
+  position: relative;
+  width: 56px;
+  height: 56px;
+}
+.ag-att-item img,
+.ag-att-item canvas,
+.ag-att-item > * {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--panel-border);
+}
+.ag-att-del {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: var(--danger);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.ag-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--r-lg);
+  background: var(--panel-solid);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--panel-shadow);
+}
+/* 附件/语音两个图标竖排一列，给输入框让出横向空间 */
+.ag-in-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: none;
+}
+.ag-in-tools .icon-btn {
+  width: 30px;
+  height: 30px;
+}
+.ag-input-row .textarea {
+  flex: 1;
+  min-width: 0;
+  /* 输入框加高：默认约 4 行，内容多时自己长到 200px 再滚 */
+  min-height: 92px;
+  max-height: 200px;
+  border: none;
+  background: transparent;
+  resize: none;
+  padding: 6px 4px;
+  line-height: 1.6;
+}
+.ag-input-row .textarea:focus {
+  outline: none;
+}
+.ag-input-row .send-btn {
+  flex: none;
+}

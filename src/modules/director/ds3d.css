@@ -1,0 +1,809 @@
+/* ============ 3D 导演台（ThreeDPage） ============
+ * 3D 视口是内容区（同视频预览器），无论全局主题始终深色；
+ * 面板/控件色映射全局主题令牌（--d3-* 仅作局部别名），直悬画布上的覆盖层（名牌/取景框/轴向球）保持深色玻璃。 */
+.ds-content.flush {
+  padding: 0;
+  overflow: hidden;
+}
+
+.ds3d {
+  --d3-panel: var(--panel);
+  --d3-border: var(--panel-border);
+  --d3-text-1: var(--text-1);
+  --d3-text-2: var(--text-2);
+  --d3-text-3: var(--text-3);
+  --d3-input: var(--input-bg);
+  --d3-hover: var(--hover);
+  --d3-accent: var(--accent);
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #04060a;
+  color: var(--d3-text-1);
+}
+.ds3d-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  outline: none;
+}
+
+/* 名牌层（位置由引擎每帧直改 style） */
+.ds3d-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 3;
+}
+.ds3d-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: auto;
+  cursor: pointer;
+  background: rgba(8, 10, 14, 0.85);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 9px;
+  border-radius: 7px;
+  white-space: nowrap;
+  user-select: none;
+  transition: background 0.15s;
+}
+.ds3d-label.on {
+  background: var(--d3-accent);
+}
+
+/* 左侧图标栏 */
+.ds3d-rail {
+  position: absolute;
+  left: 12px;
+  top: 14px;
+  bottom: 92px;
+  width: 48px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 0;
+  background: var(--d3-panel);
+  border: 1px solid var(--d3-border);
+  border-radius: 13px;
+  backdrop-filter: blur(14px);
+  box-shadow: var(--panel-shadow);
+  overflow-y: auto;
+}
+.ds3d-railbtn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 42px;
+  padding: 7px 0 6px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--d3-text-2);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.ds3d-railbtn:hover {
+  background: var(--d3-hover);
+  color: var(--d3-text-1);
+}
+.ds3d-railbtn.on {
+  background: color-mix(in srgb, var(--d3-accent) 24%, transparent);
+  color: var(--d3-accent);
+}
+
+/* 浮动面板通用 */
+.ds3d-panel {
+  position: absolute;
+  z-index: 5;
+  background: var(--d3-panel);
+  border: 1px solid var(--d3-border);
+  border-radius: 14px;
+  backdrop-filter: blur(14px);
+  box-shadow: var(--panel-shadow);
+}
+.ds3d-panel.left {
+  left: 68px;
+  top: 14px;
+  width: 212px;
+  max-height: calc(100% - 110px);
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.18s ease, opacity 0.18s ease;
+}
+.ds3d-panel.left.hide {
+  transform: translateX(-10px);
+  opacity: 0;
+  pointer-events: none;
+}
+.ds3d-panel-title {
+  padding: 12px 14px 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: none;
+}
+.ds3d-panel-sub {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--d3-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds3d-list {
+  overflow-y: auto;
+  padding: 2px 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ds3d-list-empty {
+  padding: 18px 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--d3-text-3);
+}
+
+/* 添加角色行 */
+.ds3d-addrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--d3-text-1);
+  font-size: 12.8px;
+  cursor: pointer;
+  text-align: left;
+}
+.ds3d-addrow:hover {
+  background: var(--d3-hover);
+}
+.ds3d-addrow-hint {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--d3-text-3);
+}
+.ds3d-subchev {
+  margin-left: auto;
+  color: var(--d3-text-3);
+  transition: transform 0.15s;
+}
+.ds3d-addrow.sub.open .ds3d-subchev {
+  transform: rotate(180deg);
+}
+.ds3d-sublist {
+  margin: 1px 0 2px 16px;
+  padding-left: 10px;
+  border-left: 1px solid var(--d3-border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ds3d-addrow.subitem {
+  font-size: 12.3px;
+  color: var(--d3-text-2);
+  padding: 6px 10px;
+}
+.ds3d-addrow.subitem:hover {
+  color: var(--d3-text-1);
+}
+
+/* 实体列表 */
+.ds3d-entity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 12.8px;
+}
+.ds3d-entity:hover {
+  background: var(--d3-hover);
+}
+.ds3d-entity.on {
+  background: color-mix(in srgb, var(--d3-accent) 24%, transparent);
+}
+.ds3d-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.ds3d-ename {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds3d-ebadge {
+  font-size: 11px;
+  color: var(--d3-text-3);
+  background: var(--d3-input);
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  flex: none;
+}
+.ds3d-edel {
+  opacity: 0;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--d3-text-3);
+  cursor: pointer;
+  flex: none;
+}
+.ds3d-entity:hover .ds3d-edel {
+  opacity: 1;
+}
+.ds3d-edel:hover {
+  background: color-mix(in srgb, var(--danger) 20%, transparent);
+  color: var(--danger);
+}
+
+/* 顶部中央视角切换 */
+.ds3d-viewseg {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--d3-panel);
+  border: 1px solid var(--d3-border);
+  border-radius: 11px;
+  backdrop-filter: blur(14px);
+  z-index: 5;
+}
+.ds3d-viewseg button {
+  padding: 6px 18px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--d3-text-2);
+  font-size: 12.8px;
+  cursor: pointer;
+}
+.ds3d-viewseg button:hover {
+  color: var(--d3-text-1);
+}
+.ds3d-viewseg button.on {
+  background: var(--d3-hover);
+  color: var(--d3-text-1);
+  font-weight: 600;
+}
+
+/* 右上轴向指示 */
+.ds3d-axisbox {
+  position: absolute;
+  top: 12px;
+  right: 290px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.ds3d-axis {
+  display: block;
+}
+.ds3d-axis-bg {
+  fill: rgba(10, 13, 18, 0.72);
+  stroke: rgba(255, 255, 255, 0.1);
+}
+.ds3d-axis text {
+  font-size: 9px;
+  font-weight: 700;
+  text-anchor: middle;
+}
+.ds3d-reset {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: var(--d3-text-2);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+.ds3d-reset:hover {
+  background: var(--d3-hover);
+  color: var(--d3-text-1);
+}
+
+/* 右侧属性面板 */
+.ds3d-panel.right {
+  right: 12px;
+  top: 14px;
+  bottom: 92px;
+  width: 266px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ds3d-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 14px 10px;
+  flex: none;
+}
+.ds3d-tabs button {
+  flex: 1;
+  padding: 6px 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--d3-text-2);
+  font-size: 12.8px;
+  cursor: pointer;
+}
+.ds3d-tabs button.on {
+  background: var(--d3-hover);
+  color: var(--d3-text-1);
+  font-weight: 600;
+}
+.ds3d-insp {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+.ds3d-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.3px;
+  color: var(--d3-text-2);
+}
+.ds3d-vec3 {
+  display: flex;
+  gap: 6px;
+}
+.ds3d-num {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  background: var(--d3-input);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.ds3d-num:focus-within {
+  border-color: var(--d3-accent);
+}
+.ds3d-num em {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 3px 0 8px;
+  color: var(--d3-text-3);
+  flex: none;
+}
+.ds3d-num.ax-x em { color: #f2555a; }
+.ds3d-num.ax-y em { color: #3fd68f; }
+.ds3d-num.ax-z em { color: #4f8ef7; }
+.ds3d-num input {
+  width: 100%;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--d3-text-1);
+  font-size: 12.5px;
+  padding: 7px 6px 7px 0;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.ds3d-num input::-webkit-outer-spin-button,
+.ds3d-num input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.ds3d-sliderow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ds3d-sliderow input[type="range"] {
+  flex: 1;
+  accent-color: var(--d3-accent);
+}
+.ds3d-sliderow b {
+  min-width: 42px;
+  text-align: center;
+  background: var(--d3-input);
+  border-radius: 8px;
+  padding: 5px 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--d3-text-1);
+}
+.ds3d-colorrow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.ds3d-colorrow input[type="color"] {
+  width: 34px;
+  height: 31px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  flex: none;
+}
+.ds3d-colorrow .input {
+  flex: 1;
+}
+.ds3d-del {
+  margin-top: 2px;
+  justify-content: center;
+}
+.ds3d-insp-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--d3-text-2);
+  font-size: 12.6px;
+  padding: 30px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+}
+.ds3d-insp-empty p {
+  margin: 0;
+  line-height: 1.6;
+}
+.ds3d-insp-empty .dim {
+  color: var(--d3-text-3);
+  font-size: 11.8px;
+}
+
+/* ds3d 内的基础控件换深色（覆盖全局 .input/.btn 主题） */
+.ds3d .input {
+  background: var(--d3-input);
+  border: 1px solid transparent;
+  color: var(--d3-text-1);
+}
+.ds3d .input:focus {
+  border-color: var(--d3-accent);
+  background: var(--active);
+}
+.ds3d .btn {
+  background: var(--d3-input);
+  border-color: transparent;
+  color: var(--d3-text-1);
+}
+.ds3d .btn:hover {
+  background: var(--d3-hover);
+}
+.ds3d .btn.primary {
+  background: var(--d3-accent);
+  color: #fff;
+  box-shadow: none;
+}
+.ds3d .btn.danger {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
+.ds3d .btn.danger:hover {
+  background: color-mix(in srgb, var(--danger) 26%, transparent);
+}
+
+/* 姿势面板 */
+.ds3d-poses {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.ds3d-posebtn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 9px 4px;
+  background: var(--d3-input);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--d3-text-2);
+  font-size: 11.8px;
+  cursor: pointer;
+}
+.ds3d-posebtn:hover {
+  background: var(--d3-hover);
+  color: var(--d3-text-1);
+}
+.ds3d-joints {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ds3d-joint {
+  display: grid;
+  grid-template-columns: 38px 1fr;
+  gap: 3px 8px;
+  align-items: center;
+}
+.ds3d-jname {
+  grid-row: 1 / -1;
+  font-size: 11.8px;
+  color: var(--d3-text-2);
+  padding-top: 3px;
+  align-self: start;
+}
+.ds3d-joint label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ds3d-joint label em {
+  width: 26px;
+  flex: none;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--d3-text-3);
+}
+.ds3d-joint input[type="range"] {
+  flex: 1;
+  accent-color: var(--d3-accent);
+}
+.ds3d-joint b {
+  width: 36px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--d3-text-2);
+}
+
+/* 导出面板 */
+.ds3d-export {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 14px 14px;
+}
+.ds3d-export .btn {
+  justify-content: center;
+}
+.ds3d-export-hint {
+  margin: 4px 0 0;
+  font-size: 11.8px;
+  color: var(--d3-text-3);
+  line-height: 1.65;
+}
+
+/* 底部工具区 */
+.ds3d-bottom {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 6;
+}
+.ds3d-modes {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--d3-panel);
+  border: 1px solid var(--d3-border);
+  border-radius: 11px;
+  backdrop-filter: blur(14px);
+}
+.ds3d-modes button {
+  width: 34px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--d3-text-2);
+  cursor: pointer;
+}
+.ds3d-modes button:hover {
+  color: var(--d3-text-1);
+}
+.ds3d-modes button.on {
+  background: var(--d3-hover);
+  color: var(--d3-text-1);
+}
+.ds3d-voice {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--d3-panel);
+  border: 1px solid var(--d3-border);
+  color: var(--d3-text-2);
+  border-radius: 11px;
+  padding: 8px 13px;
+  font-size: 12.3px;
+  cursor: pointer;
+  backdrop-filter: blur(14px);
+}
+.ds3d-voice:hover {
+  color: var(--d3-text-1);
+}
+.ds3d-voice.rec {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+.ds3d-recbars {
+  display: flex;
+  align-items: center;
+  gap: 2.5px;
+  height: 13px;
+}
+.ds3d-recbars i {
+  width: 2.5px;
+  border-radius: 1.5px;
+  background: currentColor;
+  animation: ds3d-bars 0.85s ease-in-out infinite;
+}
+.ds3d-recbars i:nth-child(1) { height: 6px; animation-delay: 0s; }
+.ds3d-recbars i:nth-child(2) { height: 11px; animation-delay: 0.12s; }
+.ds3d-recbars i:nth-child(3) { height: 8px; animation-delay: 0.24s; }
+.ds3d-recbars i:nth-child(4) { height: 12px; animation-delay: 0.36s; }
+.ds3d-recbars i:nth-child(5) { height: 6px; animation-delay: 0.48s; }
+@keyframes ds3d-bars {
+  0%, 100% { transform: scaleY(0.45); }
+  50% { transform: scaleY(1); }
+}
+.ds3d-ai {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 330px;
+  background: var(--d3-panel);
+  border: 1px solid var(--d3-border);
+  border-radius: 13px;
+  padding: 4px 4px 4px 12px;
+  backdrop-filter: blur(14px);
+}
+.ds3d-ai:focus-within {
+  border-color: color-mix(in srgb, var(--d3-accent) 55%, transparent);
+}
+.ds3d-ai-plus {
+  color: var(--d3-text-3);
+  flex: none;
+}
+.ds3d-ai input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--d3-text-1);
+  font-size: 12.8px;
+  padding: 6px 0;
+}
+.ds3d-ai input::placeholder {
+  color: var(--d3-text-3);
+}
+.ds3d-ai-send {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: none;
+  border-radius: 50%;
+  background: var(--active);
+  color: var(--d3-text-1);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.ds3d-ai-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ds3d-ai-send:not(:disabled):hover {
+  background: var(--d3-accent);
+}
+
+/* 机位取景框 */
+.ds3d-vf {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  z-index: 4;
+}
+.ds3d-vf-frame {
+  position: relative;
+  width: min(62%, 96vh);
+  border: 1px dashed rgba(255, 255, 255, 0.4);
+  border-radius: 6px;
+}
+.ds3d-vf-cross {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  transform: translate(-50%, -50%);
+}
+.ds3d-vf-cross::before,
+.ds3d-vf-cross::after {
+  content: "";
+  position: absolute;
+  background: rgba(255, 255, 255, 0.55);
+}
+.ds3d-vf-cross::before {
+  left: 50%;
+  top: 0;
+  width: 1px;
+  height: 100%;
+}
+.ds3d-vf-cross::after {
+  top: 50%;
+  left: 0;
+  height: 1px;
+  width: 100%;
+}
+.ds3d-vf-tag {
+  position: absolute;
+  top: -26px;
+  left: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+/* 窄窗适配 */
+@media (max-width: 1280px) {
+  .ds3d-panel.right { width: 240px; }
+  .ds3d-axisbox { right: 264px; }
+  .ds3d-ai { width: 260px; }
+}
+
+/* 机位预设网格 */
+.ds3d-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.ds3d-preset-btn {
+  padding: 9px 6px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--panel-border);
+  background: var(--input-bg);
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms, background 120ms;
+}
+.ds3d-preset-btn:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}

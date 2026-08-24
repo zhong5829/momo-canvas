@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body {
+      font-family: -apple-system, "Segoe UI", sans-serif;
+      font-size: 12px;
+      color: #ccc;
+      background: #2a2a2a;
+      margin: 0;
+      padding: 12px;
+    }
+    h2 { font-size: 13px; margin: 0 0 10px; }
+    .hint { color: #888; font-size: 11px; line-height: 1.6; margin: 8px 0; }
+    button {
+      width: 100%;
+      padding: 8px;
+      margin: 4px 0;
+      background: #3a3a3a;
+      color: #ddd;
+      border: 1px solid #555;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    button:hover { background: #4a4a4a; }
+    button.primary { background: #3f7ff2; border-color: #3f7ff2; color: #fff; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #log {
+      margin-top: 10px;
+      padding: 8px;
+      background: #1e1e1e;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 10.5px;
+      color: #8f8;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h2>MOMO Bridge</h2>
+  <div class="hint">
+    从 MOMO 导演台导出的项目清单 JSON 一键创建 Premiere 序列、素材箱和轨道。
+  </div>
+  <button id="pickManifest" class="primary">选择 MOMO 项目清单 JSON</button>
+  <button id="importAll" disabled>导入素材 + 创建序列</button>
+  <button id="importTimeline" disabled>仅创建时间线序列</button>
+  <div id="log"></div>
+
+  <script src="main.js"></script>
+</body>
+</html>

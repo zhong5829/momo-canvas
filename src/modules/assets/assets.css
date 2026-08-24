@@ -1,0 +1,881 @@
+/* ============ 资产库 ============ */
+.assetlib-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 12, 26, 0.5);
+  backdrop-filter: blur(8px);
+  z-index: 460; /* 高于导演台全屏层(450)，否则从导演台打开时被压在下面 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 160ms ease;
+}
+.assetlib {
+  position: relative;
+  width: min(1240px, 94vw);
+  height: min(820px, 90vh);
+  background: var(--panel-solid);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--panel-shadow);
+  display: flex;
+  overflow: hidden;
+  animation: popIn 220ms var(--ease);
+}
+
+/* 左侧栏 */
+.al-side {
+  width: 208px;
+  flex: none;
+  border-right: 1px solid var(--panel-border);
+  padding: 16px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+.al-side .al-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: var(--fs-title);
+  font-weight: 800;
+  padding: 0 8px 12px;
+}
+.al-side .side-sec {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-3);
+  letter-spacing: 1px;
+  padding: 12px 10px 5px;
+}
+.al-side button.side-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--text-2);
+  text-align: left;
+  transition: background var(--t-fast), color var(--t-fast);
+  width: 100%;
+}
+.al-side button.side-item:hover {
+  background: var(--hover);
+}
+.al-side button.side-item.on {
+  background: var(--grad-brand-soft);
+  color: var(--accent);
+}
+.al-side button.side-item .cnt {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-3);
+  font-weight: 600;
+}
+.al-side .side-item .fold-acts {
+  margin-left: auto;
+  display: none;
+  gap: 2px;
+}
+.al-side .side-item:hover .fold-acts {
+  display: flex;
+}
+.al-side .side-item .fold-acts .icon-btn {
+  width: 24px;
+  height: 24px;
+}
+
+/* 主区 */
+.al-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.al-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--panel-border);
+  flex-wrap: wrap;
+}
+.al-toolbar .search-box {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--r-md);
+  padding: 0 11px;
+  min-height: 36px;
+  width: 240px;
+  color: var(--text-3);
+}
+.al-toolbar .search-box input {
+  border: none;
+  background: none;
+  outline: none;
+  flex: 1;
+  min-width: 0;
+  color: var(--text-1);
+}
+.al-grid {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  /* 行高写死：自动行高靠卡片内 aspect-ratio 反推，轨道尺寸算不出来会塌缩，资产越多挤得越狠 */
+  grid-auto-rows: 152px;
+  gap: 9px;
+  align-content: start;
+}
+/* 右侧快捷方式栏 */
+.sc-bar {
+  width: 76px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 6px;
+  border-left: 1px solid var(--panel-border);
+  overflow-y: auto;
+}
+.sc-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-3);
+}
+.sc-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+}
+.sc-ic {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-md);
+  border: 1.5px solid var(--panel-border);
+  background: var(--input-bg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  transition: border-color var(--t-fast), transform var(--t-fast);
+}
+.sc-ic:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.sc-item.over .sc-ic {
+  border-color: var(--ok);
+  box-shadow: 0 0 0 3px rgba(61, 204, 145, 0.25);
+}
+.sc-name {
+  max-width: 100%;
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sc-del {
+  position: absolute;
+  top: -5px;
+  right: 2px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.sc-item:hover .sc-del {
+  display: inline-flex;
+}
+.sc-adds {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+}
+.sc-ic.add {
+  color: var(--text-3);
+  border-style: dashed;
+}
+.sc-ic.add:hover {
+  color: var(--accent);
+}
+
+.al-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: var(--text-3);
+  padding: 80px 20px;
+  line-height: 2.1;
+}
+
+/* 资产卡片 */
+.a-card {
+  position: relative;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--input-bg);
+  border: 2px solid transparent;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  transition: transform var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.a-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--node-shadow);
+}
+.a-card.sel {
+  border-color: var(--accent);
+}
+.a-card .a-thumb {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  overflow: hidden;
+}
+.a-card .a-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* 矢量（SVG）资产：棋盘格底看透明（卡片 + 预览层共用） */
+img.svg-bg {
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #e7e9ee 25%, transparent 25%),
+    linear-gradient(-45deg, #e7e9ee 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e7e9ee 75%),
+    linear-gradient(-45deg, transparent 75%, #e7e9ee 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+.a-card .a-thumb img.svg-bg {
+  object-fit: contain;
+}
+.a-card .a-name {
+  padding: 7px 10px 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2);
+  background: var(--panel-solid);
+}
+.a-card .a-badge {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  font-size: 11px;
+  background: rgba(10, 14, 30, 0.62);
+  color: #fff;
+  border-radius: 6px;
+  padding: 2px 7px;
+  pointer-events: none;
+}
+/* 卡片底部信息条：左分辨率 · 右生成耗时（老资产无耗时只显示分辨率） */
+.a-card .a-meta {
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  bottom: 7px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #fff;
+  pointer-events: none;
+}
+.a-card .a-meta span {
+  background: rgba(10, 14, 30, 0.62);
+  border-radius: 6px;
+  padding: 2px 7px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.a-card .a-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  border: 2px solid #fff;
+  background: rgba(10, 14, 30, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+.a-card:hover .a-check,
+.assetlib.selecting .a-card .a-check {
+  opacity: 1;
+}
+.a-card.sel .a-check {
+  background: var(--accent);
+  border-color: var(--accent);
+  opacity: 1;
+}
+
+/* 多结果生成组：主卡后方露出两层错位卡边，和普通单资产形成明确区分。 */
+.a-group-stack {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 5px 5px 0;
+}
+.a-group-stack::before,
+.a-group-stack::after {
+  content: "";
+  position: absolute;
+  border-radius: var(--r-md);
+  border: 1px solid var(--panel-border);
+  background: var(--panel-solid);
+  pointer-events: none;
+}
+.a-group-stack::before {
+  inset: 4px 1px 1px 4px;
+  opacity: 0.78;
+}
+.a-group-stack::after {
+  inset: 7px -2px -2px 7px;
+  opacity: 0.48;
+}
+.a-group-card {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+}
+.a-group-count {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #fff;
+  background: color-mix(in srgb, var(--text-1) 72%, transparent);
+  backdrop-filter: blur(6px);
+  font-size: 11px;
+  font-weight: 800;
+  pointer-events: none;
+}
+
+/* 组卡聚焦展开：只压暗资产库本身，保留当前任务上下文，点灰区或 Esc 收起。 */
+.a-group-focus {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 34px;
+  background: color-mix(in srgb, var(--text-1) 42%, transparent);
+  backdrop-filter: grayscale(0.35) blur(3px);
+  animation: fadeIn 150ms ease;
+}
+.a-group-panel {
+  width: min(920px, 90%);
+  max-height: min(680px, 84%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-lg);
+  background: var(--panel-solid);
+  box-shadow: var(--panel-shadow);
+  animation: popIn 190ms var(--ease);
+}
+.a-group-panel > header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.a-group-panel > header > span {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  background: var(--grad-brand-soft);
+}
+.a-group-panel > header > div {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+.a-group-panel > header b {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.a-group-panel > header small {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.a-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(138px, 1fr));
+  grid-auto-rows: 180px;
+  gap: 12px;
+  padding: 16px;
+  overflow-y: auto;
+}
+.a-group-member {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--r-md);
+  background: var(--input-bg);
+  text-align: left;
+  transition: transform var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.a-group-member:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+  box-shadow: var(--node-shadow);
+}
+.a-group-member .a-thumb {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+}
+.a-group-member .a-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.a-group-member-name {
+  padding: 8px 10px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.a-group-final {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--accent);
+  font-size: 10.5px;
+  font-weight: 800;
+}
+
+/* 批量操作条 */
+.al-batchbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--panel-border);
+  background: var(--grad-brand-soft);
+  animation: fadeIn 150ms ease;
+  flex-wrap: wrap;
+}
+.al-batchbar b {
+  color: var(--accent);
+}
+
+/* ============ 预览层 ============ */
+.a-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 465;
+  background: rgba(5, 8, 18, 0.88);
+  backdrop-filter: blur(12px);
+  display: flex;
+  animation: fadeIn 160ms ease;
+}
+.a-preview .ap-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  min-width: 0;
+  padding: 44px 68px;
+}
+.a-preview .ap-stage img,
+.a-preview .ap-stage video {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: var(--r-sm);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+}
+.a-preview .ap-stage iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  border-radius: var(--r-sm);
+  background: #fff;
+}
+.a-preview .ap-audio {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  color: #dde;
+}
+.a-preview .ap-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--t-fast);
+}
+.a-preview .ap-nav:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+.a-preview .ap-nav.prev { left: 14px; }
+.a-preview .ap-nav.next { right: 14px; }
+.a-preview .ap-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.a-preview .ap-close:hover {
+  background: rgba(255, 80, 100, 0.5);
+}
+.a-preview .ap-info {
+  width: 292px;
+  flex: none;
+  background: var(--panel-solid);
+  border-left: 1px solid var(--panel-border);
+  padding: 20px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+.a-preview .ap-info h4 {
+  font-size: var(--fs-lg);
+  word-break: break-all;
+}
+.a-preview .ap-info .meta-row {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.a-preview .ap-info .meta-row span:first-child {
+  color: var(--text-3);
+  flex: none;
+}
+.a-preview .ap-info .prompt-box {
+  font-size: var(--fs-sm);
+  background: var(--input-bg);
+  border-radius: var(--r-sm);
+  padding: 9px 11px;
+  line-height: 1.65;
+  color: var(--text-2);
+  max-height: 180px;
+  overflow-y: auto;
+  user-select: text;
+  word-break: break-word;
+}
+
+/* ---- 拖拽资产卡：库主体隐身让位（画布可落），右侧快捷栏保留可见可落 ---- */
+.assetlib-mask.drag-out {
+  background: transparent;
+  backdrop-filter: none;
+  pointer-events: none;
+}
+.assetlib-mask.drag-out .assetlib {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.assetlib-mask.drag-out .assetlib > *:not(.sc-bar) {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.assetlib-mask.drag-out .sc-bar {
+  pointer-events: auto;
+}
+.a-card[draggable="true"] {
+  cursor: grab;
+}
+
+/* ---- 卡片右键菜单 ---- */
+.a-menu {
+  position: fixed;
+  z-index: 500;
+  width: 236px;
+  padding: 6px;
+  animation: popIn 130ms var(--ease);
+}
+.a-menu .am-row {
+  width: 100%;
+  text-align: left;
+  padding: 8px 11px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  transition: background var(--t-fast);
+}
+.a-menu .am-row:hover {
+  background: var(--hover);
+}
+.a-menu .am-row.danger {
+  color: var(--danger);
+}
+.a-menu .am-sep {
+  height: 1px;
+  background: var(--panel-border);
+  margin: 5px 8px;
+}
+
+/* ---- 标签 ---- */
+.al-batchbar .batch-tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-3);
+}
+.tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--input-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  line-height: 1;
+}
+.tag-chip button {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-3);
+  border-radius: 50%;
+}
+.tag-chip button:hover {
+  color: var(--danger);
+}
+.tag-add {
+  width: 74px;
+  font-size: 12px;
+  background: transparent;
+  border: 1px dashed var(--panel-border);
+  border-radius: 999px;
+  padding: 3px 9px;
+  color: var(--text-2);
+  outline: none;
+}
+.tag-add:focus {
+  border-color: var(--accent);
+}
+
+/* ---- 收藏星标 / 网格重命名 / 回收站 ---- */
+.a-fav {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  background: rgba(10, 14, 30, 0.45);
+  opacity: 0;
+  transition: opacity var(--t-fast), color var(--t-fast);
+  z-index: 2;
+}
+.a-card:hover .a-fav,
+.a-fav.on {
+  opacity: 1;
+}
+.a-fav.on {
+  color: #f5b83d;
+}
+.a-rename-input {
+  margin: 4px 6px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--input-bg);
+  color: var(--text-1);
+  font-size: 12px;
+  outline: none;
+  width: calc(100% - 12px);
+}
+.al-trash {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.al-trash-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.al-trash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+.al-trash-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: var(--input-bg);
+  border: 1px solid var(--panel-border);
+}
+.al-trash-item .a-thumb.sm {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  overflow: hidden;
+  flex: none;
+}
+.al-trash-item .a-thumb.sm img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.al-trash-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.al-trash-info b {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 340px;
+}
+
+/* —— 视频卡擦洗封面：撑满缩略区（vthumb 默认高度随内容，卡片里要铺满） —— */
+.a-card .a-thumb .vthumb {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+}
+.a-card .a-thumb .vthumb img {
+  height: 100%;
+  object-fit: cover;
+}
+
+/* —— 矢量/音频专属图标封面（不直显原文件，网格观感统一） —— */
+.a-kind-cover {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--text-3);
+}
+.a-kind-cover span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.a-kind-cover.vector {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: color-mix(in srgb, var(--accent) 75%, var(--text-2));
+}
+.a-kind-cover.audio {
+  background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 65%);
+}
+
+/* —— 「文件夹」标题行：右侧小型新建按钮（替代原独立按钮，避免与文件夹项混淆误点） —— */
+.al-side .side-sec-row {
+  display: flex;
+  align-items: center;
+}
+.al-side .side-sec-row .al-newfolder {
+  width: 22px;
+  height: 22px;
+}
+
+/* —— 多选模式：按住滑动批量勾选，禁掉拖拽启动时的文字/图片选中 —— */
+.assetlib.selecting .a-card {
+  user-select: none;
+}

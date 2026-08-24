@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -File 'G:\\Project\\momo智能画布\\.codex\\hooks\\restart-app.ps1'",
+            "timeout": 30,
+            "statusMessage": "重启 momo 画布…"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,57 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Claude Code hook runtime files
+.claude/last-restart.txt
+.claude/scheduled_tasks.lock
+.claude/*.cjs
+.claude/*.ps1
+.claude/control-pid.txt
+.claude/tmp*
+.claude/dev-server.log
+
+# 本地 Skill 包产物（应用内导入用，不入库）
+*.skill.zip
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Tauri 打包产物收集目录（由 scripts/collect-app.mjs 同步，勿入库）
+APP/
+
+# 本地超分模型权重（大文件不入库）；第三方声明保留进仓库与发行包
+models/*
+!models/THIRD_PARTY_MODELS.txt
+
+# 本地推理引擎（llama.cpp 等第三方二进制，数百 MB 不入库；AppData 探测位有同名软链）
+tools/
+
+# AI 助手工具的本地临时目录（会话产物，不入库）
+.codex-tmp/
+.zcode/
+.claude/plans/
+
+# 本机图片质量黄金样本：引用 AppData 用户资产，不进入仓库/发行包
+quality-baseline/manifest.json
+quality-baseline/report.html
+quality-baseline/report.json
+quality-baseline/report_assets/
