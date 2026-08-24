@@ -40,6 +40,8 @@ export function GenPromptBar({
   const value = (d[field] as string | undefined) ?? "";
   const running = d.status === "running";
   const set = (t: string) => upd(nodeId, { [field]: t }, { commit: true });
+  // 生成图像 / MiniMax H3 支持在提示词中 @ 引用参考图（点击胶囊插入、AtTextArea @ 自动补全）
+  const refInteractive = kind === "imageGen" || kind === "minimaxVideo";
   const placeholder =
     kind === "imageGen"
       ? upTextN > 0
@@ -77,14 +79,14 @@ export function GenPromptBar({
                             : `第 ${i + 1} 路上游图`
                         : undefined
                   }
-                  onClick={kind === "imageGen" ? () => editorRef.current?.insertToken(r.label) : undefined}
+                  onClick={refInteractive ? () => editorRef.current?.insertToken(r.label) : undefined}
                 >
                   <Thumb src={r.src} alt="" />
                   <b>{i + 1}</b>
                   {kind === "videoGen" && i < 2 ? <span className="gd-tag">{i === 0 ? "首帧" : "尾帧"}</span> : null}
                 </button>
               ))}
-              {kind === "imageGen" ? <span className="gd-hint">点击胶囊在提示词中 @ 引用</span> : null}
+              {refInteractive ? <span className="gd-hint">点击胶囊在提示词中 @ 引用</span> : null}
             </div>
           ) : null}
           <div className="gd-row">
@@ -94,7 +96,7 @@ export function GenPromptBar({
               placeholder={placeholder}
               value={value}
               onChange={set}
-              refs={kind === "imageGen" ? refs : []}
+              refs={refInteractive ? refs : []}
             />
             <div className="gd-side">
               {upTextN > 0 || upImgN > 0 ? (
