@@ -436,8 +436,8 @@ function ratioSizeTitle(ratio: string, tier: string): string {
 }
 
 /** 比例 chip 上的小示意图标（触发按钮用，尺寸略小） */
-function chipAr(ratio: string): ReactNode {
-  return <ArIcon ratio={ratio === "adaptive" ? "auto" : ratio} />;
+function chipAr(ratio: string | undefined): ReactNode {
+  return <ArIcon ratio={ratio && ratio !== "adaptive" ? ratio : "auto"} />;
 }
 
 export function GenConfigPanel() {
@@ -784,7 +784,7 @@ export function VideoConfigPanel() {
   const patch = (p: Partial<VideoGenData>) => upd(selId, p);
   const dur = d.duration ?? meta.defaultDuration;
   const res = d.resolution ?? meta.defaultResolution;
-  const asp = d.aspect ?? meta.aspects[0];
+  const asp = d.aspect ?? meta.aspects[0] ?? "";
 
   return (
     <div className="gen-panel">

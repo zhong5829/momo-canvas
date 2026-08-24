@@ -19,7 +19,7 @@ import {
 
 /** 宽高比示意小图标（按 w/h 画一个小方框；auto 显示 A） */
 export function ArIcon({ ratio }: { ratio: string }) {
-  if (ratio === "auto") return <span className="ar-ic">A</span>;
+  if (!ratio || ratio === "auto") return <span className="ar-ic">A</span>;
   const [w, h] = ratio.split(":").map(Number);
   if (!w || !h) return <span className="ar-ic">A</span>;
   const r = w / h;
