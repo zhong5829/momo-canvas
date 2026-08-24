@@ -52,6 +52,7 @@ export const NODE_CATALOG: CatalogItem[] = [
   { kind: "imageGen", label: "生成图像", desc: "调用绘画模型文生图 / 图生图", icon: <IcSparkles size={18} />, group: "生成", hotkey: "addImageGen" },
   { kind: "ecomImage", label: "电商长图", desc: "产品拍照图 → 视觉分析提属性/写介绍 → 按比例切分统一风格生成 → 拼接成完整长图（H5 / 详情页）", icon: <IcEcom size={18} />, group: "生成", hotkey: "addEcomImage" },
   { kind: "videoGen", label: "生成视频", desc: "调用视频模型生成短片", icon: <IcVideo size={18} />, group: "生成", hotkey: "addVideoGen" },
+  { kind: "minimaxVideo", label: "MiniMax H3", desc: "调用 MiniMax H3 视频模型：文生/首帧/首尾帧/尾帧/多参考 + 参考音频 + 官方 H3 提示词", icon: <IcVideo size={18} />, group: "生成", hotkey: "addMinimaxVideo" },
   { kind: "comfy", label: "ComfyUI", desc: "运行本地 ComfyUI 工作流模板", icon: <IcFlow size={18} />, group: "生成", hotkey: "addComfy" },
   { kind: "relight", label: "打光", desc: "为上游图片重新打光：方向/亮度/颜色/轮廓光", icon: <IcBulb size={18} />, group: "编辑", hotkey: "addRelight" },
   { kind: "multiAngle", label: "多角度", desc: "换机位重拍上游图片：环绕/俯仰/景别", icon: <IcOrbit size={18} />, group: "编辑", hotkey: "addMultiAngle" },

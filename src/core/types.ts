@@ -12,6 +12,7 @@ export type NodeKind =
   | "chat"
   | "imageGen"
   | "videoGen"
+  | "minimaxVideo"
   | "comfy"
   | "llmText"
   | "combine"
@@ -129,7 +130,18 @@ export type VideoDubData = {
 export type PromptData = {
   status: RunStatus;
   error?: string;
+  /** 纯文本模式正文（现有「提示词」节点行为） */
   text: string;
+  /** 输出模式：text = 静态文本（不改）；llm = 走 chat 模型生成 */
+  mode?: "text" | "llm";
+  /** LLM 模式：系统提示词（定角色/规则/输出格式） */
+  system?: string;
+  /** LLM 模式：任务提示词（可连接上游文本/图片） */
+  prompt?: string;
+  /** LLM 模式：模型 */
+  modelId?: string;
+  /** LLM 模式：模型结果 */
+  result?: string;
   optimizing?: boolean;
 };
 
@@ -327,6 +339,30 @@ export type VideoGenData = {
   fallbackModel?: string;
   /** 历次出片记录（最近 10 次） */
   history?: GenHistoryEntry[];
+};
+
+/** MiniMax H3 专用视频节点：5 种生成模式 + multipart 图/音频上传 + 官方 H3 结构化提示词 */
+export type MinimaxVideoData = {
+  status: RunStatus;
+  error?: string;
+  /** 生成模式：文生 / 首帧 / 首尾帧 / 尾帧 / 多参考 */
+  mode: "t2va" | "i2va" | "fl2va" | "l2va" | "ref2va";
+  modelId?: string;
+  /** 分辨率：480p / 720p */
+  resolution: string;
+  /** 时长（秒）：5~15 的字符串，如 "5" */
+  seconds: string;
+  /** 画面比例，默认 16:9（9 种） */
+  aspect: string;
+  /** 是否授权 AI 优化提示词（默认 false = H3 直发不失真） */
+  promptOptimization: boolean;
+  /** 提示词（可直贴官方 H3 结构） */
+  prompt: string;
+  resultUrl?: string;
+  resultUrls?: string[];
+  /** 当前选中的结果下标 */
+  picked?: number;
+  progress?: string;
 };
 
 /** 分镜：故事/剧本 → 完善 → 按风格与定调拆分镜（带时间轴），每镜独立输出口接生成节点 */
@@ -893,6 +929,7 @@ export type HotkeyAction =
   | "addCombine"
   | "addImageGen"
   | "addVideoGen"
+  | "addMinimaxVideo"
   | "addComfy"
   | "addRelight"
   | "addMultiAngle"
@@ -945,6 +982,7 @@ export const HOTKEY_LABEL: Record<HotkeyAction, string> = {
   addCombine: "添加节点：拼接文本",
   addImageGen: "添加节点：生成图像",
   addVideoGen: "添加节点：生成视频",
+  addMinimaxVideo: "添加节点：MiniMax H3 视频",
   addComfy: "添加节点：ComfyUI",
   addRelight: "添加节点：打光",
   addMultiAngle: "添加节点：多角度",
@@ -1001,6 +1039,7 @@ export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   addCombine: "alt+c",
   addImageGen: "8",
   addVideoGen: "9",
+  addMinimaxVideo: "7",
   addComfy: "0",
   addRelight: "alt+2",
   addMultiAngle: "alt+3",
@@ -1346,7 +1385,7 @@ export type AssetKind = "image" | "video" | "audio" | "pdf" | "vector" | "other"
 /** 生成参数快照：画布生成物收录时随资产落盘，「Remix」可据此还原一个配置好的生成节点 */
 export type AssetGenMeta = {
   /** 还原成哪种节点 */
-  nodeKind: "imageGen" | "videoGen";
+  nodeKind: "imageGen" | "videoGen" | "minimaxVideo";
   /** 发给模型的最终提示词 */
   prompt?: string;
   /** 复合键 providerId::model */

@@ -54,6 +54,7 @@ import { PromptNode } from "./nodes/PromptNode";
 import { ChatNode } from "./nodes/ChatNode";
 import { ImageGenNode } from "./nodes/ImageGenNode";
 import { VideoGenNode } from "./nodes/VideoGenNode";
+import { MinimaxVideoNode } from "./nodes/MinimaxVideoNode";
 import { ComfyNode } from "./nodes/ComfyNode";
 import { LlmTextNode } from "./nodes/LlmTextNode";
 import { CombineNode } from "./nodes/CombineNode";
@@ -109,6 +110,7 @@ const nodeTypes: NodeTypes = {
   chat: ChatNode,
   imageGen: ImageGenNode,
   videoGen: VideoGenNode,
+  minimaxVideo: MinimaxVideoNode,
   comfy: ComfyNode,
   llmText: LlmTextNode,
   combine: CombineNode,

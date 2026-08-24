@@ -32,13 +32,15 @@ export function defaultData(kind: NodeKind): Record<string, unknown> {
     case "videoDub":
       return { status: "idle", mode: "replace" };
     case "prompt":
-      return { status: "idle", text: "" };
+      return { status: "idle", mode: "text", text: "", system: "", prompt: "", result: "" };
     case "chat":
       return { status: "idle", messages: [], draft: "", webSearch: false, showThinking: true };
     case "imageGen":
       return { status: "idle", prompt: "", size: "default", count: 1, results: [], picked: 0 };
     case "videoGen":
       return { status: "idle", prompt: "" };
+    case "minimaxVideo":
+      return { status: "idle", mode: "t2va", modelId: "", resolution: "720p", seconds: "5", aspect: "16:9", promptOptimization: false, prompt: "" };
     case "storyboard":
       return { status: "idle", story: "", count: 4, shotSec: 5, style: "", tone: "", shots: [] };
     case "enhanceLocal":
@@ -119,6 +121,7 @@ export function outPortType(kind: NodeKind, data?: Record<string, unknown>): Por
       return "text";
     case "video":
     case "videoGen":
+    case "minimaxVideo":
     case "videoDub":
       return "video";
     case "audio":
@@ -140,12 +143,13 @@ export const NODE_INPUTS: Record<NodeKind, { text?: boolean; image?: boolean; vi
   audio: {},
   audioGen: { text: true },
   videoDub: { video: true, audio: true },
-  prompt: {},
+  prompt: { text: true, image: true },
   stylePreset: {},
   note: {},
   chat: { text: true, image: true },
   imageGen: { text: true, image: true },
   videoGen: { text: true, image: true, video: true, audio: true },
+  minimaxVideo: { text: true, image: true, audio: true },
   comfy: { text: true, image: true, video: true },
   llmText: { text: true, image: true },
   combine: { text: true },
@@ -179,6 +183,7 @@ const KIND_RANK: Record<NodeKind, number> = {
   charCard: 10,
   ecomImage: 10.5,
   videoGen: 11,
+  minimaxVideo: 11.1,
   audioGen: 11.5,
   videoDub: 11.6,
   comfy: 12,
@@ -200,6 +205,7 @@ export const NODE_LABEL: Record<NodeKind, string> = {
   chat: "对话",
   imageGen: "生成图像",
   videoGen: "生成视频",
+  minimaxVideo: "MiniMax H3",
   comfy: "ComfyUI",
   llmText: "文本处理",
   combine: "拼接文本",

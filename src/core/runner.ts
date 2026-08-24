@@ -10,6 +10,7 @@ import { usePromptHist } from "./stores/promptHistStore";
 import { chatStream, chatOnce, OPTIMIZE_SYSTEM } from "./services/llm";
 import { generateImage } from "./services/imageGen";
 import { generateVideo } from "./services/videoGen";
+import { generateMinimaxVideo } from "./services/minimaxVideo";
 import { generateAudio } from "./services/audioGen";
 import { webSearch, searchContext } from "./services/webSearch";
 import { runComfyTemplate, effectiveParams, freeComfyMemory } from "./services/comfy";
@@ -53,6 +54,7 @@ import type {
   ImageData,
   ImageGenData,
   LlmTextData,
+  MinimaxVideoData,
   ModelCard,
   MultiAngleData,
   NodeKind,
@@ -116,7 +118,14 @@ function nodeOutput(
   const d = src.data as Record<string, unknown>;
   switch (kind) {
     case "prompt": {
-      const t = ((d as PromptData).text ?? "").trim();
+      const pd = d as PromptData;
+      if (pd.mode === "llm") {
+        // LLM 模式：出结果；尚未生成时不向下游传值
+        const r = (pd.result ?? "").trim();
+        if (r) texts.push(r);
+        break;
+      }
+      const t = (pd.text ?? "").trim();
       if (t) texts.push(t);
       break;
     }
@@ -247,7 +256,8 @@ function nodeOutput(
       break;
     }
     case "videoGen":
-    case "videoDub": {
+    case "videoDub":
+    case "minimaxVideo": {
       const u = (d as { resultUrl?: string }).resultUrl;
       if (u) videos.push(u);
       break;
@@ -1405,6 +1415,99 @@ export async function runVideoGen(id: string) {
   }
 }
 
+/* ---------- MiniMax H3 专用视频 ---------- */
+export async function runMinimaxVideo(id: string) {
+  const node = useBoard.getState().nodes.find((n) => n.id === id);
+  if (!node) return;
+  const data = node.data as MinimaxVideoData;
+  if (data.status === "running") return;
+  const { texts, images, audios } = collectUpstream(id);
+  const prompt = (data.prompt ?? "").trim() || texts.join("\n");
+  const mode = data.mode ?? "t2va";
+  if (!prompt) {
+    toast("请输入提示词，或连接上游文本节点", "err");
+    return;
+  }
+  upd(id, { status: "running", error: undefined, progress: "提交任务…", resultUrl: undefined, picked: 0 });
+  const t0 = Date.now();
+  let primaryCard: ModelCard | null = null;
+  try {
+    const card = resolveModelCard("video", data.modelId);
+    primaryCard = card;
+    // 专用节点：校验必须是 MiniMax H3 模型（文档 model 枚举封闭，其它模型提交必 400）
+    if (!/minimax[-_]?h3/i.test(card.model)) {
+      upd(id, { status: "error", error: `请选择 MiniMax H3 模型（当前「${card.name}」），到「设置 → 视频」配置` });
+      toast("请选择 MiniMax H3 模型（设置 → 视频 角色）", "err");
+      return;
+    }
+    // 按 mode 取媒体（参考视频暂不支持，文档明确）
+    let refImages: string[] = [];
+    let refAudios: string[] = [];
+    switch (mode) {
+      case "i2va":
+        refImages = images.slice(0, 1);
+        break;
+      case "fl2va":
+        refImages = images.slice(0, 2);
+        break;
+      case "l2va":
+        refImages = images.slice(-1);
+        break;
+      case "ref2va":
+        refImages = images.slice(0, 9);
+        refAudios = audios.slice(0, 3);
+        break;
+      default:
+        refImages = [];
+    }
+    if (mode === "ref2va" && !refImages.length && !refAudios.length) {
+      toast("ref2va（多参考）至少需要一张上游图片或一个音频", "err");
+      upd(id, { status: "idle", error: undefined, progress: undefined });
+      return;
+    }
+    if (mode !== "t2va" && mode !== "ref2va" && !refImages.length) {
+      toast(`该模式（${mode.toUpperCase()}）需要上游图片节点`, "err");
+      upd(id, { status: "idle", error: undefined, progress: undefined });
+      return;
+    }
+    const url = await generateMinimaxVideo(card, {
+      prompt,
+      mode,
+      resolution: data.resolution,
+      seconds: data.seconds,
+      aspect: data.aspect,
+      promptOptimization: data.promptOptimization,
+      images: refImages,
+      audios: refAudios,
+      onProgress: (m) => upd(id, { progress: m }),
+      signal: taskSignal(id),
+    });
+    // 收录资产库后把节点地址换成本地文件
+    useUi.getState().addGallery({ kind: "video", src: url, prompt, model: card.model, nodeId: id });
+    const saved = await useAssets.getState().collect({
+      src: url,
+      kind: "video",
+      prompt,
+      model: card.name,
+      nodeId: id,
+      durationMs: Date.now() - t0,
+      gen: { nodeKind: "minimaxVideo", prompt, modelId: modelKey(card.id, card.model) },
+    });
+    const local = saved && isTauri ? assetUrl(saved.path) : url;
+    upd(id, { status: "done", resultUrl: local, resultUrls: [local], picked: 0, progress: undefined });
+    useUsage.getState().record(card, { ok: true, videoSec: Number(data.seconds ?? "5"), durMs: Date.now() - t0 });
+  } catch (e) {
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", error: undefined, progress: undefined });
+      toast("已停止生成（已提交到服务商的任务无法追回，可能仍会计费）", "info");
+      return;
+    }
+    if (primaryCard) useUsage.getState().record(primaryCard, { ok: false, durMs: Date.now() - t0 });
+    upd(id, { status: "error", error: errMsg(e), progress: undefined });
+    pushError("MiniMax H3", errMsg(e));
+  }
+}
+
 /* ---------- ComfyUI ---------- */
 export async function runComfy(id: string) {
   const node = useBoard.getState().nodes.find((n) => n.id === id);
@@ -1626,6 +1729,50 @@ export async function runLlmText(id: string) {
     }
     upd(id, { status: "error", error: errMsg(e) });
     pushError("文本处理", errMsg(e));
+  }
+}
+
+/* ---------- 提示词（LLM 模式） ---------- */
+export async function runPromptLlm(id: string) {
+  const node = useBoard.getState().nodes.find((n) => n.id === id);
+  if (!node) return;
+  const d = node.data as PromptData;
+  if (d.status === "running") return;
+  // 文本模式无需运行（静态输入），占位标记 done，避免右键「运行」/自动链误触发
+  if (d.mode !== "llm") {
+    upd(id, { status: "done", error: undefined });
+    return;
+  }
+  const { texts, images } = collectUpstream(id);
+  const user = (d.prompt ?? "").trim();
+  // 上游文本优先拼入；无上游文本时仅用节点内任务提示词
+  const prompt = texts.length ? `${user ? user + "\n\n" : ""}${texts.join("\n")}` : user;
+  if (!prompt && !images.length) {
+    toast("请填写任务提示词或连接上游文本/图片", "err");
+    return;
+  }
+  upd(id, { status: "running", error: undefined });
+  try {
+    const card = resolveModelCard("chat", d.modelId);
+    const system = (d.system ?? "").trim() || undefined;
+    const { text } = await chatStream(
+      card,
+      [{ role: "user", text: prompt, images: images.length ? images : undefined }],
+      {
+        system,
+        signal: taskSignal(id),
+        onText: (full) => upd(id, { result: full }),
+      },
+    );
+    upd(id, { status: "done", result: text.trim() });
+  } catch (e) {
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", error: undefined });
+      toast("已停止", "info");
+      return;
+    }
+    upd(id, { status: "error", error: errMsg(e) });
+    pushError("提示词·LLM", errMsg(e));
   }
 }
 
@@ -2465,8 +2612,10 @@ const gated = (kind: NodeKind, fn: (id: string) => Promise<void>) => async (id: 
 const RUNNERS: Partial<Record<NodeKind, (id: string) => Promise<void>>> = {
   imageGen: gated("imageGen", runImageGen),
   videoGen: gated("videoGen", runVideoGen),
+  minimaxVideo: gated("minimaxVideo", runMinimaxVideo),
   comfy: gated("comfy", runComfy),
   llmText: gated("llmText", runLlmText),
+  prompt: gated("prompt", runPromptLlm),
   relight: gated("relight", runRelight),
   multiAngle: gated("multiAngle", runMultiAngle),
   charCard: gated("charCard", runCharCard),
@@ -2535,6 +2684,7 @@ function hasFreshOutput(n: LiteNode): boolean {
     }
     case "videoGen":
     case "videoDub":
+    case "minimaxVideo":
     case "audioGen":
       return !!d.resultUrl;
     case "storyboard":
