@@ -4,6 +4,7 @@ import App from "./App";
 import "./styles/theme.css";
 import "./styles/base.css";
 import "./modules/shell/shell.css";
+import "./modules/settings/settings.css";
 
 // 仅开发环境：把核心 store 挂到 window，方便在浏览器预览模式下调试/注入测试数据
 if (import.meta.env.DEV) {

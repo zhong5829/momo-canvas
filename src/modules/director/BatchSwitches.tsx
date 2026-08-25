@@ -1,4 +1,4 @@
-/** 批量生成共享开关：每段后清显存 / 尾帧接力（分镜页与生成页的批量条共用） */
+/** 批量生成共享开关：每段后清显存 / 空间接力（分镜页与生成页的批量条共用） */
 import { useDirector } from "../../core/stores/directorStore";
 import type { DirectorProject } from "../../core/types";
 
@@ -20,7 +20,7 @@ export function BatchSwitches({ project }: { project: DirectorProject }) {
       </label>
       <label
         className="ds-opt"
-        title="批量生成连贯性：上一段生成完成后自动抽取其尾帧，作为下一段的首帧/首张参考图（本段显式首帧优先），与本段参考图一起投喂，保证跨段画面衔接；关闭则各段独立生成"
+        title="只对提示词标记为 continuity_relay／同场接力的片段，从故事顺序中紧邻的上一段提取稳定桥接帧；配方有空余参考视频槽时再截取末尾 2 秒。opening／开篇与 hard_cut／硬切换场会自动忽略并清除历史接力槽。关闭后已提取素材保留但不参与生成"
       >
         <input
           type="checkbox"
@@ -28,7 +28,7 @@ export function BatchSwitches({ project }: { project: DirectorProject }) {
           checked={!!project.tailFrameRelay}
           onChange={(e) => updateProject(project.id, { tailFrameRelay: e.target.checked })}
         />
-        <span className="ds-hint">尾帧接力</span>
+        <span className="ds-hint">空间接力（帧＋2秒）</span>
       </label>
     </>
   );

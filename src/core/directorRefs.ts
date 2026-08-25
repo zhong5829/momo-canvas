@@ -160,16 +160,20 @@ export function refsNoteFromSnapshot(slots: DirectorSlotValue[], target: "image"
   let n = 0;
   let vn = 0;
   let an = 0;
+  let relayFrameRef = "";
+  let relayClipRef = "";
+  const spatialLayoutRefs: string[] = [];
   for (const slot of slots) {
     for (const _aid of slot.assetIds) {
       if (slot.semantic === "referenceVideo" || slot.semantic === "referenceAudio") {
         if (target === "image") continue; // 生图不吃视/音参考，不列进说明
         if (slot.semantic === "referenceVideo") {
           vn++;
-          lines.push(`视频${vn}：视频参考（H3 标签 <Video ${vn}>）`);
+          lines.push(`视频${vn}：${slot.label ?? "视频参考"}（H3 标签 <Video ${vn}>）`);
+          if (slot.relayKind === "clip") relayClipRef = `<Video ${vn}>`;
         } else {
           an++;
-          lines.push(`音频${an}：音频参考（H3 标签 <Audio ${an}>）`);
+          lines.push(`音频${an}：${slot.label ?? "音频参考"}（H3 标签 <Audio ${an}>）`);
         }
         continue;
       }
@@ -177,11 +181,30 @@ export function refsNoteFromSnapshot(slots: DirectorSlotValue[], target: "image"
       if (target === "video" && (slot.semantic === "firstFrame" || slot.semantic === "lastFrame")) {
         // 视频首尾帧是具名参数，不占「图N」序号；自定义 label（尾帧接力虚拟槽）带上语义前缀
         lines.push(slot.label ? `${semLabel.get(slot.semantic)}：${slot.label}` : label);
+        if (slot.relayKind === "frame" && slot.semantic === "firstFrame") relayFrameRef = "the bound first frame";
       } else {
         n++;
         lines.push(target === "video" ? `图${n}：${label}（H3 标签 <Picture ${n}>）` : `图${n}：${label}`);
+        if (target === "video" && slot.relayKind === "frame") relayFrameRef = `<Picture ${n}>`;
+        if (target === "video" && (slot.referenceRole === "spatialLayout" || slot.semantic === "layoutGuide")) {
+          spatialLayoutRefs.push(`<Picture ${n}>`);
+        }
       }
     }
+  }
+  if (target === "video" && spatialLayoutRefs.length) {
+    lines.push(
+      `Spatial layout guide: use ${spatialLayoutRefs.join(", ")} only for relative positions, camera origin and viewing direction, left-right/front-back landmarks, start/end positions, and movement vectors. Do not reproduce its top-down diagram style, labels, arrows, icons, borders, legend, or text; the output must keep the requested cinematic viewpoint.`,
+    );
+  }
+  if (target === "video" && (relayFrameRef || relayClipRef)) {
+    const anchor = relayFrameRef
+      ? `Treat ${relayFrameRef} as the opening spatial anchor: preserve camera position, viewing direction, horizon, left-right landmarks, teammate positions, and visible equipment.`
+      : "";
+    const motion = relayClipRef
+      ? ` Continue the final motion direction and camera momentum shown in ${relayClipRef}; do not reverse the axis or introduce a new viewpoint.`
+      : "";
+    lines.push(`Continuity relay: ${anchor}${motion} During 00:00-00:01, reproduce this state before beginning the next action.`);
   }
   const hint = target === "video" ? "图N 或 首帧/尾帧" : "图N";
   return lines.length ? `参考素材（按序，提示词可用「${hint}」引用）：\n${lines.join("\n")}` : "";
@@ -197,16 +220,33 @@ export type ResolvedRefs = {
   lastFrame?: string;
   /** 除首帧/尾帧外的参考图（视频 r2v 用） */
   refs: string[];
+  /** 图片与其来源槽的逐项对应，用于槽位容量裁剪时优先移除规划站位图 */
+  entries: Array<{ url: string; assetId: string; slot: DirectorSlotValue }>;
   /** 生效的槽位快照（写进 Take 可追溯，方案 §7.9） */
   snapshot: DirectorSlotValue[];
 };
 
 /** 计算片段生效槽位：全局槽（保序）+ 片段槽（追加在后；首帧/尾帧单例语义片段覆盖全局） */
 function effectiveSlots(project: DirectorProject, segment: DirectorSegment): DirectorSlotValue[] {
-  const segSlots = segment.slots ?? [];
+  const continuityText = [
+    segment.promptFinalOverride,
+    segment.promptOverride,
+    segment.scriptText,
+    segment.summary,
+    segment.continuityIn,
+  ].filter(Boolean).join("\n");
+  const relayForbidden =
+    /Continuity mode:\s*(?:opening|hard[_ -]?cut)/i.test(continuityText)
+    || /衔接模式[：:]\s*(?:开篇|硬切)/.test(continuityText);
+  // 接力关闭或本段为开篇/硬切时保留已截取资产，方便人工检查，但绝不把它们投喂给模型。
+  const active = (slots: DirectorSlotValue[]) =>
+    project.tailFrameRelay && !relayForbidden
+      ? slots
+      : slots.filter((s) => !s.relayKind && !/自动接力/.test(s.label ?? ""));
+  const segSlots = active(segment.slots ?? []);
   const segSingletons = new Set(segSlots.map((s) => s.semantic).filter((s) => SINGLETON_SEMANTICS.has(s)));
   return [
-    ...(project.globalSlots ?? []).filter(
+    ...active(project.globalSlots ?? []).filter(
       (g) => !(SINGLETON_SEMANTICS.has(g.semantic) && segSingletons.has(g.semantic)),
     ),
     ...segSlots,
@@ -225,7 +265,7 @@ export async function resolveSlotImages(
   const effSlots = effectiveSlots(project, segment);
   if (!effSlots.length) return null;
   const items = useAssets.getState().items;
-  const res: ResolvedRefs = { orderedAll: [], refs: [], snapshot: effSlots };
+  const res: ResolvedRefs = { orderedAll: [], refs: [], entries: [], snapshot: effSlots };
   for (const slot of effSlots) {
     if (slot.semantic === "referenceVideo" || slot.semantic === "referenceAudio") continue;
     for (const aid of slot.assetIds) {
@@ -238,6 +278,7 @@ export async function resolveSlotImages(
         continue; // 资产文件读不到（被清理/移动）→ 跳过这张图，不阻塞生成
       }
       if (!url) continue;
+      res.entries.push({ url, assetId: aid, slot });
       res.orderedAll.push(url);
       if (slot.semantic === "firstFrame") {
         if (!res.firstFrame) res.firstFrame = url;
@@ -276,7 +317,7 @@ export async function resolveSlotMedia(
   const effSlots = effectiveSlots(project, segment);
   if (!effSlots.length) return null;
   const items = useAssets.getState().items;
-  const images: ResolvedRefs = { orderedAll: [], refs: [], snapshot: effSlots };
+  const images: ResolvedRefs = { orderedAll: [], refs: [], entries: [], snapshot: effSlots };
   const videos: string[] = [];
   const audios: string[] = [];
   for (const slot of effSlots) {
@@ -298,6 +339,7 @@ export async function resolveSlotMedia(
         audios.push(url);
         continue;
       }
+      images.entries.push({ url, assetId: aid, slot });
       images.orderedAll.push(url);
       if (slot.semantic === "firstFrame") {
         if (!images.firstFrame) images.firstFrame = url;
@@ -310,4 +352,79 @@ export async function resolveSlotMedia(
   }
   if (!images.orderedAll.length && !videos.length && !audios.length) return null;
   return { images, videos, audios, snapshot: effSlots };
+}
+
+export type PictureCapacityResult = {
+  media: ResolvedMedia | null;
+  /** 因图片槽不足而未投喂的站位图所提供的文字空间锁 */
+  spatialTextNote: string;
+  omittedSpatialCount: number;
+  /** 被移除站位图在裁剪前对应的正式 Picture 编号，用于清理静态提示词中的旧标签。 */
+  omittedPictureNumbers: number[];
+};
+
+/** 站位图运行时转文字后，不能让静态 `<Picture N>` 误指向随后补位的桥接帧。 */
+export function rewriteOmittedSpatialPictureRefs(prompt: string, pictureNumbers: number[]): string {
+  let out = prompt;
+  for (const n of [...new Set(pictureNumbers)].sort((a, b) => b - a)) {
+    out = out.replace(new RegExp(`<Picture\\s+${n}>`, "gi"), "the text-only spatial plan (runtime layout image omitted)");
+  }
+  return out;
+}
+
+/**
+ * 参考图超出配方容量时只优先移除“空间站位规划图”，真实桥接帧与人物/场景外观参考不动。
+ * 被移除站位图的英文空间锁继续进入提示词，避免四图工作流在加入桥接帧后既爆槽又丢空间信息。
+ */
+export function constrainPictureCapacity(media: ResolvedMedia | null, maxPictures?: number): PictureCapacityResult {
+  if (!media || !maxPictures || maxPictures < 1 || media.images.entries.length <= maxPictures) {
+    return { media, spatialTextNote: "", omittedSpatialCount: 0, omittedPictureNumbers: [] };
+  }
+  const removableIndexes = media.images.entries
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => entry.slot.referenceRole === "spatialLayout" || entry.slot.semantic === "layoutGuide")
+    .map(({ index }) => index);
+  const removeCount = Math.min(removableIndexes.length, media.images.entries.length - maxPictures);
+  if (!removeCount) return { media, spatialTextNote: "", omittedSpatialCount: 0, omittedPictureNumbers: [] };
+  // 后加入的站位图通常位于静态参考末位；从末尾移除，保持其余 Picture 编号稳定。
+  const removedIndexes = new Set(removableIndexes.slice(-removeCount));
+  const keptEntries = media.images.entries.filter((_, index) => !removedIndexes.has(index));
+  const removedEntries = media.images.entries.filter((_, index) => removedIndexes.has(index));
+  let pictureNumber = 0;
+  const omittedPictureNumbers: number[] = [];
+  media.images.entries.forEach((entry, index) => {
+    if (entry.slot.semantic === "firstFrame" || entry.slot.semantic === "lastFrame") return;
+    pictureNumber++;
+    if (removedIndexes.has(index)) omittedPictureNumbers.push(pictureNumber);
+  });
+  const removedAssetIds = new Set(removedEntries.map((e) => e.assetId));
+  const cleanSlots = (slots: DirectorSlotValue[]) =>
+    slots
+      .map((slot) => ({ ...slot, assetIds: slot.assetIds.filter((id) => !removedAssetIds.has(id)) }))
+      .filter((slot) => slot.assetIds.length > 0);
+  const items = useAssets.getState().items;
+  const locks = removedEntries
+    .map((entry) => {
+      const asset = items.find((a) => a.id === entry.assetId);
+      return asset?.spatialLockEn?.trim() || asset?.spatialLockZh?.trim() || "";
+    })
+    .filter(Boolean);
+  const images: ResolvedRefs = {
+    orderedAll: keptEntries.map((e) => e.url),
+    refs: keptEntries.filter((e) => e.slot.semantic !== "firstFrame" && e.slot.semantic !== "lastFrame").map((e) => e.url),
+    firstFrame: keptEntries.find((e) => e.slot.semantic === "firstFrame")?.url,
+    lastFrame: keptEntries.find((e) => e.slot.semantic === "lastFrame")?.url,
+    entries: keptEntries,
+    snapshot: cleanSlots(media.images.snapshot),
+  };
+  const snapshot = cleanSlots(media.snapshot);
+  const spatialTextNote = locks.length
+    ? `Spatial plan converted from ${removeCount} planning guide image${removeCount > 1 ? "s" : ""} because the picture slots are full. Treat this text as geometry only; do not render diagram labels, arrows, icons, borders, or top-down style:\n${locks.join("\n")}`
+    : "";
+  return {
+    media: { ...media, images, snapshot },
+    spatialTextNote,
+    omittedSpatialCount: removeCount,
+    omittedPictureNumbers,
+  };
 }

@@ -58,3 +58,8 @@ resvg = "0.45"
 tiff = "0.11.3"
 # 读取 JPEG/PNG/WebP 容器中的原始 ICC 配置，并原样写回生产输出。
 img-parts = "0.4.0"
+
+# —— 系统资源监控（画布仪表盘）——
+# sysinfo：CPU / 内存占用；nvml-wrapper：运行时加载 nvml.dll 读 NVIDIA 显卡核心占用与显存（非 N 卡降级 None）
+sysinfo = "0.37"
+nvml-wrapper = "0.11"

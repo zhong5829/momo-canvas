@@ -22,19 +22,22 @@ import { useComfy } from "./stores/comfyStore";
 import { resolveModelCard } from "./stores/settingsStore";
 import { generateImage } from "./services/imageGen";
 import { generateVideo } from "./services/videoGen";
-import { runComfyTemplate, analyzeCapsV3, isImageLoaderClass, isVideoLoaderClass, isAudioLoaderClass, freeComfyMemory, pruneNodesWithServants, defaultParamValues } from "./services/comfy";
+import { runComfyTemplate, analyzeCapsV3, isImageLoaderClass, isVideoLoaderClass, freeComfyMemory, freeResultText, interruptComfy, defaultParamValues } from "./services/comfy";
 import { compilePrompt, compileNegative, segmentShotContexts } from "./directorPrompt";
 import { buildSkillSystem } from "./skillEngine";
 import { directorError, createTake, isH3ReadyPrompt, mpToSize } from "./directorEngine";
-import { refsNoteFromSnapshot, resolveSlotMedia, type ResolvedMedia } from "./directorRefs";
+import { constrainPictureCapacity, refsNoteFromSnapshot, resolveSlotMedia, rewriteOmittedSpatialPictureRefs, type ResolvedMedia } from "./directorRefs";
+import { directorReferenceSupport, type DirectorReferenceSupport } from "./directorRecipeSupport";
 import { useSkills } from "./stores/skillStore";
 import { assetToDataUrl, assetToBlobUrl, assetUrl } from "./services/assetFiles";
-import { grabFrame } from "./videoEdit";
+import { grabFrame, trimVideo } from "./videoEdit";
 import type { SkillRunSnapshot } from "./skillTypes";
-import type { DirectorProject, DirectorSegment, DirectorTake, DirectorPostRecipe, DirectorRecipe, DirectorSlotValue, ComfyTemplate, ComfyWfNode } from "./types";
+import type { DirectorProject, DirectorSegment, DirectorTake, DirectorPostRecipe, DirectorRecipe, DirectorSlotValue, ComfyTemplate } from "./types";
 
-/** 从一个已完成的 Take 抽出「尾帧」dataURL，作为下一段的接力首帧。视频抽尾帧、图片直接用原图。 */
-async function takeTailFrame(take: DirectorTake): Promise<string | null> {
+type RelayBundle = { frame: string; clip?: string; sourceTakeId: string };
+
+/** 从相邻上一段成功 Take 生成空间接力包：稳定桥接帧 + 可选末尾 2 秒动作参考视频。 */
+async function takeRelayBundle(take: DirectorTake, includeClip: boolean): Promise<RelayBundle | null> {
   if (!take.assetId) return null;
   const asset = useAssets.getState().items.find((a) => a.id === take.assetId);
   if (!asset) return null;
@@ -42,21 +45,33 @@ async function takeTailFrame(take: DirectorTake): Promise<string | null> {
     if (asset.kind === "video") {
       // 视频源优先转 blob URL：WebView2 的 asset:// 协议不支持 Range 请求，直接 seek 抽帧会定位超时
       const src = await assetToBlobUrl(asset.path, asset.mime).catch(() => assetUrl(asset.path));
-      const { dataUrl } = await grabFrame(src, "last");
-      return dataUrl;
+      const tail = await grabFrame(src, "last");
+      // 真正最后一帧容易遇到编码结束黑帧/半帧；优先取结尾前 0.25 秒作为稳定桥接帧。
+      const stable = tail.duration > 0.35
+        ? await grabFrame(src, "custom", Math.max(0, tail.duration - 0.25)).catch(() => tail)
+        : tail;
+      let clip: string | undefined;
+      // H3 参考视频兼容下限按 2 秒处理；源视频不足 2 秒时只保留桥接帧。
+      if (includeClip && tail.duration >= 2.05) {
+        clip = await trimVideo(src, Math.max(0, tail.duration - 2), tail.duration).catch(() => undefined);
+      }
+      return { frame: stable.dataUrl, clip, sourceTakeId: take.id };
     }
-    return await assetToDataUrl(asset.path, asset.mime);
+    return { frame: await assetToDataUrl(asset.path, asset.mime), sourceTakeId: take.id };
   } catch {
     return null;
   }
 }
 
-/** 尾帧接力虚拟槽的占位资产 id（接力帧不落资产库，仅进槽位快照让 refsNote 编号与实际投喂顺序一致） */
+/** 尾帧接力槽的展示名/识别标记：持久化进下一段参考槽（分镜卡可见）与 Take 快照里都靠它辨认 */
+const RELAY_LABEL = "上一段稳定桥接帧（自动接力）";
+const RELAY_CLIP_LABEL = "上一段末尾 2 秒（自动接力）";
+/** 兜底注入路径的虚拟槽占位资产 id（接力帧未能落槽位时仅进快照，让 refsNote 编号与实际投喂顺序一致） */
 const RELAY_ASSET_ID = "__relay_tail_frame__";
 
 /** 模板是否有标题标注「首帧」的图片入口（FL2VA 类，与 withOptionalFrameDrop 同源判定）：
  *  有则接力帧走首帧语义（buildSlotMap 精确映射 + 不被缺首帧降级剔除）；
- *  无（REF2VA 的「Picture N」参考图标题不含首帧字样）则接力帧作第 1 张参考图按序投喂，
+ *  无（REF2VA 的「Picture N」参考图标题不含首帧字样）则接力帧作最后一张参考图按序投喂，
  *  refsNote 的「图N」编号即模板实际的 Picture 位，不错位 */
 function hasFirstFrameEntry(tpl: ComfyTemplate): boolean {
   return Object.values(tpl.workflow).some(
@@ -64,14 +79,185 @@ function hasFirstFrameEntry(tpl: ComfyTemplate): boolean {
   );
 }
 
+/** 当前片段配方能接收几条参考视频；非 R2V/无视频入口时返回 0。 */
+function referenceVideoCapacity(project: DirectorProject, segment: DirectorSegment): number {
+  const recipe = resolveRecipe(project, segment);
+  // 当前远程 generateVideo 协议尚未透传参考视频；只对实际有媒体入口的 ComfyUI 配方启用桥接片段。
+  if (recipe?.engine !== "comfy") return 0;
+  const snap = recipe?.capabilitySnapshot?.referenceVideos;
+  if (typeof snap === "number") return Math.max(0, snap);
+  if (recipe.templateId) {
+    const tpl = useComfy.getState().templates.find((t) => t.id === recipe.templateId);
+    if (tpl) return Object.values(tpl.workflow).filter((n) => isVideoLoaderClass(n.class_type)).length;
+  }
+  return 0;
+}
+
+/** 当前配方真实可接收的图片数；未声明容量的远程配方不在 MOMO 侧截断。 */
+function referenceImageCapacity(recipe: DirectorRecipe | undefined, tpl?: ComfyTemplate): number | undefined {
+  if (tpl) {
+    const n = Object.values(tpl.workflow).filter((node) => isImageLoaderClass(node.class_type)).length;
+    return n || undefined;
+  }
+  const n = recipe?.capabilitySnapshot?.referenceImages;
+  return typeof n === "number" && n > 0 ? n : undefined;
+}
+
+/**
+ * 按当前配方能力裁掉不支持的参考类别。灰色槽里的素材仍保存在项目中，切回兼容配方即可恢复，
+ * 但不会进入提示词编号、Take 快照或 ComfyUI 上传队列。
+ */
+function filterMediaBySupport(media: ResolvedMedia | null, support: DirectorReferenceSupport): ResolvedMedia | null {
+  if (!media) return null;
+  const slotAllowed = (slot: DirectorSlotValue) => {
+    if (slot.semantic === "firstFrame") return support.firstFrame;
+    if (slot.semantic === "lastFrame") return support.lastFrame;
+    if (slot.semantic === "referenceVideo") return support.video;
+    if (slot.semantic === "referenceAudio") return support.audio;
+    return support.referenceImage;
+  };
+  const entries = media.images.entries.filter((e) => slotAllowed(e.slot));
+  const snapshot = media.snapshot.filter(slotAllowed);
+  const images = {
+    orderedAll: entries.map((e) => e.url),
+    refs: entries.filter((e) => e.slot.semantic !== "firstFrame" && e.slot.semantic !== "lastFrame").map((e) => e.url),
+    firstFrame: support.firstFrame ? entries.find((e) => e.slot.semantic === "firstFrame")?.url : undefined,
+    lastFrame: support.lastFrame ? entries.find((e) => e.slot.semantic === "lastFrame")?.url : undefined,
+    entries,
+    snapshot,
+  };
+  const videos = support.video ? media.videos : [];
+  const audios = support.audio ? media.audios : [];
+  if (!images.orderedAll.length && !videos.length && !audios.length) return null;
+  return { images, videos, audios, snapshot };
+}
+
+/** 优先采用已选版本，否则取最近一次成功视频版本。 */
+function relaySourceTake(segment: DirectorSegment): DirectorTake | undefined {
+  const done = (segment.takes ?? []).filter((t) => t.status === "done" && t.kind === "video" && t.assetId);
+  return done.find((t) => t.id === segment.approvedTakeId) ?? done.sort((a, b) => b.createdAt - a.createdAt)[0];
+}
+
+/** 已有同源接力时直接读取桥接帧，避免再次截取和重复保存 2 秒片段。 */
+async function existingRelayFrame(segment: DirectorSegment, sourceTakeId: string, needClip: boolean): Promise<string | null> {
+  const slots = segment.slots ?? [];
+  const frameSlot = slots.find((s) => s.relayKind === "frame" && s.relaySourceTakeId === sourceTakeId);
+  const hasClip = slots.some((s) => s.relayKind === "clip" && s.relaySourceTakeId === sourceTakeId);
+  if (!frameSlot || (needClip && !hasClip)) return null;
+  const asset = useAssets.getState().items.find((a) => a.id === frameSlot.assetIds[0]);
+  if (!asset) return null;
+  return assetToDataUrl(asset.path, asset.mime).catch(() => null);
+}
+
+/**
+ * 把接力帧填进下一段参考槽末位（尾帧接力的持久化部分，runBatch 抽帧后调用）：
+ * 收录为参考资产 → 追加到该段 slots 尾部（referenceImage 语义 + RELAY_LABEL 标记，auto:false 防同步对账清掉）。
+ * 分镜卡参考图区最后一格即时可见，用户可删可拖；同段重跑先摘除旧接力槽再追加，不叠加。
+ */
+async function fillRelaySlots(projectId: string, segmentId: string, bundle: RelayBundle): Promise<void> {
+  const frameAsset = await useAssets.getState().collect({
+    src: bundle.frame,
+    kind: "image",
+    name: "空间接力帧",
+    director: { projectId, segmentId, role: "reference" },
+  });
+  let clipAssetId: string | undefined;
+  if (bundle.clip) {
+    try {
+      const clipAsset = await useAssets.getState().collect({
+        src: bundle.clip,
+        kind: "video",
+        name: "空间接力片段_末尾2秒",
+        director: { projectId, segmentId, role: "reference" },
+      });
+      clipAssetId = clipAsset?.id;
+    } finally {
+      if (bundle.clip.startsWith("blob:")) URL.revokeObjectURL(bundle.clip);
+    }
+  }
+  if (!frameAsset) return;
+  const proj = useDirector.getState().getById(projectId);
+  if (!proj) return;
+  useDirector.getState().updateProject(projectId, {
+    scenes: proj.scenes.map((s) => ({
+      ...s,
+      segments: s.segments.map((g) => {
+        if (g.id !== segmentId) return g;
+        const slots = (g.slots ?? []).filter((x) => !x.relayKind && x.label !== RELAY_LABEL && x.label !== RELAY_CLIP_LABEL);
+        const relaySlots: DirectorSlotValue[] = [
+          {
+            semantic: "referenceImage",
+            assetIds: [frameAsset.id],
+            auto: false,
+            label: RELAY_LABEL,
+            relayKind: "frame",
+            relaySourceTakeId: bundle.sourceTakeId,
+          },
+        ];
+        if (clipAssetId) relaySlots.push({
+          semantic: "referenceVideo",
+          assetIds: [clipAssetId],
+          auto: false,
+          label: RELAY_CLIP_LABEL,
+          relayKind: "clip",
+          relaySourceTakeId: bundle.sourceTakeId,
+        });
+        return { ...g, slots: [...slots, ...relaySlots] };
+      }),
+    })),
+  });
+}
+
+/** 摘除片段里的自动接力槽；资产本体保留在资产库，避免误删历史参考。 */
+function clearRelaySlots(projectId: string, segmentId: string, kind?: "frame" | "clip"): void {
+  const proj = useDirector.getState().getById(projectId);
+  if (!proj) return;
+  const scenes = proj.scenes.map((scene) => ({
+    ...scene,
+    segments: scene.segments.map((segment) => {
+      if (segment.id !== segmentId) return segment;
+      const slots = (segment.slots ?? []).filter((slot) => {
+        const legacyRelay = /自动接力/.test(slot.label ?? "");
+        if (!slot.relayKind && !legacyRelay) return true;
+        return kind ? slot.relayKind !== kind : false;
+      });
+      return { ...segment, slots };
+    }),
+  }));
+  useDirector.getState().updateProject(projectId, { scenes });
+}
+
+type SegmentContinuityMode = "opening" | "continuity_relay" | "hard_cut";
+
+/**
+ * 从双语执行提示中读取接力策略。旧项目没有显式标记时保持原有“同场接力”行为，
+ * 但新版项目可用 opening / hard_cut 阻止跨场景桥接素材误入本段。
+ */
+function segmentContinuityMode(segment: DirectorSegment): SegmentContinuityMode {
+  const text = [
+    segment.promptFinalOverride,
+    segment.promptOverride,
+    segment.scriptText,
+    segment.summary,
+    segment.continuityIn,
+  ].filter(Boolean).join("\n");
+  if (/Continuity mode:\s*hard[_ -]?cut/i.test(text) || /衔接模式[：:]\s*硬切/.test(text)) return "hard_cut";
+  if (/Continuity mode:\s*opening/i.test(text) || /衔接模式[：:]\s*开篇/.test(text)) return "opening";
+  if (/Continuity mode:\s*continuity[_ -]?relay/i.test(text) || /衔接模式[：:]\s*同场接力/.test(text)) return "continuity_relay";
+  return "continuity_relay";
+}
+
 /**
  * 尾帧接力注入：把上一段尾帧并入本段参考素材（项目开关开启时 runBatch 才会传入 relay）。
- *  - 首帧语义（namedFirstFrame 且本段无显式首帧）：远程视频走 image 具名参数，ComfyUI 经
- *    buildSlotMap 精确映射到模板首帧槽；具名槽吃掉的帧会被 runComfyTemplate 从顺序队列扣除，不重复投喂
- *  - 其余情况作为第 1 张参考图（队首）：远程图 refImages[0] / REF2VA 类模板的 Picture 1，
- *    与本段原有参考图一起喂给模型
- *  - 槽位快照同步并入带 label 的虚拟槽，refsNote 的「首帧/图N」编号与模型实际收到的顺序严格一致
- *  - 视频目标本段已有显式首帧时用户已指定开头画面，接力帧不抢（显式优先）
+ * 接力帧正常已被 fillRelaySlot 持久化进本段参考槽末位，这里只做执行层语义适配：
+ *  - 已在槽位里（orderedAll 含接力帧）：保持「最后一张参考图」原位投喂；仅当目标吃首帧语义
+ *    （namedFirstFrame：远程视频 image 具名参数 / 模板有「首帧」入口）且本段无显式首帧时，
+ *    把它从参考图里摘下提升为首帧（buildSlotMap 精确映射，具名槽吃掉的帧会被 runComfyTemplate
+ *    从顺序队列扣除，不重复投喂），快照槽语义同步改成 firstFrame
+ *  - 不在槽位里（持久化失败的兜底）：并入参考素材末尾——远程图 refImages 末位 / REF2VA 类模板的
+ *    最后一个 Picture N；兜底走首帧语义时置队首由具名槽扣除
+ *  - refsNote 的「首帧/图N」编号与模型实际收到的顺序严格一致
+ *  - 视频目标本段已有显式首帧时用户已指定开头画面，接力帧不抢（显式优先，留在参考图末位）
  */
 function withRelayFrame(
   media: ResolvedMedia | null,
@@ -81,20 +267,58 @@ function withRelayFrame(
   if (!relay) return media;
   if (opts.target === "video" && media?.images.firstFrame) return media;
   const asFirst = !media?.images.firstFrame && opts.namedFirstFrame;
+  // 已持久化进片段槽：原位保留；吃首帧语义时提升为首帧
+  if (media && media.images.orderedAll.includes(relay)) {
+    if (!asFirst) return media;
+    const promote = (slots: DirectorSlotValue[]) =>
+      slots.map((s) => (s.relayKind === "frame" && s.assetIds.length === 1 ? { ...s, semantic: "firstFrame" as const } : s));
+    return {
+      images: {
+        orderedAll: media.images.orderedAll,
+        refs: media.images.refs.filter((u) => u !== relay),
+        firstFrame: relay,
+        lastFrame: media.images.lastFrame,
+        entries: media.images.entries.map((e) =>
+          e.slot.relayKind === "frame" ? { ...e, slot: { ...e.slot, semantic: "firstFrame" as const } } : e,
+        ),
+        snapshot: promote(media.images.snapshot),
+      },
+      videos: media.videos,
+      audios: media.audios,
+      snapshot: promote(media.snapshot),
+    };
+  }
+  // 兜底：接力帧没进槽位，直接并入参考素材（参考图情况放末位）
   const slot: DirectorSlotValue = {
     semantic: asFirst ? "firstFrame" : "referenceImage",
     assetIds: [RELAY_ASSET_ID],
     auto: true,
-    label: "上一段尾帧（自动接力）",
+    label: RELAY_LABEL,
+    relayKind: "frame",
   };
-  const images = {
-    orderedAll: [relay, ...(media?.images.orderedAll ?? [])],
-    refs: asFirst ? (media?.images.refs ?? []) : [relay, ...(media?.images.refs ?? [])],
-    firstFrame: asFirst ? relay : media?.images.firstFrame,
-    lastFrame: media?.images.lastFrame,
-    snapshot: [slot, ...(media?.images.snapshot ?? [])],
+  const images = asFirst
+    ? {
+        orderedAll: [relay, ...(media?.images.orderedAll ?? [])],
+        refs: media?.images.refs ?? [],
+        firstFrame: relay,
+        lastFrame: media?.images.lastFrame,
+        entries: [{ url: relay, assetId: RELAY_ASSET_ID, slot }, ...(media?.images.entries ?? [])],
+        snapshot: [slot, ...(media?.images.snapshot ?? [])],
+      }
+    : {
+        orderedAll: [...(media?.images.orderedAll ?? []), relay],
+        refs: [...(media?.images.refs ?? []), relay],
+        firstFrame: media?.images.firstFrame,
+        lastFrame: media?.images.lastFrame,
+        entries: [...(media?.images.entries ?? []), { url: relay, assetId: RELAY_ASSET_ID, slot }],
+        snapshot: [...(media?.images.snapshot ?? []), slot],
+      };
+  return {
+    images,
+    videos: media?.videos ?? [],
+    audios: media?.audios ?? [],
+    snapshot: asFirst ? [slot, ...(media?.snapshot ?? [])] : [...(media?.snapshot ?? []), slot],
   };
-  return { images, videos: media?.videos ?? [], audios: media?.audios ?? [], snapshot: [slot, ...(media?.snapshot ?? [])] };
 }
 
 /**
@@ -153,9 +377,19 @@ function compileSegmentPrompt(
  */
 export async function previewSegmentPrompt(project: DirectorProject, segment: DirectorSegment): Promise<string> {
   const { prompt } = compileSegmentPrompt(project, segment, "video-t2v");
-  const media = await resolveSlotMedia(project, segment);
+  const recipe = resolveRecipe(project, segment);
+  const tpl = recipe?.engine === "comfy" && recipe.templateId
+    ? useComfy.getState().templates.find((t) => t.id === recipe.templateId)
+    : undefined;
+  const supported = filterMediaBySupport(
+    await resolveSlotMedia(project, segment),
+    directorReferenceSupport(recipe, tpl),
+  );
+  const capped = constrainPictureCapacity(supported, referenceImageCapacity(recipe, tpl));
+  const media = capped.media;
   const note = media ? refsNoteFromSnapshot(media.snapshot, "video") : "";
-  return note ? `${note}\n\n${prompt}` : prompt;
+  const runtimePrompt = rewriteOmittedSpatialPictureRefs(prompt, capped.omittedPictureNumbers);
+  return [note, capped.spatialTextNote, runtimePrompt].filter(Boolean).join("\n\n");
 }
 
 /** 解析 segment 当前使用的 recipe：segment.recipeId > 项目默认 defaultRecipeId > null（走 provider 远程） */
@@ -200,26 +434,6 @@ function withOptionalFrameDrop(tpl: ComfyTemplate, media: ResolvedMedia): ComfyT
   return { ...tpl, disabledNodes: [...(tpl.disabledNodes ?? []), ...drop] };
 }
 
-/**
- * 无视频/音频参考时的显存瘦身（REF2VA 多参考工作流）：
- * 模板内置的默认 LoadVideo/LoadAudio 参考文件，即使本段没接任何视/音参考也会被解码并参与计算，
- * 会把 32GB 级显存顶爆（GPU 陷入换页空转：100% 利用率但功耗极低，实测 15s 片从 ~600s 拖到 40min+）。
- * 做法＝「连坐旁路」：本段没接的媒体类型的加载节点，连同只服务于它们的下游节点
- * （如 GetVideoComponents 拆分器）整条剔除出提交工作流，消费端的可选参考链接一并摘除。
- */
-function withUnrefedMediaDrop(tpl: ComfyTemplate, media: ResolvedMedia): ComfyTemplate {
-  const dropVideo = !media.videos.length;
-  const dropAudio = !media.audios.length;
-  if (!dropVideo && !dropAudio) return tpl;
-  const wf: Record<string, ComfyWfNode> = JSON.parse(JSON.stringify(tpl.workflow));
-  const marked = new Set<string>();
-  for (const [id, n] of Object.entries(wf)) {
-    if ((dropVideo && isVideoLoaderClass(n.class_type)) || (dropAudio && isAudioLoaderClass(n.class_type))) marked.add(id);
-  }
-  if (!marked.size) return tpl;
-  return { ...tpl, workflow: pruneNodesWithServants(wf, marked) };
-}
-
 /** 标记某 Take 状态 */
 function patchTake(projectId: string, segmentId: string, takeId: string, patch: Partial<DirectorTake>): void {
   const proj = useDirector.getState().getById(projectId);
@@ -251,6 +465,7 @@ export async function executeImageTake(
   project: DirectorProject,
   relayFirstFrame?: string,
   onSub?: (msg: string, pct?: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   patchTake(projectId, segment.id, take.id, { status: "running", error: undefined, startedAt: Date.now() });
   try {
@@ -264,25 +479,30 @@ export async function executeImageTake(
       ? useComfy.getState().templates.find((t) => t.id === recipe!.templateId)
       : undefined;
     if (useComfyEngine && !comfyTpl) throw new Error(`配方「${recipe!.name}」的模板不存在`);
-    // 尾帧接力：上一段尾帧并入参考素材（远程作首张参考图；ComfyUI 有「首帧」入口走首帧映射，否则 Picture 1）
-    const media = withRelayFrame(mediaRaw, relayFirstFrame, {
+    // 尾帧接力：上一段尾帧并入参考素材（已落参考槽末位，作最后一张参考图；ComfyUI 有「首帧」入口走首帧映射）
+    const injectedMedia = withRelayFrame(mediaRaw, relayFirstFrame, {
       target: "image",
       namedFirstFrame: comfyTpl ? hasFirstFrameEntry(comfyTpl) : false,
     });
+    const supportedMedia = filterMediaBySupport(injectedMedia, directorReferenceSupport(recipe, comfyTpl));
+    const capped = constrainPictureCapacity(supportedMedia, referenceImageCapacity(recipe, comfyTpl));
+    const media = capped.media;
     // 前置引用说明：图N / 视频N / 音频N 编号与模型实际收到的素材顺序严格一致
     const refNote = media ? refsNoteFromSnapshot(media.snapshot, "image") : "";
-    const finalPrompt = refNote ? `${refNote}\n\n${prompt}` : prompt;
+    const runtimePrompt = rewriteOmittedSpatialPictureRefs(prompt, capped.omittedPictureNumbers);
+    const finalPrompt = [refNote, capped.spatialTextNote, runtimePrompt].filter(Boolean).join("\n\n");
     let results: string[];
     let modelLabel: string;
     if (comfyTpl) {
       // ComfyUI 配方：走 runComfyTemplate
       // 首尾帧模板按需降级：缺首帧/尾帧素材时忽略对应 LoadImage，退化为 T2V/I2V（接力帧顶上的 firstFrame 不算缺）
-      const tpl = media ? withUnrefedMediaDrop(withOptionalFrameDrop(comfyTpl, media), media) : comfyTpl;
+      const tpl = media ? withOptionalFrameDrop(comfyTpl, media) : comfyTpl;
       const host = useSettings.getState().settings.comfy.host;
       if (!host) throw new Error("请先配置 ComfyUI 地址");
       const r = await runComfyTemplate(host, tpl, recipe!.defaultParams as Record<string, string | number | boolean>, {
         variantId: recipe!.variantId,
         onProgress: onSub,
+        signal,
         upstreamImages: media?.images.orderedAll,
         upstreamVideos: media?.videos.length ? media.videos : undefined,
         upstreamAudios: media?.audios.length ? media.audios : undefined,
@@ -292,7 +512,7 @@ export async function executeImageTake(
       results = r.images;
       modelLabel = `ComfyUI · ${tpl.name}`;
     } else {
-      // 远程配方或无配方：走 generateImage（接力帧已在 orderedAll 队首，与本段参考图一起投喂）
+      // 远程配方或无配方：走 generateImage（接力帧已在 orderedAll 末位，与本段参考图一起投喂）
       onSub?.("已提交远程生成任务…");
       const card = recipe?.providerModelKey
         ? resolveModelCard("image", recipe.providerModelKey)
@@ -321,6 +541,11 @@ export async function executeImageTake(
       slotSnapshot: media?.snapshot,
     });
   } catch (e) {
+    // 「停止」按钮主动掐断：标取消、不进报错中心、不计失败
+    if (signal?.aborted) {
+      patchTake(projectId, segment.id, take.id, { status: "cancelled", error: "已手动停止" });
+      return;
+    }
     const msg = e instanceof Error ? e.message : String(e);
     patchTake(projectId, segment.id, take.id, { status: "error", error: msg });
     directorError(`片段 ${segment.summary.slice(0, 12)}`, msg);
@@ -337,6 +562,7 @@ export async function executeVideoTake(
   project: DirectorProject,
   relayFirstFrame?: string,
   onSub?: (msg: string, pct?: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   patchTake(projectId, segment.id, take.id, { status: "running", error: undefined, startedAt: Date.now() });
   try {
@@ -350,26 +576,32 @@ export async function executeVideoTake(
       ? useComfy.getState().templates.find((t) => t.id === recipe!.templateId)
       : undefined;
     if (useComfyEngine && !comfyTpl) throw new Error(`配方「${recipe!.name}」的模板不存在`);
-    // 尾帧接力：本段无显式首帧时上一段尾帧顶上（远程走 image 具名参数；ComfyUI 有「首帧」入口走精确映射，
-    // REF2VA 类无首帧入口的模板作 Picture 1 参考图与本段参考图一起投喂）；本段有显式首帧则显式优先、不注入
-    const media = withRelayFrame(mediaRaw, relayFirstFrame, {
+    // 尾帧接力：接力帧已落本段参考槽末位（最后一张参考图，REF2VA 类无首帧入口的模板按序投喂最后一个 Picture N）；
+    // 本段无显式首帧且目标吃首帧语义时提升为首帧（远程走 image 具名参数；ComfyUI 有「首帧」入口走精确映射）；
+    // 本段有显式首帧则显式优先、接力帧留在参考图末位
+    const injectedMedia = withRelayFrame(mediaRaw, relayFirstFrame, {
       target: "video",
       namedFirstFrame: comfyTpl ? hasFirstFrameEntry(comfyTpl) : true,
     });
+    const supportedMedia = filterMediaBySupport(injectedMedia, directorReferenceSupport(recipe, comfyTpl));
+    const capped = constrainPictureCapacity(supportedMedia, referenceImageCapacity(recipe, comfyTpl));
+    const media = capped.media;
     // 前置引用说明：图N / 视频N / 音频N 编号与模型实际收到的素材顺序严格一致
     const refNote = media ? refsNoteFromSnapshot(media.snapshot, "video") : "";
-    const finalPrompt = refNote ? `${refNote}\n\n${prompt}` : prompt;
+    const runtimePrompt = rewriteOmittedSpatialPictureRefs(prompt, capped.omittedPictureNumbers);
+    const finalPrompt = [refNote, capped.spatialTextNote, runtimePrompt].filter(Boolean).join("\n\n");
     let videoUrl: string;
     let modelLabel: string;
     if (comfyTpl) {
       // ComfyUI 配方：走 runComfyTemplate（视频分支；提示词 + 图/视/音参考全部透传模板）
       // 首尾帧模板按需降级：缺首帧/尾帧素材时忽略对应 LoadImage，退化为 T2V/I2V（接力帧顶上的 firstFrame 不算缺）
-      const tpl = media ? withUnrefedMediaDrop(withOptionalFrameDrop(comfyTpl, media), media) : comfyTpl;
+      const tpl = media ? withOptionalFrameDrop(comfyTpl, media) : comfyTpl;
       const host = useSettings.getState().settings.comfy.host;
       if (!host) throw new Error("请先配置 ComfyUI 地址");
       const r = await runComfyTemplate(host, tpl, recipe!.defaultParams as Record<string, string | number | boolean>, {
         variantId: recipe!.variantId,
         onProgress: onSub,
+        signal,
         upstreamImages: media?.images.orderedAll,
         upstreamVideos: media?.videos.length ? media.videos : undefined,
         upstreamAudios: media?.audios.length ? media.audios : undefined,
@@ -427,6 +659,11 @@ export async function executeVideoTake(
       slotSnapshot: media?.snapshot,
     });
   } catch (e) {
+    // 「停止」按钮主动掐断：标取消、不进报错中心、不计失败
+    if (signal?.aborted) {
+      patchTake(projectId, segment.id, take.id, { status: "cancelled", error: "已手动停止" });
+      return;
+    }
     const msg = e instanceof Error ? e.message : String(e);
     patchTake(projectId, segment.id, take.id, { status: "error", error: msg });
     directorError(`片段 ${segment.summary.slice(0, 12)}`, msg);
@@ -441,6 +678,25 @@ let batchAbort: AbortController | null = null;
 export function cancelBatch(): void {
   batchAbort?.abort();
   // 不置 null：runBatch 循环靠 batchAbort?.signal.aborted 判断，置 null 后 ?. 短路返回 undefined（falsy），取消无效
+}
+
+/** 在途生成的硬中断信号（「停止」按钮用）：与 batchAbort 分设——batchAbort 只在片段间断点生效，这个直接掐断在途的 ComfyUI 轮询等待 */
+let runAbort: AbortController | null = null;
+
+/**
+ * 停止按钮（硬停止）：立即中断在途生成 + 强停 ComfyUI（/interrupt + 清空排队）+ 清空显存内存（/free）。
+ * 与 cancelBatch 的区别：cancelBatch 是当前段跑完后才停，这个立刻停。
+ * 远程计费任务已提交的部分无法撤销，只能终止本地等待与后续队列。返回给 UI toast 用的文案。
+ */
+export async function stopBatchHard(): Promise<string> {
+  batchAbort?.abort();
+  runAbort?.abort();
+  const host = useSettings.getState().settings.comfy.host;
+  if (!host) return "已停止（未配置 ComfyUI 地址；远程计费任务已提交部分无法撤销）";
+  const ir = await interruptComfy(host);
+  if (!ir.ok) return `已停止本地队列，但强制停止 ComfyUI 失败：${ir.err}`;
+  const fr = await freeComfyMemory(host);
+  return `已停止并强制中断 ComfyUI · ${freeResultText(fr)}`;
 }
 
 /** 收集需要批量处理的片段（返回 segment + 新建或现有的 pending/error Take） */
@@ -508,10 +764,11 @@ export async function runBatch(
   let cancelled = 0;
   const total = tasks.length;
   batchAbort = new AbortController();
+  runAbort = new AbortController();
   let aborted = false;
-  // 尾帧接力（项目开关 tailFrameRelay）：上一段生成完成后抽尾帧，作为下一段的首帧/首张参考图（跨段画面衔接）；关闭则各段独立生成
+  // 空间接力：每个任务只读取故事顺序中紧邻的上一段，绝不把「所选/缺失」列表中非相邻任务串接。
   const relayOn = !!project.tailFrameRelay;
-  let relayFrame: string | undefined;
+  const storyOrder = project.scenes.flatMap((s) => s.segments).map((s) => s.id);
   for (let i = 0; i < tasks.length; i++) {
     if (batchAbort?.signal.aborted) { aborted = true; break; }
     const t = tasks[i];
@@ -519,31 +776,79 @@ export async function runBatch(
     onProgress?.(i, total, t.segment.summary.slice(0, 20));
     // 细粒度进度（ComfyUI 节点/步数百分比、上传/参数写入各阶段）续在段级进度上
     const sub = (msg: string, pct?: number) => onProgress?.(i, total, t.segment.summary.slice(0, 20), { msg, pct });
-    // 重新读项目（每轮可能被更新）
-    const curProj = useDirector.getState().getById(projectId);
+    // 重新读项目（每轮可能被更新）。执行前从真正相邻的上一段准备接力包；首段不接力。
+    let curProj = useDirector.getState().getById(projectId);
     if (!curProj) break;
-    const curSeg = curProj.scenes.flatMap((s) => s.segments).find((s) => s.id === t.segment.id);
+    let curSeg = curProj.scenes.flatMap((s) => s.segments).find((s) => s.id === t.segment.id);
     if (!curSeg) continue;
-    if (t.kind === "video") {
-      await executeVideoTake(projectId, curSeg, take, curProj, relayFrame, sub);
-    } else {
-      await executeImageTake(projectId, curSeg, take, curProj, relayFrame, sub);
+    let relayFrame: string | undefined;
+    const continuityMode = segmentContinuityMode(curSeg);
+    const relayAllowed = relayOn && continuityMode === "continuity_relay";
+    if (!relayAllowed && (curSeg.slots ?? []).some((s) => s.relayKind || /自动接力/.test(s.label ?? ""))) {
+      // 开篇和硬切换场必须清掉历史接力槽，防止上一次运行留下的图片/视频继续污染新空间。
+      clearRelaySlots(projectId, curSeg.id);
+      curProj = useDirector.getState().getById(projectId);
+      curSeg = curProj?.scenes.flatMap((s) => s.segments).find((s) => s.id === t.segment.id);
+      if (!curProj || !curSeg) break;
     }
-    // 检查执行后的状态
+    if (continuityMode === "hard_cut") {
+      sub("硬切换场：已忽略上一段桥接图片与视频");
+    }
+    if (relayAllowed) {
+      const pos = storyOrder.indexOf(curSeg.id);
+      const prevId = pos > 0 ? storyOrder[pos - 1] : undefined;
+      const prevSeg = prevId ? curProj.scenes.flatMap((s) => s.segments).find((s) => s.id === prevId) : undefined;
+      const sourceTake = prevSeg ? relaySourceTake(prevSeg) : undefined;
+      if (sourceTake) {
+        const cap = referenceVideoCapacity(curProj, curSeg);
+        const usedVideos = [...(curProj.globalSlots ?? []), ...(curSeg.slots ?? [])]
+          .filter((s) => s.semantic === "referenceVideo" && !s.relayKind)
+          .reduce((n, s) => n + s.assetIds.length, 0);
+        const needClip = cap > usedVideos;
+        // 配方已无视频槽时摘除旧桥接视频，防止历史槽继续参与本轮工作流。
+        if (!needClip && (curSeg.slots ?? []).some((s) => s.relayKind === "clip")) {
+          clearRelaySlots(projectId, curSeg.id, "clip");
+          curProj = useDirector.getState().getById(projectId);
+          curSeg = curProj?.scenes.flatMap((s) => s.segments).find((s) => s.id === t.segment.id);
+          if (!curProj || !curSeg) break;
+        }
+        onProgress?.(i, total, "准备空间接力…", { msg: needClip ? "提取稳定桥接帧与末尾 2 秒…" : "提取稳定桥接帧…" });
+        relayFrame = (await existingRelayFrame(curSeg, sourceTake.id, needClip)) ?? undefined;
+        if (!relayFrame) {
+          // 来源变化或已有素材损坏时先摘掉旧槽；提取失败也不能把旧段错误接到当前段。
+          clearRelaySlots(projectId, curSeg.id);
+          const bundle = await takeRelayBundle(sourceTake, needClip);
+          if (bundle) {
+            relayFrame = bundle.frame;
+            await fillRelaySlots(projectId, curSeg.id, bundle);
+            // 槽位刚回填，刷新项目/片段，让本轮 resolveSlotMedia 立即读到桥接视频。
+            curProj = useDirector.getState().getById(projectId);
+            curSeg = curProj?.scenes.flatMap((s) => s.segments).find((s) => s.id === t.segment.id);
+            if (!curProj || !curSeg) break;
+          }
+        }
+      } else if ((curSeg.slots ?? []).some((s) => s.relayKind || /自动接力/.test(s.label ?? ""))) {
+        // 相邻上一段没有成功Take：不得沿用历史或非相邻接力素材。
+        clearRelaySlots(projectId, curSeg.id);
+        curProj = useDirector.getState().getById(projectId);
+        curSeg = curProj?.scenes.flatMap((s) => s.segments).find((s) => s.id === t.segment.id);
+        if (!curProj || !curSeg) break;
+      }
+    }
+    if (t.kind === "video") {
+      await executeVideoTake(projectId, curSeg, take, curProj, relayFrame, sub, runAbort?.signal);
+    } else {
+      await executeImageTake(projectId, curSeg, take, curProj, relayFrame, sub, runAbort?.signal);
+    }
+    // 检查执行后的状态（被「停止」掐断的 cancelled 不算失败）
     const finalProj = useDirector.getState().getById(projectId);
     const finalTake = finalProj?.scenes.flatMap((s) => s.segments).flatMap((seg) => seg.takes ?? []).find((tk) => tk.id === take.id);
     if (finalTake?.status === "done") {
       done++;
-      // 抽本段尾帧接力下一段（最后一段无人消费、不抽）；抽不到就断接力（不硬塞旧帧造成错接）
-      if (relayOn && i < tasks.length - 1) {
-        onProgress?.(i + 1, total, "抽取尾帧…");
-        relayFrame = (await takeTailFrame(finalTake)) ?? undefined;
-      } else {
-        relayFrame = undefined;
-      }
+    } else if (finalTake?.status === "cancelled") {
+      cancelled++;
     } else {
       failed++;
-      relayFrame = undefined; // 本段失败，接力链断开
     }
     // 每段结束后按项目开关清理 ComfyUI 显存（无论成败；失败不阻断队列，下一段会重新加载模型）
     if (curProj.freeMemBetween) {
@@ -580,6 +885,7 @@ export async function runBatch(
   }
   onProgress?.(total, total, "");
   batchAbort = null;
+  runAbort = null;
   return { done, failed, cancelled };
 }
 

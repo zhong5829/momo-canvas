@@ -305,7 +305,7 @@ export function AssetLibrary() {
       } else if (kind !== "all" && kind !== "directorRef" && i.kind !== kind) return false;
       if (folderId !== "all" && i.folderId !== folderId) return false;
       if (tagFilter && !(i.tags ?? []).includes(tagFilter)) return false;
-      if (kw && !`${i.name} ${i.prompt ?? ""} ${i.model ?? ""} ${(i.tags ?? []).join(" ")}`.toLowerCase().includes(kw))
+      if (kw && !`${i.name} ${i.prompt ?? ""} ${i.promptZh ?? ""} ${i.promptEn ?? ""} ${i.catalogId ?? ""} ${i.spatialLockZh ?? ""} ${i.spatialLockEn ?? ""} ${i.model ?? ""} ${(i.tags ?? []).join(" ")}`.toLowerCase().includes(kw))
         return false;
       return true;
     });
@@ -1517,7 +1517,17 @@ function AssetPreview({
             onBlur={addTag}
           />
         </div>
-        {item.prompt ? <div className="prompt-box">{item.prompt}</div> : null}
+        {item.catalogId ? (
+          <div className="set-hint">
+            资产册 {item.catalogId} · {item.catalogRole === "spatialLayout" ? "空间站位图" : "外观参考"}
+          </div>
+        ) : null}
+        {item.promptZh ? <div className="prompt-box"><b>中文提示词</b><br />{item.promptZh}</div> : null}
+        {item.promptEn ? <div className="prompt-box"><b>English Prompt</b><br />{item.promptEn}</div> : null}
+        {!item.promptZh && !item.promptEn && item.prompt ? <div className="prompt-box">{item.prompt}</div> : null}
+        {item.catalogRole === "spatialLayout" && (item.spatialLockZh || item.spatialLockEn) ? (
+          <div className="prompt-box"><b>空间锁</b><br />{item.spatialLockZh || item.spatialLockEn}</div>
+        ) : null}
         <div style={{ flex: 1 }} />
         {item.kind === "video" ? (
           <>

@@ -1380,6 +1380,20 @@ export type AssetItem = {
   width?: number;
   height?: number;
   prompt?: string;
+  /** 资产册中的中文生成提示词；与 promptEn 成对保存，不互相覆盖 */
+  promptZh?: string;
+  /** 资产册中的英文生成提示词；H3/MOMO 执行时优先使用英文空间说明 */
+  promptEn?: string;
+  /** 资产册稳定编号，如 SCENE-01 / LAYOUT-03 */
+  catalogId?: string;
+  /** 资产册来源 MD 的绝对路径或浏览器相对标识 */
+  catalogSource?: string;
+  /** 资产册声明的用途：普通外观参考或仅用于空间规划的站位图 */
+  catalogRole?: "appearance" | "spatialLayout";
+  /** 站位图的中文空间锁；不等同于生图提示词 */
+  spatialLockZh?: string;
+  /** 站位图的英文空间锁；图片槽不足时转为文字继续约束视频 */
+  spatialLockEn?: string;
   model?: string;
   folderId?: string | null;
   /** 标签（去重、保序） */
@@ -1520,6 +1534,14 @@ export type DirectorSlotValue = {
   auto?: boolean;
   /** 展示名（refsNote 编号说明里替代语义默认名；尾帧接力的虚拟槽用它标「上一段尾帧」） */
   label?: string;
+  /** 普通外观参考或空间站位规划图；后者不得把俯视图、箭头、标签画进成片 */
+  referenceRole?: "appearance" | "spatialLayout";
+  /** 来自资产册的稳定编号，用于重复导入时原位同步而非堆叠 */
+  catalogId?: string;
+  /** 自动空间接力素材：桥接帧或上一段末尾动作片段；关闭接力时保留资产但不参与生成 */
+  relayKind?: "frame" | "clip";
+  /** 接力素材来自哪个已完成 Take；相同来源重跑时复用，避免重复截取与落盘 */
+  relaySourceTakeId?: string;
 };
 
 /** 生成配方（方案 §7.5 / §20.1） */
@@ -1700,8 +1722,11 @@ export type DirectorProject = {
   ruleSet?: DirectorRuleSet;
   /** 批量生成时每段结束后自动清理 ComfyUI 显存（大工作流防显存堆积，代价是下一段重新加载模型） */
   freeMemBetween?: boolean;
-  /** 尾帧接力（批量生成连贯性开关）：上一段生成完成后自动抽尾帧，作为下一段的首帧/首张参考图（本段显式首帧优先），保证跨段画面衔接；关闭则各段独立生成 */
+  /** 空间接力：从相邻上一段采用/最新成功 Take 自动提取稳定桥接帧，并在配方支持时截取末尾 2 秒动作视频，填入下一段参考槽；关闭时接力资产保留但不参与生成 */
   tailFrameRelay?: boolean;
+  /** 最近一次导入的双语资产册来源与时间，仅用于重导提示和追溯 */
+  assetCatalogSource?: string;
+  assetCatalogImportedAt?: number;
   /** 项目默认生成配方 id（分镜页批量工具条选定；片段 recipeId > 项目默认 > 远程默认模型） */
   defaultRecipeId?: string;
   /** 时间线（采用版本顺序） */

@@ -38,8 +38,13 @@ const AGENT_SYSTEM = `你是 MOMO 智能画布的「创作 Agent」，一位全�
 
 【画幅与清晰度——必须遵守】
 - 用户明确指定了比例（如 9:16、16:9、竖屏、横屏、方图）时，image 动作的 aspect 必须严格按用户要求填写（竖屏=高度大于宽度的比例，如 "9:16"；横屏如 "16:9"）。
+- 用户给的是像素尺寸（如 1920×1080、1080p）时，换算成最接近的比例填 aspect（如 "16:9"），清晰度按像素量定档（1080p≈"2K"）。
 - 用户没提比例且画幅会明显影响用途（海报/壁纸/头像/短视频封面等）时，先 ask 一轮确认，把比例和清晰度合并成一个问题，选项如：「竖屏 9:16 · 标清」「横屏 16:9 · 标清」「方图 1:1 · 高清」。用户选完后按其执行。
 - resolution 仅三档："1K"（默认）/"2K"（高清）/"4K"（超清）；用户要高清、大图、印刷时填 "2K" 或 "4K"，未提及时一律 "1K"。
+
+【生成确认闸——程序强制】
+- image / video 动作在真正执行前，程序会自动向用户做一次「确认生成」的最终确认（汇总提示词/画幅/模型，用户确认后才扣费执行），你不需要自己在 ask 里做这件事。
+- 若系统反馈「用户已确认生成方案」，原样重发刚才那个 image / video 动作即可；若反馈「用户想继续调整」，就先别再输出生成动作，改为 reply / ask 与用户完善方案。
 
 【行为准则】
 - 目标导向：用户要的是成品，不是聊天。需求明确（含画幅）时尽快进入生成，不要无谓地多问。
@@ -143,8 +148,15 @@ function buildContext(scratch: string[]): ChatMsg[] {
   return ctx;
 }
 
-/** 从一段文本里识别画幅（"9:16" / "竖屏" / "横屏" / "方图"） */
+/** 从一段文本里识别画幅（"9:16" / "竖屏" / "横屏" / "方图" / "1920×1080" 像素写法） */
 function sniffAspectFrom(text: string): string | undefined {
+  // 像素写法优先（"1920×1080"）：折算成最接近的常用比例档
+  const px = text.match(/(\d{3,4})\s*[x×*]\s*(\d{3,4})/);
+  if (px) {
+    const w = Number(px[1]);
+    const h = Number(px[2]);
+    if (w > 0 && h > 0) return nearestAspect(w / h);
+  }
   const m = text.match(/(\d{1,2})\s*[:：]\s*(\d{1,2})/);
   if (m) return `${m[1]}:${m[2]}`;
   if (/竖(屏|版|图|构图)|纵向|手机屏/.test(text)) return "9:16";
@@ -153,12 +165,36 @@ function sniffAspectFrom(text: string): string | undefined {
   return undefined;
 }
 
-/** 从一段文本里识别清晰度档（1K/2K/4K） */
+/** 从一段文本里识别清晰度档（1K/2K/4K，含 1080p / 像素尺寸写法） */
 function sniffResolutionFrom(text: string): string | undefined {
-  if (/4k|超清|超高清/i.test(text)) return "4K";
-  if (/2k|高清|大图|印刷/i.test(text)) return "2K";
-  if (/1k|标清/i.test(text)) return "1K";
+  if (/4k|2160p|超清|超高清/i.test(text)) return "4K";
+  if (/2k|1440p|1080p|高清|大图|印刷/i.test(text)) return "2K";
+  if (/1k|720p|标清/i.test(text)) return "1K";
+  // 只给了像素尺寸（"1920×1080"）：按长边定档
+  const px = text.match(/(\d{3,4})\s*[x×*]\s*(\d{3,4})/);
+  if (px) {
+    const long = Math.max(Number(px[1]), Number(px[2]));
+    return long >= 3000 ? "4K" : long >= 1400 ? "2K" : "1K";
+  }
   return undefined;
+}
+
+/** 画幅字段归一化：模型可能填 "竖屏"、"1920×1080" 这类非标准值，一律折算成 "9:16" 式比例，认不出就丢弃走下一级兜底 */
+function normAspect(a?: string): string | undefined {
+  if (!a) return undefined;
+  return parseRatio(a) ? a : sniffAspectFrom(a);
+}
+
+/** 清晰度字段归一化：只认 1K/2K/4K，其余（"高清" 等）折算，认不出丢弃 */
+function normResolution(r?: string): string | undefined {
+  if (!r) return undefined;
+  const up = r.toUpperCase();
+  return up === "1K" || up === "2K" || up === "4K" ? up : sniffResolutionFrom(r);
+}
+
+/** 生成确认闸的答案判定：点了「确认生成」或输入肯定语才算数，其余一律视为「再改改」 */
+function isConfirmAnswer(a: string): boolean {
+  return /确认|开始|生成|可以|好的?|行|嗯|来吧|yes|ok|go/i.test(a) && !/不|别|改|等|取消/.test(a);
 }
 
 /** 扫描整段对话里用户说过的画幅/清晰度（模型漏填 JSON 字段的兜底，用户的原话优先级最高） */
@@ -233,6 +269,8 @@ async function agentLoop(asstId: string) {
   let lastGenImages: string[] = [];
   /** 本轮已确认的成图规格：确认一次后所有 image 动作复用，不再反复问 */
   const spec: { aspect?: string; resolution?: string } = {};
+  /** 生成确认闸：已确认过的方案签名（prompt+画幅+张数）。生成扣费前必须先向用户确认一次 */
+  let confirmedSig = "";
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const card = resolveModelCard("chat", st().modelId);
@@ -281,11 +319,11 @@ async function agentLoop(asstId: string) {
     }
 
     if (act.action === "image") {
-      /* 画幅解析（模型经常漏填 JSON 字段，必须自己兜底，否则一律回落 1024x1024 出方图）：
-         已确认的规格 > 动作里的字段 > 提示词里的措辞 > 用户在对话中说过的原话 */
+      /* 画幅解析（模型经常漏填/乱填 JSON 字段，必须自己兜底，否则一律回落 1024x1024 出方图）：
+         已确认的规格 > 动作里的字段 > 提示词里的措辞 > 用户在对话中说过的原话；每一级都先归一化（"竖屏"/"1920×1080" → "9:16"/"16:9"） */
       const fromChat = sniffSpecFromChat();
-      const aspect = spec.aspect ?? act.aspect ?? sniffAspectFrom(act.prompt) ?? fromChat.aspect;
-      const resolution = spec.resolution ?? act.resolution ?? fromChat.resolution;
+      const aspect = normAspect(spec.aspect) ?? normAspect(act.aspect) ?? sniffAspectFrom(act.prompt) ?? fromChat.aspect;
+      const resolution = normResolution(spec.resolution) ?? normResolution(act.resolution) ?? fromChat.resolution;
       // 画幅完全没着落 → 强制问一轮再生成（用户明确要求过"要问分辨率"）
       if (!aspect || !resolution) {
         const answer = await st().askQuestion(
@@ -303,6 +341,36 @@ async function agentLoop(asstId: string) {
       spec.aspect = aspect;
       spec.resolution = resolution;
 
+      /* 生成前最终确认（防自动扣费）：规格齐了也不直接跑，先把完整方案给用户看，确认后才真正发起 */
+      const n0 = clamp(Math.round(act.count ?? sniffCountFromChat() ?? 1), 1, 4);
+      const sig = `img|${act.prompt}|${aspect}|${resolution}|${n0}`;
+      if (confirmedSig !== sig) {
+        let modelLab = "默认";
+        try {
+          modelLab = resolveModelCard("image", st().imageModelId).name;
+        } catch {
+          /* 没配绘画模型时让后面 generateImage 的报错去提示 */
+        }
+        const brief0 = act.prompt.length > 60 ? `${act.prompt.slice(0, 60)}…` : act.prompt;
+        const answer = await st().askQuestion(
+          asstId,
+          `方案已就绪，确认后开始生成（会调用模型扣费）：\n· 提示词：${brief0}\n· 画幅：${aspect} · ${resolution} · ${n0} 张\n· 模型：${modelLab}`,
+          ["确认生成", "再改改"],
+        );
+        if (isConfirmAnswer(answer)) {
+          confirmedSig = sig;
+          scratch.push("用户已确认生成方案。请原样重新输出刚才的 image 动作（prompt/aspect/resolution/count 保持不变），系统将直接开始生成，不要再问。");
+        } else {
+          // 方案要改，旧规格不作数（改完会重新走规格确认 + 生成确认）
+          spec.aspect = undefined;
+          spec.resolution = undefined;
+          scratch.push(
+            `用户暂不生成，想继续调整方案：「${answer}」。请据此完善提示词或规格（reply 讨论 / ask 确认方向），在用户明确确认前不要再输出 image 动作。`,
+          );
+        }
+        continue;
+      }
+
       const brief = act.prompt.length > 42 ? `${act.prompt.slice(0, 42)}…` : act.prompt;
       const sid = st().addStep(asstId, "image", `生成图片：${brief}`);
       // 点下生成的那一瞬间，画布上就先出一个「生成中」的节点（波光动效由 .mnode.running 提供），
@@ -318,7 +386,7 @@ async function agentLoop(asstId: string) {
       const nodeId = board.addNode("imageGen", canvasCenterPos(-165, -120), {
         prompt: act.prompt,
         status: "running",
-        count: clamp(Math.round(act.count ?? sniffCountFromChat() ?? 1), 1, 4),
+        count: n0,
         ...(st().imageModelId ? { modelId: st().imageModelId } : {}),
         ...sizingToNodeData(sizingPre, aspect),
       });
@@ -326,7 +394,7 @@ async function agentLoop(asstId: string) {
       const signal = beginTask(nodeId, "imageGen");
       try {
         const imgCard = resolveModelCard("image", st().imageModelId);
-        const n = clamp(Math.round(act.count ?? sniffCountFromChat() ?? 1), 1, 4);
+        const n = n0;
         const refs = act.useRefs ? lastUserImages() : undefined;
         // 比例/清晰度 → 该模型家族的实际参数（用户指定的画幅必须生效，不再静默退回 1:1）
         const sizing = agentImageParams(imgCard, aspect, resolution);
@@ -348,6 +416,8 @@ async function agentLoop(asstId: string) {
         st().appendResults(asstId, items);
         st().setStep(asstId, sid, { status: "done", text: `已生成 ${results.length} 张图片（${imgCard.name} · ${sizeLab}）` });
         collectResults(items);
+        // 本次方案已交付：确认闸复位，用户之后的新需求要重新确认一轮（防再次自动扣费）
+        confirmedSig = "";
         scratch.push(
           `本轮已成功生成 ${results.length} 张图片并展示给用户（提示词：${act.prompt}；画幅：${sizeLab}）。注意：这只算完成当前这次请求；用户之后再提生成/修改需求时，必须重新执行 image 动作。`,
         );
@@ -369,6 +439,31 @@ async function agentLoop(asstId: string) {
     }
 
     if (act.action === "video") {
+      /* 视频更贵：与生图同款确认闸，方案没确认过就先问一轮再发起 */
+      const vSig = `vid|${act.prompt}|${act.duration ?? ""}`;
+      if (confirmedSig !== vSig) {
+        let modelLab = "默认";
+        try {
+          modelLab = resolveModelCard("video", st().videoModelId).name;
+        } catch {
+          /* 没配视频模型时让后面 generateVideo 的报错去提示 */
+        }
+        const brief0 = act.prompt.length > 60 ? `${act.prompt.slice(0, 60)}…` : act.prompt;
+        const answer = await st().askQuestion(
+          asstId,
+          `视频方案已就绪，确认后开始生成（视频生成费用较高）：\n· 提示词：${brief0}\n· 时长：${act.duration ?? "默认"} 秒\n· 模型：${modelLab}`,
+          ["确认生成", "再改改"],
+        );
+        if (isConfirmAnswer(answer)) {
+          confirmedSig = vSig;
+          scratch.push("用户已确认视频生成方案。请原样重新输出刚才的 video 动作（prompt/duration 保持不变），系统将直接开始生成，不要再问。");
+        } else {
+          scratch.push(
+            `用户暂不生成，想继续调整方案：「${answer}」。请据此完善提示词或规格（reply 讨论 / ask 确认方向），在用户明确确认前不要再输出 video 动作。`,
+          );
+        }
+        continue;
+      }
       const brief = act.prompt.length > 42 ? `${act.prompt.slice(0, 42)}…` : act.prompt;
       const sid = st().addStep(asstId, "video", `生成视频：${brief}`);
       // 与生图同款：先在画布落一个「生成中」的视频节点，进度与结果都写回它
@@ -399,6 +494,8 @@ async function agentLoop(asstId: string) {
         useBoard.getState().updateData(nodeId, { status: "done", resultUrl: src, resultUrls: [src], picked: 0, progress: "" });
         st().appendResults(asstId, [{ kind: "video", src, prompt: act.prompt }]);
         st().setStep(asstId, sid, { status: "done", text: "已生成视频" });
+        // 与生图同款：交付后确认闸复位，下一个新需求重新确认
+        confirmedSig = "";
         scratch.push("本轮已成功生成视频并展示给用户。用户之后再提生成需求时，必须重新执行动作。");
       } catch (e) {
         if (isAbortError(e)) {
@@ -595,14 +692,9 @@ export function canvasCenterPos(offsetX = 0, offsetY = 0) {
   };
 }
 
-/** 从聊天文本里识别用户点名的画幅（"9:16" / "竖屏" / "横屏" / "方图"），用于一键生图时对齐比例 */
+/** 从聊天文本里识别用户点名的画幅（"9:16" / "竖屏" / "1920×1080"），用于一键生图时对齐比例 */
 function sniffAspect(text: string): string | undefined {
-  const m = text.match(/\b(\d{1,2})\s*[:：]\s*(\d{1,2})\b/);
-  if (m) return `${m[1]}:${m[2]}`;
-  if (/竖(屏|版|构图)|纵向/.test(text)) return "9:16";
-  if (/横(屏|版|构图)|宽屏/.test(text)) return "16:9";
-  if (/方(图|形)|正方形/.test(text)) return "1:1";
-  return undefined;
+  return sniffAspectFrom(text);
 }
 
 /** 聊天消息一键在画布生图：以该文本为提示词创建生成图像节点并立即运行

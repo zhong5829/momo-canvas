@@ -10,6 +10,7 @@ mod vec;
 mod vec_score;
 mod dpapi;
 mod shortcut;
+mod sysmon;
 
 use tauri::ipc::Channel;
 
@@ -123,6 +124,8 @@ pub fn run() {
         // 自动更新（安装版）+ 进程重启
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // 系统资源监控（CPU/内存/GPU/显存），画布右上角仪表盘轮询
+        .manage(sysmon::SysmonState::new())
         .invoke_handler(tauri::generate_handler![
             enhance_upscale,
             enhance_cancel,
@@ -142,7 +145,9 @@ pub fn run() {
             dpapi::dpapi_encrypt,
             dpapi::dpapi_decrypt,
             // 便携版首次启动创建桌面快捷方式
-            shortcut::create_desktop_shortcut
+            shortcut::create_desktop_shortcut,
+            // 系统资源监控（画布仪表盘）
+            sysmon::system_stats
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
