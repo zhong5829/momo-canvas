@@ -43,8 +43,8 @@ const AGENT_SYSTEM = `你是 MOMO 智能画布的「创作 Agent」，一位全�
 - resolution 仅三档："1K"（默认）/"2K"（高清）/"4K"（超清）；用户要高清、大图、印刷时填 "2K" 或 "4K"，未提及时一律 "1K"。
 
 【生成确认闸——程序强制】
-- image / video 动作在真正执行前，程序会自动向用户做一次「确认生成」的最终确认（汇总提示词/画幅/模型，用户确认后才扣费执行），你不需要自己在 ask 里做这件事。
-- 若系统反馈「用户已确认生成方案」，原样重发刚才那个 image / video 动作即可；若反馈「用户想继续调整」，就先别再输出生成动作，改为 reply / ask 与用户完善方案。
+- image / video 动作第一次执行前，程序会自动向用户确认方案（汇总提示词/画幅/模型），用户确认后**程序直接执行该动作**，执行结果下一轮告诉你——你不需要重发动作，也不要自己在 ask 里做确认。
+- 若用户选择「再改改」，先与用户完善方案（reply / ask），在用户明确要求前不要再输出生成动作。
 
 【行为准则】
 - 目标导向：用户要的是成品，不是聊天。需求明确（含画幅）时尽快进入生成，不要无谓地多问。
@@ -123,18 +123,29 @@ function sizingToNodeData(sizing: { aspect?: string; resolution?: string; size?:
 
 /** 会话历史 → LLM 上下文（助手消息压缩成一句话摘要，附工具反馈） */
 function buildContext(scratch: string[]): ChatMsg[] {
-  const msgs = useAgent.getState().messages;
+  const st = useAgent.getState();
+  const msgs = st.messages;
   const ctx: ChatMsg[] = [];
+  // 前情摘要（与聊天模式共用一份）：窗口之外的早期讨论以要点形式延续，Agent 多轮任务不断片
+  if (st.summary) {
+    ctx.push({
+      role: "user",
+      text: `【前情摘要】以下是更早对话的要点（供你延续上下文，不必向用户复述）：\n${st.summary}`,
+    });
+  }
   for (const m of msgs.slice(-14)) {
     if (m.role === "user") {
       ctx.push({ role: "user", text: m.text || "（参考图）", images: m.images });
     } else {
       // 进行中的那条助手消息不进上下文
       if (!m.text && !m.results?.length) continue;
+      // 已交付内容必须带提示词回注——用户说「把刚才那张改成蓝色」时，模型得知道「刚才那张」是什么
       const done = [
         m.text,
         m.question ? `（曾向你确认「${m.question.text}」，你选择：${m.question.answer ?? "未答"}）` : "",
-        m.results?.length ? `（已交付 ${m.results.length} 个${m.results[0].kind === "video" ? "视频" : "图片"}）` : "",
+        m.results?.length
+          ? `（已交付 ${m.results.length} 个${m.results[0].kind === "video" ? "视频" : "图片"}，提示词：${(m.results[0].prompt ?? "").slice(0, 80)}）`
+          : "",
       ].filter(Boolean).join("\n");
       ctx.push({ role: "assistant", text: done || "…" });
     }
@@ -274,10 +285,15 @@ async function agentLoop(asstId: string) {
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const card = resolveModelCard("chat", st().modelId);
-    // 联网开关开启且模型自带联网（GLM/MiniMax/混元…）→ 让模型自己查，比 search 动作少绕一圈
+    // 联网开关开启且模型自带联网（GLM/MiniMax/混元…）→ 让模型自己查，比 search 动作少绕一圈。
+    // 必须在系统提示里告知模型「已启用内置联网」，否则模型不知道自己带着 tools，
+    // 仍会按协议输出 search 动作去走外部搜索接口（自带联网形同虚设）
     const useBuiltin = st().webSearch && chatCaps(card).builtinSearch;
+    const system = useBuiltin
+      ? `${AGENT_SYSTEM}\n\n【联网——已启用】本次请求已启用你自带的联网搜索能力（tools 已注入请求）。需要实时资料、潮流、事实核查时，直接自行联网检索，再基于结果输出下一个动作；不要输出 search 动作（那是没有内置联网时的兜底通道）。`
+      : AGENT_SYSTEM;
     const { text: raw } = await chatStream(card, buildContext(scratch), {
-      system: AGENT_SYSTEM,
+      system,
       builtinSearch: useBuiltin,
       disableThinking: !st().thinkingOn, // 思考模式开关（仅创作助手生效）
     });
@@ -357,18 +373,18 @@ async function agentLoop(asstId: string) {
           `方案已就绪，确认后开始生成（会调用模型扣费）：\n· 提示词：${brief0}\n· 画幅：${aspect} · ${resolution} · ${n0} 张\n· 模型：${modelLab}`,
           ["确认生成", "再改改"],
         );
-        if (isConfirmAnswer(answer)) {
-          confirmedSig = sig;
-          scratch.push("用户已确认生成方案。请原样重新输出刚才的 image 动作（prompt/aspect/resolution/count 保持不变），系统将直接开始生成，不要再问。");
-        } else {
+        if (!isConfirmAnswer(answer)) {
           // 方案要改，旧规格不作数（改完会重新走规格确认 + 生成确认）
           spec.aspect = undefined;
           spec.resolution = undefined;
           scratch.push(
             `用户暂不生成，想继续调整方案：「${answer}」。请据此完善提示词或规格（reply 讨论 / ask 确认方向），在用户明确确认前不要再输出 image 动作。`,
           );
+          continue;
         }
-        continue;
+        // 确认通过：记录签名后**当场执行**这个动作（不再回炉让模型重发——
+        // 模型复现 prompt 几乎必然有细微措辞差异，签名永远对不上会造成反复弹确认）
+        confirmedSig = sig;
       }
 
       const brief = act.prompt.length > 42 ? `${act.prompt.slice(0, 42)}…` : act.prompt;
@@ -454,15 +470,14 @@ async function agentLoop(asstId: string) {
           `视频方案已就绪，确认后开始生成（视频生成费用较高）：\n· 提示词：${brief0}\n· 时长：${act.duration ?? "默认"} 秒\n· 模型：${modelLab}`,
           ["确认生成", "再改改"],
         );
-        if (isConfirmAnswer(answer)) {
-          confirmedSig = vSig;
-          scratch.push("用户已确认视频生成方案。请原样重新输出刚才的 video 动作（prompt/duration 保持不变），系统将直接开始生成，不要再问。");
-        } else {
+        if (!isConfirmAnswer(answer)) {
           scratch.push(
             `用户暂不生成，想继续调整方案：「${answer}」。请据此完善提示词或规格（reply 讨论 / ask 确认方向），在用户明确确认前不要再输出 video 动作。`,
           );
+          continue;
         }
-        continue;
+        // 与生图同款：确认通过即当场执行，不回炉让模型重发（防复现偏差导致的反复确认）
+        confirmedSig = vSig;
       }
       const brief = act.prompt.length > 42 ? `${act.prompt.slice(0, 42)}…` : act.prompt;
       const sid = st().addStep(asstId, "video", `生成视频：${brief}`);
@@ -547,6 +562,12 @@ export async function sendAgentMessage() {
     pushError("Agent", errMsg(e));
   } finally {
     useAgent.setState({ running: false });
+    // Agent 的多轮任务同样推进前情摘要（与聊天模式共用；失败静默，结果留给下一轮）
+    try {
+      void maybeCompressHistory(resolveModelCard("chat", useAgent.getState().modelId)).catch(() => {});
+    } catch {
+      /* 对话模型缺失/未配置时跳过 */
+    }
   }
 }
 
@@ -620,7 +641,7 @@ export async function sendSideChat() {
           const ctx = searchContext(hits ?? []);
           if (ctx) parts.push(ctx);
         } catch (e) {
-          toast(`联网搜索失败，将直接回答：${errMsg(e)}`, "err");
+          toast(`联网搜索失败，将直接回答：${errMsg(e)}`, "info");
         }
         useAgent.getState().updateMsg(asstId, { reasoning: "" });
       }
@@ -654,7 +675,7 @@ export async function sendSideChat() {
     } catch (e) {
       if (!builtin) throw e;
       // 中转站不认自带联网的 tools 参数 → 降级为内置搜索重试一次
-      toast(`「${card.name}」自带联网调用失败，改用内置搜索重试`, "err");
+      toast(`「${card.name}」自带联网调用失败，改用内置搜索重试`, "info");
       useAgent.getState().updateMsg(asstId, { text: "", reasoning: "正在联网搜索…" });
       try {
         const hits = await webSearch(useSettings.getState().settings.search, text);

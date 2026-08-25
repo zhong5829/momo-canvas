@@ -83,7 +83,9 @@ export const useAgent = create<AgentState>((set, get) => ({
   imageModelId: undefined,
   videoModelId: undefined,
   mode: "chat",
-  webSearch: false,
+  // 默认开启：联网是创作助手的核心能力；模型自带联网时优先用模型自己的（不额外花钱），
+  // 不支持的家族走内置搜索接口，未配置时自动降级直接回答。面板上可一键关闭
+  webSearch: true,
   thinkingOn: true,
   summary: "",
   summaryUpto: 0,
@@ -114,7 +116,8 @@ export const useAgent = create<AgentState>((set, get) => ({
       imageModelId: p.imageModelId,
       videoModelId: p.videoModelId,
       mode: p.mode ?? "chat",
-      webSearch: !!p.webSearch,
+      // 只有从未保存过偏好（undefined）才用默认 true；用户显式关过就是 false
+      webSearch: p.webSearch ?? true,
       thinkingOn: p.thinkingOn ?? true,
     });
   },
