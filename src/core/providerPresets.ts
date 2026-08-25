@@ -304,6 +304,25 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     site: "https://ollama.com",
     roles: { chat: { protocol: "ollama" } },
   },
+  {
+    key: "modelscope",
+    label: "ModelScope",
+    logo: "MS",
+    baseUrl: "https://api-inference.modelscope.cn/v1",
+    site: "https://modelscope.cn",
+    note: "ModelScope 官方平台 · 生图（Z-Image / Qwen-Image / FLUX.2-klein）走异步任务式接口，支持 LoRA 与图生图；注册送免费额度，API Key 在「访问令牌」页获取",
+    roles: {
+      image: {
+        protocol: "modelscope",
+        models: [
+          "Tongyi-MAI/Z-Image-Turbo",
+          "Qwen/Qwen-Image-2512",
+          "Qwen/Qwen-Image-Edit-2511",
+          "black-forest-labs/FLUX.2-klein-9B",
+        ],
+      },
+    },
+  },
 ];
 
 /** Ollama 本地预设（设置页固定卡片用；无需 API Key，chat 槽走原生协议） */

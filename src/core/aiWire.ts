@@ -25,6 +25,7 @@ const WIRABLE: NodeKind[] = [
   "combine",
   "storyboard",
   "imageGen",
+  "msImageGen",
   "videoGen",
   "relight",
   "multiAngle",
@@ -36,6 +37,7 @@ const DATA_WHITELIST: Partial<Record<NodeKind, string[]>> = {
   prompt: ["text"],
   note: ["text"],
   imageGen: ["prompt", "count"],
+  msImageGen: ["prompt", "count"],
   videoGen: ["prompt"],
   llmText: ["op", "custom"],
   combine: ["separator", "extra"],
@@ -64,6 +66,7 @@ const SYSTEM = `你是 MOMO 智能画布的工作流规划师。用户描述创�
 - combine 拼接文本：多路上游文本合并
 - storyboard 分镜：故事→完善→拆 N 镜逐镜提示词（data.story 故事；data.count 分镜数 2-24；data.shotSec 每镜秒数；data.style 风格定调）
 - imageGen 生成图像（data.prompt 可留空=自动用上游文本；data.count 张数1-4）
+- msImageGen ModelScope 生图（调 ModelScope 平台生图，data.prompt 可留空=自动用上游文本；data.count 张数1-8）
 - videoGen 生成视频（data.prompt 可留空=自动用上游文本；第 1 路上游图=首帧）
 - audioGen 生成音频：TTS 朗读/音乐（data.text 文本留空=自动用上游文本；data.voice 音色）
 - videoDub 视频配音：上游视频+音频本地混音（data.mode: "replace"|"mix"）
@@ -73,8 +76,8 @@ const SYSTEM = `你是 MOMO 智能画布的工作流规划师。用户描述创�
 
 连线规则：
 - 端口分 text（文本）、image（图片）、video（视频）、audio（音频）四类，只能同类相连。
-- 各节点输出类型：prompt/llmText/combine/stylePreset/storyboard→text；image/imageGen/relight/multiAngle/charCard→image；video/videoGen/videoDub→video；audio/audioGen→audio；note 无输出。
-- 各节点可接收：imageGen/relight/multiAngle/charCard/storyboard 可接 text+image；videoGen 可接 text+image+video+audio；llmText 可接 text+image（op 为 cap* 时接图片，其余接文本）；combine/audioGen 只接 text；videoDub 接 video+audio；image/video/audio/prompt/stylePreset/note 无输入。
+- 各节点输出类型：prompt/llmText/combine/stylePreset/storyboard→text；image/imageGen/msImageGen/relight/multiAngle/charCard→image；video/videoGen/videoDub→video；audio/audioGen→audio；note 无输出。
+- 各节点可接收：imageGen/msImageGen/relight/multiAngle/charCard/storyboard 可接 text+image；videoGen 可接 text+image+video+audio；llmText 可接 text+image（op 为 cap* 时接图片，其余接文本）；combine/audioGen 只接 text；videoDub 接 video+audio；image/video/audio/prompt/stylePreset/note 无输入。
 - 生成图像的提示词留空时会自动使用上游文本；接了上游图片会自动转图生图。
 - 典型视频链：storyboard→videoGen（逐镜）→audioGen 配音→videoDub 合成。
 - 不允许成环。

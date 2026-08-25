@@ -29,6 +29,8 @@ export type ImageGenReq = {
   seed?: number;
   /** 负向提示词：不想出现的内容 */
   negative?: string;
+  /** ModelScope：LoRA 选择（loraId → 强度 0-1），仅 modelscope 协议生效 */
+  loras?: Record<string, number>;
   /** 停止信号（节点上的停止按钮）：请求与轮询都会随之中断 */
   signal?: AbortSignal;
 };
@@ -220,6 +222,88 @@ async function genGemini(card: ModelCard, req: ImageGenReq): Promise<string[]> {
   return out;
 }
 
+/**
+ * ModelScope 平台生图 — 异步任务式：
+ * POST {base}/images/generations（头 X-ModelScope-Async-Mode）→ task_id
+ * → 轮询 GET {base}/tasks/{task_id}（头 X-ModelScope-Task-Type: image_generation）
+ * → task_status=SUCCEED 取 output_images[0] 下载为 dataURL。
+ * 支持图生图（image_url[]，参考图 dataURL 直传）与 LoRA（{ loraId: strength }）。
+ */
+async function genModelScope(card: ModelCard, req: ImageGenReq): Promise<string[]> {
+  const base = trimBase(card.baseUrl);
+  if (!card.apiKey) throw new Error(`ModelScope 模型「${card.name}」缺少 API Key，请在设置中补填`);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${card.apiKey}`,
+    "Content-Type": "application/json",
+    "X-ModelScope-Async-Mode": "true",
+  };
+  const refs = (req.refImages ?? []).slice(0, 8);
+  const size = req.size && req.size !== "auto" ? req.size : undefined;
+  const loras = req.loras && Object.keys(req.loras).length ? req.loras : undefined;
+
+  const submitOne = async (): Promise<string> => {
+    const body: Record<string, unknown> = { model: card.model, prompt: req.prompt.trim() };
+    if (size) body.size = size;
+    if (refs.length) body.image_url = refs; // modelscope 的 image_url 接受 dataURL
+    if (loras) body.loras = loras;
+    console.info(
+      `[imageGen:modelscope] POST ${base}/images/generations · model=${card.model} · 参考图=${refs.length} 张 · size=${size ?? "默认"} · loras=${loras ? Object.keys(loras).join(",") : "无"}`,
+    );
+    const submit = await xfetch(`${base}/images/generations`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: req.signal,
+    });
+    if (!submit.ok) throw new Error(`ModelScope 生图提交失败 ${submit.status}: ${await readErrorBody(submit)}`);
+    const sj = await submit.json();
+    const taskId = sj?.task_id ?? sj?.id;
+    if (!taskId) throw new Error(`ModelScope 未返回任务 ID。响应：${JSON.stringify(sj).slice(0, 200)}`);
+
+    // 轮询任务直到完成（2s 间隔，最长约 20 分钟）
+    const pollHeaders: Record<string, string> = {
+      Authorization: `Bearer ${card.apiKey}`,
+      "Content-Type": "application/json",
+      "X-ModelScope-Task-Type": "image_generation",
+    };
+    const deadline = Date.now() + 20 * 60_000;
+    for (;;) {
+      await sleep(2000);
+      if (req.signal?.aborted) throw new Error("已取消");
+      if (Date.now() > deadline) throw new Error(`ModelScope 生图任务轮询超时（20 分钟），任务 ID：${taskId}`);
+      let pj: { task_status?: string; output_images?: string[]; error_info?: unknown };
+      try {
+        const r = await xfetch(`${base}/tasks/${taskId}`, { headers: pollHeaders, signal: req.signal });
+        if (!r.ok) continue;
+        pj = await r.json();
+      } catch {
+        continue; // 单次查询失败不中断（网络抖动），有总超时兜底
+      }
+      const st = String(pj?.task_status ?? "").toLowerCase();
+      if (["failed", "fail", "error", "canceled", "cancelled", "timeout", "revoked"].includes(st))
+        throw new Error(`ModelScope 生图任务失败（${st}）：${JSON.stringify(pj?.error_info ?? pj).slice(0, 200)}`);
+      const imgs = Array.isArray(pj?.output_images) ? pj.output_images : [];
+      if (st === "succeed" && imgs.length) {
+        const url = imgs[0];
+        if (typeof url === "string") {
+          if (url.startsWith("data:image")) return url;
+          if (url.startsWith("http")) return await toDataUrl(url, (x, i) => xfetch(x as string, i));
+        }
+      }
+    }
+  };
+
+  // 多张 = 并发多个任务（与参考项目一致），部分失败保留成功结果
+  const count = Math.max(1, Math.min(8, req.n ?? 1));
+  const settled = await Promise.allSettled(Array.from({ length: count }, () => submitOne()));
+  const out = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+  if (!out.length) {
+    const firstErr = settled.find((r) => r.status === "rejected");
+    throw (firstErr as PromiseRejectedResult | undefined)?.reason ?? new Error("ModelScope 生图失败：未返回任何图片");
+  }
+  return out;
+}
+
 /* ---------------- 自定义协议 ----------------
    声明式协议（设置 → 协议）：执行器在 customProto.ts（与视频服务共用） */
 
@@ -327,7 +411,9 @@ export async function generateImage(card: ModelCard, req: ImageGenReq): Promise<
     ? await genCustom(card, req)
     : card.protocol === "gemini"
       ? await genGemini(card, req)
-      : await genOpenAI(card, req);
+      : card.protocol === "modelscope"
+        ? await genModelScope(card, req)
+        : await genOpenAI(card, req);
   if (!imgs.length) throw new Error(`模型「${card.name}」没有返回图片`);
   return imgs;
 }

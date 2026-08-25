@@ -53,9 +53,11 @@ import { ImageNode } from "./nodes/ImageNode";
 import { PromptNode } from "./nodes/PromptNode";
 import { ChatNode } from "./nodes/ChatNode";
 import { ImageGenNode } from "./nodes/ImageGenNode";
+import { MsImageGenNode } from "./nodes/MsImageGenNode";
 import { VideoGenNode } from "./nodes/VideoGenNode";
 import { MinimaxVideoNode } from "./nodes/MinimaxVideoNode";
 import { MinimaxVideoConfigPanel } from "./MinimaxConfigPanel";
+import { MsImageGenConfigPanel } from "./MsImageGenConfigPanel";
 import { ComfyNode } from "./nodes/ComfyNode";
 import { LlmTextNode } from "./nodes/LlmTextNode";
 import { CombineNode } from "./nodes/CombineNode";
@@ -110,6 +112,7 @@ const nodeTypes: NodeTypes = {
   prompt: PromptNode,
   chat: ChatNode,
   imageGen: ImageGenNode,
+  msImageGen: MsImageGenNode,
   videoGen: VideoGenNode,
   minimaxVideo: MinimaxVideoNode,
   comfy: ComfyNode,
@@ -519,7 +522,7 @@ export function SmartCanvas() {
               void useAssets.getState().collect({ src, kind: kind as "image" | "video" | "audio", name: String(d.name ?? "") }),
           });
       }
-      if (!multi && (kind === "image" || kind === "imageGen")) {
+      if (!multi && (kind === "image" || kind === "imageGen" || kind === "msImageGen")) {
         items.push({ group: "编辑处理", label: "打光", icon: <IcBulb size={15} />, onClick: () => b.spawnEdit(node.id, "relight") });
         items.push({ group: "编辑处理", label: "多角度", icon: <IcOrbit size={15} />, onClick: () => b.spawnEdit(node.id, "multiAngle") });
         items.push({ group: "编辑处理", label: "超清放大", icon: <IcUpscale size={15} />, onClick: () => b.spawnEdit(node.id, "enhanceLocal") });
@@ -1307,6 +1310,7 @@ export function SmartCanvas() {
       {!zen ? (
         <>
           <ErrorBoundary name="生成图像面板"><GenConfigPanel /></ErrorBoundary>
+          <ErrorBoundary name="ModelScope 面板"><MsImageGenConfigPanel /></ErrorBoundary>
           <ErrorBoundary name="生成视频面板"><VideoConfigPanel /></ErrorBoundary>
           <ErrorBoundary name="生成音频面板"><AudioConfigPanel /></ErrorBoundary>
           <ErrorBoundary name="角色卡面板"><CharConfigPanel /></ErrorBoundary>

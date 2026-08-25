@@ -20,7 +20,7 @@ export function GenPromptBar({
   trailing,
 }: {
   nodeId: string;
-  kind: "imageGen" | "videoGen" | "minimaxVideo" | "audioGen";
+  kind: "imageGen" | "videoGen" | "minimaxVideo" | "audioGen" | "msImageGen";
   /** 底部工具栏左侧 chips（模型选择 / 参数 / 语言 / 更多…） */
   toolbar?: ReactNode;
   /** 底部工具栏右侧、发送按钮之前的 chips（如数量） */
@@ -41,9 +41,9 @@ export function GenPromptBar({
   const running = d.status === "running";
   const set = (t: string) => upd(nodeId, { [field]: t }, { commit: true });
   // 生成图像 / MiniMax H3 支持在提示词中 @ 引用参考图（点击胶囊插入、AtTextArea @ 自动补全）
-  const refInteractive = kind === "imageGen" || kind === "minimaxVideo";
+  const refInteractive = kind === "imageGen" || kind === "minimaxVideo" || kind === "msImageGen";
   const placeholder =
-    kind === "imageGen"
+    kind === "imageGen" || kind === "msImageGen"
       ? upTextN > 0
         ? "已接上游文本，留空自动使用；在此输入则优先生效…"
         : "描述你想生成的画面…"
@@ -67,9 +67,9 @@ export function GenPromptBar({
               {refs.map((r, i) => (
                 <button
                   key={`${r.label}_${i}`}
-                  className={`gd-ref ${kind === "imageGen" ? "" : "static"}`}
+                  className={`gd-ref ${kind === "imageGen" || kind === "msImageGen" ? "" : "static"}`}
                   title={
-                    kind === "imageGen"
+                    kind === "imageGen" || kind === "msImageGen"
                       ? `点击在光标处插入 @${r.label}（发给模型时按「图${i + 1}」编号）`
                       : kind === "videoGen"
                         ? i === 0

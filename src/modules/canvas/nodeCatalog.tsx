@@ -50,6 +50,7 @@ export const NODE_CATALOG: CatalogItem[] = [
   { kind: "combine", label: "拼接文本", desc: "多路上游文本按位置顺序合并输出（逗号/换行/空格）", icon: <IcMerge size={18} />, group: "智能", hotkey: "addCombine", dockHidden: true },
   { kind: "storyboard", label: "分镜", desc: "故事→完善→按风格定调拆分镜（带时间轴），逐镜输出口 + 一键铺生成节点", icon: <IcClapper size={18} />, group: "智能", hotkey: "addStoryboard" },
   { kind: "imageGen", label: "生成图像", desc: "调用绘画模型文生图 / 图生图", icon: <IcSparkles size={18} />, group: "生成", hotkey: "addImageGen" },
+  { kind: "msImageGen", label: "ModelScope 生图", desc: "调用 ModelScope 平台生图（Z-Image / Qwen-Image / FLUX.2-klein，支持 LoRA）", icon: <IcSparkles size={18} />, group: "生成", hotkey: "addMsImageGen" },
   { kind: "ecomImage", label: "电商长图", desc: "产品拍照图 → 视觉分析提属性/写介绍 → 按比例切分统一风格生成 → 拼接成完整长图（H5 / 详情页）", icon: <IcEcom size={18} />, group: "生成", hotkey: "addEcomImage" },
   { kind: "videoGen", label: "生成视频", desc: "调用视频模型生成短片", icon: <IcVideo size={18} />, group: "生成", hotkey: "addVideoGen" },
   { kind: "minimaxVideo", label: "MiniMax H3", desc: "调用 MiniMax H3 视频模型：文生/首帧/首尾帧/尾帧/多参考 + 参考音频 + 官方 H3 提示词", icon: <IcVideo size={18} />, group: "生成", hotkey: "addMinimaxVideo" },

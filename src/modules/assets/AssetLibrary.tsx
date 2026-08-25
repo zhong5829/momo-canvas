@@ -1266,6 +1266,15 @@ function CardMenu({ item, x, y, onClose }: { item: AssetItem; x: number; y: numb
     if (!g) return;
     if (g.nodeKind === "videoGen") {
       addNode("videoGen", centerPos(), { prompt: g.prompt ?? "", modelId: g.modelId, lang: g.lang });
+    } else if (g.nodeKind === "msImageGen") {
+      addNode("msImageGen", centerPos(), {
+        prompt: g.prompt ?? "",
+        modelId: g.modelId,
+        aspect: g.aspect ?? "1:1",
+        resolution: g.resolution ?? "1K",
+        size: g.size ?? "1024x1024",
+        loras: g.loras,
+      });
     } else {
       addNode("imageGen", centerPos(), {
         prompt: g.prompt ?? "",

@@ -37,6 +37,8 @@ export function defaultData(kind: NodeKind): Record<string, unknown> {
       return { status: "idle", messages: [], draft: "", webSearch: false, showThinking: true };
     case "imageGen":
       return { status: "idle", prompt: "", size: "default", count: 1, results: [], picked: 0 };
+    case "msImageGen":
+      return { status: "idle", prompt: "", aspect: "1:1", resolution: "1K", size: "1024x1024", count: 1, loras: {}, results: [], picked: 0 };
     case "videoGen":
       return { status: "idle", prompt: "" };
     case "minimaxVideo":
@@ -97,6 +99,7 @@ export function outPortType(kind: NodeKind, data?: Record<string, unknown>): Por
   switch (kind) {
     case "image":
     case "imageGen":
+    case "msImageGen":
     case "enhanceLocal":
       return "image";
     case "vectorize":
@@ -148,6 +151,7 @@ export const NODE_INPUTS: Record<NodeKind, { text?: boolean; image?: boolean; vi
   note: {},
   chat: { text: true, image: true },
   imageGen: { text: true, image: true },
+  msImageGen: { text: true, image: true },
   videoGen: { text: true, image: true, video: true, audio: true },
   minimaxVideo: { text: true, image: true, audio: true },
   comfy: { text: true, image: true, video: true },
@@ -176,6 +180,7 @@ const KIND_RANK: Record<NodeKind, number> = {
   combine: 6,
   storyboard: 6.5,
   imageGen: 7,
+  msImageGen: 7.1,
   relight: 8,
   multiAngle: 9,
   enhanceLocal: 8.5,
@@ -204,6 +209,7 @@ export const NODE_LABEL: Record<NodeKind, string> = {
   prompt: "提示词",
   chat: "对话",
   imageGen: "生成图像",
+  msImageGen: "ModelScope 生图",
   videoGen: "生成视频",
   minimaxVideo: "MiniMax H3",
   comfy: "ComfyUI",

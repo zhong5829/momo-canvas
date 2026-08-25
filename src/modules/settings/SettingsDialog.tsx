@@ -2121,6 +2121,7 @@ const HOTKEY_GROUPS: { title: string; actions: HotkeyAction[] }[] = [
       "addCombine",
       "addStoryboard",
       "addImageGen",
+      "addMsImageGen",
       "addVideoGen",
       "addMinimaxVideo",
       "addAudioGen",

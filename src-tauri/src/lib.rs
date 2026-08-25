@@ -116,8 +116,18 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_store::Builder::new().build())
-        // 记住窗口大小/位置/最大化状态，下次启动自动恢复
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // 记住窗口大小/位置/最大化状态，下次启动自动恢复。
+        // 只恢复 SIZE+POSITION、不恢复 MAXIMIZED：v2.4.1 在 WebView2 初始化前同步恢复最大化会卡死主窗口
+        // （本机 WebView2 runtime 151 实测：启用默认恢复 → 主窗口不创建，仅剩 16×16 Tao 辅助窗口）。
+        // 诊断记录：with_state_flags 方案编译后曾被系统应用控制策略（WDAC）拦截，待排除后验证。
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION,
+                )
+                .build(),
+        )
         // 资产原生拖出（拖到资源管理器/第三方软件）
         .plugin(tauri_plugin_drag::init())
         // 自动更新（安装版）+ 进程重启

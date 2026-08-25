@@ -11,6 +11,7 @@ export type NodeKind =
   | "prompt"
   | "chat"
   | "imageGen"
+  | "msImageGen"
   | "videoGen"
   | "minimaxVideo"
   | "comfy"
@@ -190,6 +191,27 @@ export type ImageGenData = {
   fallbackModel?: string;
   /** 历次出图记录（最近 10 次） */
   history?: GenHistoryEntry[];
+};
+
+/** ModelScope 专用生图节点 — 平台异步任务式生图（Z-Image / Qwen-Image / FLUX.2-klein），支持 LoRA */
+export type MsImageGenData = {
+  status: RunStatus;
+  error?: string;
+  prompt: string;
+  /** 模型复合键 providerId::model */
+  modelId?: string;
+  /** 画面比例（1:1 / 3:2 …），与 resolution 一起折算成 WxH 写入 size */
+  aspect: string;
+  /** 分辨率档（1K/2K/4K） */
+  resolution: string;
+  /** 出图尺寸 WxH（如 1024x1536），提交时实际使用的值 */
+  size: string;
+  /** 生成数量 1-8 */
+  count: number;
+  /** LoRA 选择：loraId → 强度（0-1），随选中模型展示可用清单 */
+  loras?: Record<string, number>;
+  results: string[];
+  picked: number;
 };
 
 /** 超清放大（本地 DirectML 超分）节点数据 — 非破坏：输出是新资产，原图不动 */
@@ -696,7 +718,7 @@ export type PortType = "text" | "image" | "video" | "audio";
 export type ModelRole = "chat" | "image" | "video" | "audio" | "asr";
 
 export type ChatProtocol = "openai" | "anthropic" | "gemini" | "ollama" | "llamacpp";
-export type ImageProtocol = "openai" | "gemini";
+export type ImageProtocol = "openai" | "gemini" | "modelscope";
 export type VideoProtocol = "zhipu" | "siliconflow" | "openai";
 export type AudioProtocol = "openai";
 export type AsrProtocol = "openai";
@@ -928,6 +950,7 @@ export type HotkeyAction =
   | "addLlmText"
   | "addCombine"
   | "addImageGen"
+  | "addMsImageGen"
   | "addVideoGen"
   | "addMinimaxVideo"
   | "addComfy"
@@ -981,6 +1004,7 @@ export const HOTKEY_LABEL: Record<HotkeyAction, string> = {
   addLlmText: "添加节点：文本处理（已并入提示词弹窗「AI 工具」，此绑定不再生效）",
   addCombine: "添加节点：拼接文本",
   addImageGen: "添加节点：生成图像",
+  addMsImageGen: "添加节点：ModelScope 生图",
   addVideoGen: "添加节点：生成视频",
   addMinimaxVideo: "添加节点：MiniMax H3 视频",
   addComfy: "添加节点：ComfyUI",
@@ -1038,6 +1062,7 @@ export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   addLlmText: "",
   addCombine: "alt+c",
   addImageGen: "8",
+  addMsImageGen: "",
   addVideoGen: "9",
   addMinimaxVideo: "7",
   addComfy: "0",
@@ -1385,7 +1410,7 @@ export type AssetKind = "image" | "video" | "audio" | "pdf" | "vector" | "other"
 /** 生成参数快照：画布生成物收录时随资产落盘，「Remix」可据此还原一个配置好的生成节点 */
 export type AssetGenMeta = {
   /** 还原成哪种节点 */
-  nodeKind: "imageGen" | "videoGen" | "minimaxVideo";
+  nodeKind: "imageGen" | "msImageGen" | "videoGen" | "minimaxVideo";
   /** 发给模型的最终提示词 */
   prompt?: string;
   /** 复合键 providerId::model */
@@ -1402,6 +1427,8 @@ export type AssetGenMeta = {
   seed?: number;
   /** 负向提示词 */
   negative?: string;
+  /** ModelScope：LoRA 选择（loraId → 强度） */
+  loras?: Record<string, number>;
 };
 
 export type AssetItem = {

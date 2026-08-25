@@ -8,7 +8,7 @@ import { pushError, toast, useUi } from "./stores/uiStore";
 import { useAssets } from "./stores/assetStore";
 import { usePromptHist } from "./stores/promptHistStore";
 import { chatStream, chatOnce, OPTIMIZE_SYSTEM } from "./services/llm";
-import { generateImage } from "./services/imageGen";
+import { generateImage, type ImageGenReq } from "./services/imageGen";
 import { generateVideo } from "./services/videoGen";
 import { generateMinimaxVideo } from "./services/minimaxVideo";
 import { generateAudio } from "./services/audioGen";
@@ -56,6 +56,7 @@ import type {
   LlmTextData,
   MinimaxVideoData,
   ModelCard,
+  MsImageGenData,
   MultiAngleData,
   NodeKind,
   PromptData,
@@ -157,8 +158,9 @@ function nodeOutput(
       if (s) images.push(s);
       break;
     }
-    case "imageGen": {
-      const g = d as ImageGenData;
+    case "imageGen":
+    case "msImageGen": {
+      const g = d as ImageGenData & MsImageGenData;
       const s = g.results?.[g.picked ?? 0];
       if (s) images.push(s);
       break;
@@ -467,7 +469,8 @@ function estimateNodeCost(nid: string, nodes: LiteNode[]): number {
   const d = n.data as Record<string, unknown>;
   try {
     switch (n.type) {
-      case "imageGen": {
+      case "imageGen":
+      case "msImageGen": {
         const card = resolveModelCard("image", d.modelId as string | undefined);
         return estimateCost(card.model, { images: Number(d.count ?? 1) });
       }
@@ -831,6 +834,86 @@ export async function runImageGen(id: string) {
     if (primaryCard) useUsage.getState().record(primaryCard, { ok: false, durMs: Date.now() - t0 });
     upd(id, { status: "error", error: errMsg(e) });
     pushError("生成图像", errMsg(e));
+  }
+}
+
+/** ModelScope 生图（专用节点）：上游文本/图 → modelscope 异步任务式生图（支持 LoRA）。 */
+export async function runMsImageGen(id: string) {
+  const node = useBoard.getState().nodes.find((n) => n.id === id);
+  if (!node) return;
+  const data = node.data as MsImageGenData;
+  if (data.status === "running") return;
+  const { texts, images } = collectUpstream(id);
+  const prompt = (data.prompt ?? "").trim() || texts.join("\n");
+  if (!prompt && !images.length) {
+    toast("请输入提示词，或连接一个提示词/对话节点", "err");
+    return;
+  }
+  upd(id, { status: "running", error: undefined });
+  let primaryCard: ModelCard | null = null;
+  const t0 = Date.now();
+  try {
+    const card = resolveModelCard("image", data.modelId);
+    primaryCard = card;
+    const finalPrompt = resolveAtRefs(prompt, id);
+
+    // 预算护栏：超日预算阻断、超确认阈值弹确认（生成类才预拦；返回 idle 不算错误）
+    const gate = budgetGate(estimateCost(card.model, { images: data.count ?? 1 }));
+    if (gate.block) throw new Error(gate.block);
+    if (gate.confirm && !window.confirm(gate.confirm)) {
+      upd(id, { status: "idle", error: undefined });
+      return;
+    }
+
+    const loras = data.loras && Object.keys(data.loras).length ? data.loras : undefined;
+    const req: ImageGenReq = {
+      prompt: finalPrompt,
+      size: data.size || "1024x1024",
+      n: Math.max(1, Math.min(8, data.count ?? 1)),
+      refImages: images.length ? images : undefined,
+      loras,
+      signal: taskSignal(id),
+    };
+    console.info(`[runner:msImageGen] 模型=${card.model} · 尺寸=${req.size} · LoRA=${loras ? Object.keys(loras).join(",") : "无"}`);
+    const results = await generateImage(card, req);
+    pushHistory(id, {
+      prompt,
+      modelId: modelKey(card.id, card.model),
+      params: { size: data.size, aspect: data.aspect, resolution: data.resolution, count: data.count, loras },
+      results,
+    });
+    upd(id, { status: "done", results, picked: 0 });
+    usePromptHist.getState().record(prompt);
+    for (const src of results) {
+      useUi.getState().addGallery({ kind: "image", src, prompt, model: card.model, nodeId: id });
+    }
+    collectToLibrary("image", results, {
+      prompt,
+      model: card.name,
+      nodeId: id,
+      durationMs: Date.now() - t0,
+      gen: {
+        nodeKind: "msImageGen",
+        prompt: (data.prompt ?? "").trim() || prompt,
+        modelId: modelKey(card.id, card.model),
+        size: data.size,
+        aspect: data.aspect,
+        resolution: data.resolution,
+        loras,
+      },
+    });
+    useUsage.getState().record(card, { ok: true, images: results.length, durMs: Date.now() - t0 });
+    void maybeAutoSave(results, { prompt, model: card.model });
+  } catch (e) {
+    // 用户主动停止：不算错误，恢复待机（也不进报错中心响铃）
+    if (isAbortError(e)) {
+      upd(id, { status: "idle", error: undefined });
+      toast("已停止生成", "info");
+      return;
+    }
+    if (primaryCard) useUsage.getState().record(primaryCard, { ok: false, durMs: Date.now() - t0 });
+    upd(id, { status: "error", error: errMsg(e) });
+    pushError("ModelScope 生图", errMsg(e));
   }
 }
 
@@ -2612,6 +2695,7 @@ const gated = (kind: NodeKind, fn: (id: string) => Promise<void>) => async (id: 
 /** 可主动运行的节点类型 → 运行函数（对话节点需要用户输入，不参与自动链） */
 const RUNNERS: Partial<Record<NodeKind, (id: string) => Promise<void>>> = {
   imageGen: gated("imageGen", runImageGen),
+  msImageGen: gated("msImageGen", runMsImageGen),
   videoGen: gated("videoGen", runVideoGen),
   minimaxVideo: gated("minimaxVideo", runMinimaxVideo),
   comfy: gated("comfy", runComfy),
@@ -2795,7 +2879,7 @@ export async function runAllFlows() {
   // 一键全跑是最烧钱的操作（force 全量重算）：先把账单摊开确认，别一句 toast 就把请求全发出去
   const all = flows.flat();
   const typeOf = (nid: string) => nodes.find((n) => n.id === nid)?.type as NodeKind | undefined;
-  const imgN = all.filter((nid) => ["imageGen", "comfy", "relight", "multiAngle", "charCard"].includes(typeOf(nid) ?? "")).length;
+  const imgN = all.filter((nid) => ["imageGen", "msImageGen", "comfy", "relight", "multiAngle", "charCard"].includes(typeOf(nid) ?? "")).length;
   const vidN = all.filter((nid) => typeOf(nid) === "videoGen").length;
   const audN = all.filter((nid) => typeOf(nid) === "audioGen").length;
   if (imgN + vidN + audN > 0) {
