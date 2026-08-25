@@ -3,7 +3,7 @@ import type { NodeProps } from "@xyflow/react";
 import { NodeShell, PortIn, PortOut } from "../NodeShell";
 import { IcLoading, IcSparkles, IcText } from "../../../ui/icons";
 import { useBoard } from "../../../core/stores/boardStore";
-import { collectImageRefsFor, runFlow } from "../../../core/runner";
+import { collectImageRefsFor, collectUpstream, runFlow } from "../../../core/runner";
 import { Thumb } from "../../../ui/Thumb";
 import { PromptToolsBtn } from "../../../ui/PromptToolsBtn";
 import { ModelPicker } from "../../../ui/ModelPicker";
@@ -34,6 +34,10 @@ export const PromptNode = memo(function PromptNode({ id, data, selected }: NodeP
   const d = data as PromptData;
   const upd = useBoard((s) => s.updateData);
   const images = useSiblingImages(id);
+  const nodes = useBoard((s) => s.nodes);
+  const edges = useBoard((s) => s.edges);
+  // 上游文本（与 runPromptLlm 运行时拼接同序）：LLM 模式下只读展示，运行时自动合并进提示词
+  const upstreamText = useMemo(() => collectUpstream(id).texts.join("\n"), [nodes, edges, id]);
   const editorRef = useRef<AtTextAreaHandle>(null);
   const mode = d.mode ?? "text";
   const isLlm = mode === "llm";
@@ -151,11 +155,20 @@ export const PromptNode = memo(function PromptNode({ id, data, selected }: NodeP
                 </div>
               </div>
             ) : null}
+            {upstreamText ? (
+              <div className="upstream-out">
+                <span className="uo-lab">
+                  上游输出（只读）
+                  <span className="uo-hint">运行时自动合并进提示词</span>
+                </span>
+                <textarea className="textarea nodrag nowheel" readOnly rows={3} value={upstreamText} />
+              </div>
+            ) : null}
             <div className="ta-wrap">
               <AtTextArea
                 ref={editorRef}
                 rows={4}
-                placeholder="任务提示词，或连接上游文本 / 图片"
+                placeholder="自定义提示词（可选）：留空则只发上游文本"
                 value={d.prompt ?? ""}
                 onChange={(t) => upd(id, { prompt: t })}
                 refs={images}

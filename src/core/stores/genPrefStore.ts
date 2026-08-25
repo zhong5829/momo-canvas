@@ -41,6 +41,8 @@ const CONTENT_KEYS = new Set([
   "prompt", "text", "messages", "draft", "custom", "result", "results",
   "resultUrl", "resultUrls", "picked", "params", "extra", "selected",
   "prompts", "slides", "userRefs", "productDesc", "styleTone", "h5StyleTone",
+  // 提示词节点 LLM 模式的系统提示词：属内容，不该被新节点继承（否则新增 LLM 节点会带回上次的 system）
+  "system",
 ]);
 
 /** 按类型的内容黑名单：同名不同义字段在此区分（其余内容字段不在 defaultData 里，天然不记） */
@@ -149,7 +151,14 @@ export const useGenPref = create<GenPrefState>((set, get) => ({
     if (!Object.keys(clean).length) return;
     const commit = () => {
       const s = get();
-      const prefs = { ...s.prefs, [kind]: { ...(s.prefs[kind] ?? {}), ...clean } };
+      const kindContent = KIND_CONTENT[kind];
+      // 清理历史脏数据：本就不该进 prefs 的内容/运行态字段（如 prompt 的 system）合并前剔除，
+      // 否则旧数据会一直留在偏好里，新节点持续继承
+      const base = { ...(s.prefs[kind] ?? {}) };
+      for (const k of Object.keys(base)) {
+        if (CONTENT_KEYS.has(k) || kindContent?.has(k)) delete base[k];
+      }
+      const prefs = { ...s.prefs, [kind]: { ...base, ...clean } };
       set({ prefs });
       scheduleSave(get);
     };
@@ -205,5 +214,12 @@ export function genPrefFor(kind: string): Record<string, unknown> {
     const p = s.presets.find((x) => x.id === activeId && x.kind === k);
     if (p && !p.builtin && Object.keys(p.data).length) return { ...p.data };
   }
-  return s.prefs[k] ?? {};
+  // 读时剔除历史脏数据：内容/运行态字段（如 prompt 的 system）不该进偏好
+  const kindContent = KIND_CONTENT[kind];
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(s.prefs[k] ?? {})) {
+    if (CONTENT_KEYS.has(key) || kindContent?.has(key)) continue;
+    out[key] = val;
+  }
+  return out;
 }

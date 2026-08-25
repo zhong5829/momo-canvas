@@ -433,6 +433,13 @@ function selfSig(id: string): string {
     const d = node.data as VectorizeData;
     return `^self:vec:${d.preset}:${d.colorMode}:${d.hierarchical}:${d.colorPrecision}:${d.filterSpeckle}:${d.pathPrecision}:${d.geometry ? 1 : 0}:${d.quality ?? "balanced"}`;
   }
+  if (node.type === "prompt") {
+    const d = node.data as PromptData;
+    // LLM 模式：system/prompt/modelId 变化要让自身判脏 → 重算（否则跑下游时复用旧结果）；
+    // 纯文本模式是静态输出，无运行参数
+    if (d.mode === "llm") return `^self:prompt:${d.system ?? ""}:${d.prompt ?? ""}:${d.modelId ?? ""}`;
+    return "";
+  }
   return "";
 }
 function sigOf(id: string): string {
@@ -2752,6 +2759,12 @@ function hasFreshOutput(n: LiteNode): boolean {
   // 老数据无 inputSig（升级前）视为新鲜，避免打开旧画布触发全量重算
   if (d.inputSig !== undefined && d.inputSig !== sigOf(n.id)) return false;
   switch (n.type as NodeKind) {
+    case "prompt": {
+      // 纯文本模式：静态输出，始终新鲜；LLM 模式：有结果且 inputSig 匹配才算新鲜（否则跑下游时重跑整条 LLM 链）
+      const pd = d as unknown as PromptData;
+      if (pd.mode !== "llm") return true;
+      return !!(d.result as string | undefined)?.trim();
+    }
     case "llmText":
       return !!(d.result as string | undefined)?.trim();
     case "imageGen":

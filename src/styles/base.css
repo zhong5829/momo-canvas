@@ -812,6 +812,33 @@ button {
   pointer-events: none;
 }
 
+/* LLM 节点上游输出（只读）展示区：运行时自动合并进提示词，仅展示不可编辑 */
+.upstream-out {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.uo-lab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--text-2);
+}
+.uo-hint {
+  font-weight: 400;
+  color: var(--text-3);
+}
+.upstream-out textarea {
+  background: var(--input-bg);
+  color: var(--text-3);
+  border-style: dashed;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: default;
+}
+
 /* 提示词「工具」合并弹窗（AI 工具网格 + 历史列表） */
 .pop-layer.pt-pop {
   width: 300px;
