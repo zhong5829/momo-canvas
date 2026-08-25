@@ -872,6 +872,7 @@ export async function runMsImageGen(id: string) {
       n: Math.max(1, Math.min(8, data.count ?? 1)),
       refImages: images.length ? images : undefined,
       loras,
+      negative: data.negative?.trim() || undefined,
       signal: taskSignal(id),
     };
     console.info(`[runner:msImageGen] 模型=${card.model} · 尺寸=${req.size} · LoRA=${loras ? Object.keys(loras).join(",") : "无"}`);
@@ -879,7 +880,7 @@ export async function runMsImageGen(id: string) {
     pushHistory(id, {
       prompt,
       modelId: modelKey(card.id, card.model),
-      params: { size: data.size, aspect: data.aspect, resolution: data.resolution, count: data.count, loras },
+      params: { size: data.size, aspect: data.aspect, resolution: data.resolution, count: data.count, loras, negative: data.negative?.trim() || undefined },
       results,
     });
     upd(id, { status: "done", results, picked: 0 });
@@ -900,6 +901,7 @@ export async function runMsImageGen(id: string) {
         aspect: data.aspect,
         resolution: data.resolution,
         loras,
+        negative: data.negative?.trim() || undefined,
       },
     });
     useUsage.getState().record(card, { ok: true, images: results.length, durMs: Date.now() - t0 });

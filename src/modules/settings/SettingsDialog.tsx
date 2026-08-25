@@ -4,8 +4,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Modal, Field, Switch, Row } from "../../ui/kit";
-import { PopSelect } from "../../ui/PopSelect";
+import { PopSelect, type PopOption } from "../../ui/PopSelect";
 import { ModelPicker } from "../../ui/ModelPicker";
+import { useMsLora } from "../../core/stores/msLoraStore";
 import { flattenCard, modelKey, resolveModelCard, splitModelKey, useSettings } from "../../core/stores/settingsStore";
 import { useComfy, useComfyTemplates } from "../../core/stores/comfyStore";
 import { toast, useUi } from "../../core/stores/uiStore";
@@ -34,6 +35,7 @@ import {
   IcGallery,
   IcGear,
   IcGlobe,
+  IcImage,
   IcKeyboard,
   IcLoading,
   IcMoon,
@@ -370,6 +372,164 @@ function PresetCard({ p, onPick }: { p: ProviderPreset; onPick: (p: ProviderPres
   );
 }
 
+/** ModelScope LoRA 管理区（模型配置页内折叠分区）：增删改 LoRA，绑定到 ModelScope 生图模型；画布「ModelScope 生图」节点按模型自动筛选 */
+function MsLoraSection() {
+  const msLoras = useMsLora((s) => s.msLoras);
+  const models = useSettings((s) => s.settings.models);
+  const [open, setOpen] = useState(false);
+  // 新增表单草稿
+  const [draft, setDraft] = useState({ name: "", id: "", targetModel: "", strength: 0.8 });
+
+  // 绑定模型候选：image 角色走 modelscope 协议的模型名
+  const msModels = useMemo(() => {
+    const out: string[] = [];
+    for (const p of models.providers) {
+      const slot = p.models.image;
+      if (slot?.protocol === "modelscope") for (const m of slot.models) if (!out.includes(m)) out.push(m);
+    }
+    return out;
+  }, [models]);
+
+  const targetOptions: PopOption[] = msModels.map((m) => ({ value: m, label: m, icon: <IcImage size={14} /> }));
+
+  const add = () => {
+    if (!draft.name.trim() || !draft.id.trim() || !draft.targetModel.trim()) {
+      toast("请填写名称、LoRA ID 与绑定模型", "err");
+      return;
+    }
+    if (msLoras.some((l) => l.id === draft.id.trim())) {
+      toast(`LoRA ID「${draft.id.trim()}」已存在`, "err");
+      return;
+    }
+    useMsLora.getState().addLora({
+      name: draft.name.trim(),
+      id: draft.id.trim(),
+      targetModel: draft.targetModel.trim(),
+      strength: draft.strength,
+    });
+    setDraft({ name: "", id: "", targetModel: "", strength: 0.8 });
+    toast("已添加 LoRA", "ok");
+  };
+
+  return (
+    <div className="preset-section">
+      <div className="preset-sec-title">
+        ModelScope LoRA
+        <span className="hint">· 为 ModelScope 生图模型绑定 LoRA，画布「ModelScope 生图」节点按当前模型自动筛选</span>
+        <button className={`btn sm${open ? " on" : ""}`} onClick={() => setOpen((v) => !v)}>
+          <IcChevronD size={13} className={open ? "open" : ""} />
+          {open ? "收起" : "管理"}
+        </button>
+      </div>
+      {open ? (
+        <div className="ms-lora-box">
+          {!msModels.length ? (
+            <div className="pt-hint">
+              尚未配置 ModelScope 服务商 —— 请先在上方「推荐中转站预设」导入 ModelScope 卡片并补 API Key（或给某个服务商 image 槽加 modelscope 协议模型）。
+            </div>
+          ) : null}
+          <div className="ms-lora-add">
+            <input
+              className="input"
+              placeholder="名称（如 Z-Image Film）"
+              value={draft.name}
+              onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+            />
+            <input
+              className="input"
+              placeholder="LoRA ID（如 Daniel8152/film）"
+              value={draft.id}
+              onChange={(e) => setDraft((d) => ({ ...d, id: e.target.value }))}
+            />
+            <PopSelect
+              className="nodrag"
+              value={draft.targetModel}
+              options={targetOptions}
+              placeholder={msModels.length ? "绑定模型…" : "先配置 ModelScope 服务商"}
+              onChange={(v) => setDraft((d) => ({ ...d, targetModel: v ?? "" }))}
+            />
+            <label className="ms-lora-str" title="默认强度（节点勾选时使用）">
+              强度 {draft.strength.toFixed(2)}
+            </label>
+            <input
+              type="range"
+              className="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={draft.strength}
+              onChange={(e) => setDraft((d) => ({ ...d, strength: Number(e.target.value) }))}
+            />
+            <button className="btn sm primary" onClick={add}>
+              <IcPlus size={13} /> 添加
+            </button>
+          </div>
+          <div className="ms-lora-list">
+            {msLoras.length ? (
+              msLoras.map((l) => (
+                <div key={l.id} className="ms-lora-row">
+                  <input
+                    className="input"
+                    value={l.name}
+                    title="名称"
+                    onChange={(e) => useMsLora.getState().updateLora(l.id, { name: e.target.value })}
+                  />
+                  <input
+                    className="input"
+                    value={l.id}
+                    title="LoRA ID"
+                    onChange={(e) => useMsLora.getState().updateLora(l.id, { id: e.target.value })}
+                  />
+                  <PopSelect
+                    className="nodrag"
+                    value={l.targetModel}
+                    options={targetOptions}
+                    placeholder="绑定模型…"
+                    onChange={(v) => v && useMsLora.getState().updateLora(l.id, { targetModel: v })}
+                  />
+                  <label className="ms-lora-str" title="默认强度">
+                    {l.strength.toFixed(2)}
+                  </label>
+                  <input
+                    type="range"
+                    className="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={l.strength}
+                    onChange={(e) => useMsLora.getState().updateLora(l.id, { strength: Number(e.target.value) })}
+                  />
+                  <label className="ms-lora-on" title={l.enabled ? "启用中（节点可选用）" : "已停用"}>
+                    <input
+                      type="checkbox"
+                      checked={l.enabled}
+                      onChange={(e) => useMsLora.getState().updateLora(l.id, { enabled: e.target.checked })}
+                    />
+                  </label>
+                  <button
+                    className="icon-btn danger"
+                    title="删除"
+                    onClick={() => {
+                      useMsLora.getState().removeLora(l.id);
+                      toast("已删除 LoRA", "info");
+                    }}
+                  >
+                    <IcTrash size={14} />
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div className="pt-hint">
+                暂无 LoRA —— 在上方添加一个绑定到 ModelScope 模型的 LoRA 后，画布「ModelScope 生图」节点即可按当前模型自动选用。
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ModelsTab() {
   const models = useSettings((s) => s.settings.models);
   const upsertProvider = useSettings((s) => s.upsertProvider);
@@ -635,6 +795,8 @@ function ModelsTab() {
           </div>
         </div>
       ) : null}
+
+      <MsLoraSection />
 
       <GgufManageDialog open={ggufMgrOpen} onClose={() => setGgufMgrOpen(false)} />
 

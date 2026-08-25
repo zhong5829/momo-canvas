@@ -2236,6 +2236,70 @@
 .preset-section {
   margin-top: 18px;
 }
+/* ---- ModelScope LoRA 管理区（模型配置页折叠分区） ---- */
+.ms-lora-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--panel-border);
+  background: var(--input-bg);
+}
+.ms-lora-add,
+.ms-lora-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ms-lora-add {
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--panel-border);
+}
+.ms-lora-row {
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-border);
+}
+.ms-lora-add .input,
+.ms-lora-row .input {
+  min-width: 0;
+  flex: 1 1 150px;
+}
+.ms-lora-add .input:nth-child(2),
+.ms-lora-row .input:nth-child(2) {
+  flex: 1 1 180px;
+}
+.ms-lora-str {
+  flex: none;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  min-width: 58px;
+  text-align: right;
+  white-space: nowrap;
+}
+.ms-lora-add .range,
+.ms-lora-row .range {
+  flex: 0 1 130px;
+  min-width: 80px;
+}
+.ms-lora-on {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+.ms-lora-on input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.ms-lora-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 .preset-sec-title {
   display: flex;
   align-items: baseline;

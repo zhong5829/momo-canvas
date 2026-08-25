@@ -246,6 +246,7 @@ async function genModelScope(card: ModelCard, req: ImageGenReq): Promise<string[
     if (size) body.size = size;
     if (refs.length) body.image_url = refs; // modelscope 的 image_url 接受 dataURL
     if (loras) body.loras = loras;
+    if (req.negative?.trim()) body.negative_prompt = req.negative.trim();
     console.info(
       `[imageGen:modelscope] POST ${base}/images/generations · model=${card.model} · 参考图=${refs.length} 张 · size=${size ?? "默认"} · loras=${loras ? Object.keys(loras).join(",") : "无"}`,
     );

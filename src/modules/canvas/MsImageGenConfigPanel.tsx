@@ -4,6 +4,7 @@
  * 参数浮层：比例 × 分辨率 → WxH（modelscope 的 size 字段），数量，以及 ModelScope 专属 LoRA 多选。
  */
 import { useBoard } from "../../core/stores/boardStore";
+import { useMsLora } from "../../core/stores/msLoraStore";
 import { GenPromptBar } from "./GenPromptBar";
 import { NodeParamsPop } from "../../ui/NodeParamsPop";
 import { ModelPicker } from "../../ui/ModelPicker";
@@ -11,13 +12,6 @@ import { splitModelKey } from "../../core/stores/settingsStore";
 import { gptSize } from "../../core/modelMeta";
 import { IcImage } from "../../ui/icons";
 import type { MsImageGenData } from "../../core/types";
-
-/** ModelScope 平台预置 LoRA（与参考项目官方 LoRA 一致，按 targetModel 匹配模型展示） */
-const MS_LORAS: { id: string; name: string; targetModel: string; strength: number }[] = [
-  { id: "Daniel8152/film", name: "Z-Image Film", targetModel: "Tongyi-MAI/Z-Image-Turbo", strength: 0.8 },
-  { id: "Daniel8152/Qwen-Image-2512-Film", name: "Qwen Image 2512 Film", targetModel: "Qwen/Qwen-Image-2512", strength: 0.8 },
-  { id: "Daniel8152/Klein-enhance", name: "Klein enhance", targetModel: "black-forest-labs/FLUX.2-klein-9B", strength: 0.8 },
-];
 
 const RATIOS = ["1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16"];
 const TIERS = ["1K", "2K", "4K"];
@@ -29,13 +23,15 @@ export function MsImageGenConfigPanel() {
   });
   const d = useBoard((s) => (selId ? (s.nodes.find((n) => n.id === selId)?.data as MsImageGenData | undefined) : undefined));
   const upd = useBoard((s) => s.updateData);
+  // ModelScope LoRA 注册表（设置 → 模型配置 → ModelScope LoRA 管理），按当前模型自动筛选
+  const msLoras = useMsLora((s) => s.msLoras);
 
   if (!selId || !d) return null;
   const patch = (p: Partial<MsImageGenData>) => upd(selId, p);
 
   // 当前选中模型名（复合键 providerId::model），用于过滤可用 LoRA
   const { model } = splitModelKey(d.modelId ?? "");
-  const curLoras = MS_LORAS.filter((l) => !model || l.targetModel === model);
+  const curLoras = msLoras.filter((l) => l.enabled && (!model || l.targetModel === model));
   const selLoras = d.loras ?? {};
 
   const aspect = d.aspect || "1:1";
@@ -93,6 +89,17 @@ export function MsImageGenConfigPanel() {
                   onChange={(e) => patch({ count: Number(e.target.value) })}
                 />
               </div>
+              <div className="gp-sec-title" style={{ marginTop: 8 }}>
+                负向提示词
+                <span className="gp-hint">不想出现的内容（modelscope 支持时生效）</span>
+              </div>
+              <textarea
+                className="textarea nodrag"
+                placeholder="如：多余手指、文字水印、低质量、变形、模糊"
+                value={d.negative ?? ""}
+                onChange={(e) => patch({ negative: e.target.value })}
+                style={{ width: "100%", minHeight: 46, fontSize: 12.5, resize: "vertical" }}
+              />
               {curLoras.length ? (
                 <>
                   <div className="gp-sec-title">
@@ -116,7 +123,16 @@ export function MsImageGenConfigPanel() {
                     ))}
                   </div>
                 </>
-              ) : null}
+              ) : (
+                <div className="gp-sec-title">
+                  LoRA{" "}
+                  <span className="gp-hint">
+                    {msLoras.length
+                      ? `当前模型没有绑定 LoRA（${model || "未选模型"}）`
+                      : "暂无 LoRA —— 到 设置 → 模型配置 → ModelScope LoRA 添加"}
+                  </span>
+                </div>
+              )}
             </NodeParamsPop>
           </>
         }

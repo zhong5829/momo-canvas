@@ -208,10 +208,30 @@ export type MsImageGenData = {
   size: string;
   /** 生成数量 1-8 */
   count: number;
+  /** 负向提示词：不想出现的内容（提交为 negative_prompt，modelscope 支持时生效） */
+  negative?: string;
   /** LoRA 选择：loraId → 强度（0-1），随选中模型展示可用清单 */
   loras?: Record<string, number>;
   results: string[];
   picked: number;
+};
+
+/** ModelScope LoRA 注册项：绑定到某个 ModelScope 生图模型，画布「ModelScope 生图」节点按 targetModel 自动筛选 */
+export type MsLora = {
+  /** LoRA 唯一标识（提交时作为 key，如 Daniel8152/film） */
+  id: string;
+  /** 显示名（如 Z-Image Film） */
+  name: string;
+  /** 绑定的 ModelScope 生图模型名（如 Tongyi-MAI/Z-Image-Turbo） */
+  targetModel: string;
+  /** 默认强度 0-1（节点勾选时使用） */
+  strength: number;
+  /** 启用开关（关闭则节点里不显示） */
+  enabled: boolean;
+  /** 备注（可选） */
+  note?: string;
+  createdAt?: number;
+  updatedAt?: number;
 };
 
 /** 超清放大（本地 DirectML 超分）节点数据 — 非破坏：输出是新资产，原图不动 */

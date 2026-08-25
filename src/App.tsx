@@ -20,6 +20,7 @@ import { useAssets } from "./core/stores/assetStore";
 import { useDirector } from "./core/stores/directorStore";
 import { useSkills } from "./core/stores/skillStore";
 import { useLocalGguf } from "./core/stores/localGgufStore";
+import { useMsLora } from "./core/stores/msLoraStore";
 import { recoverInterruptedTasks } from "./core/directorQueue";
 import { useTemplates } from "./core/stores/templateStore";
 import { useAgent } from "./core/stores/agentStore";
@@ -348,6 +349,7 @@ export default function App() {
       // 但 settingsStore.init 内部已 fire-and-forget 调了 useLocalGguf.init()，
       // 这里显式再调一次保证 loaded（initOnce 幂等，不会重复加载）
       useLocalGguf.getState().init(),
+      useMsLora.getState().init(),
       useBoard.getState().init(),
       useComfy.getState().init(),
       useAssets.getState().init(),
