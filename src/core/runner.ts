@@ -701,6 +701,15 @@ function applySizeDirective(dir: string, family: string, tier?: string): { size?
   return s ? { size: `${s.w}x${s.h}` } : {};
 }
 
+/** 生成类节点的提示词 = 节点自身提示词（指令） + 上游文本（内容）：两者都有则拼接，
+ *  避免节点填了提示词后上游 LLM 输出被丢弃（与提示词节点 LLM 模式的合并行为一致） */
+function mergePrompt(own: string, upstream: string): string {
+  const a = (own ?? "").trim();
+  const b = (upstream ?? "").trim();
+  if (a && b) return `${a}\n\n${b}`;
+  return a || b;
+}
+
 export async function runImageGen(id: string) {
   const node = useBoard.getState().nodes.find((n) => n.id === id);
   if (!node) return;
@@ -709,7 +718,7 @@ export async function runImageGen(id: string) {
   const { texts, images } = collectUpstream(id);
   const sizeDirectives = texts.filter(isSizeDirective);
   const promptTexts = texts.filter((t) => !isSizeDirective(t));
-  const prompt = (data.prompt ?? "").trim() || promptTexts.join("\n");
+  const prompt = mergePrompt(data.prompt ?? "", promptTexts.join("\n"));
   if (!prompt && !images.length) {
     toast("请输入提示词，或连接一个提示词/对话节点", "err");
     return;
@@ -851,7 +860,7 @@ export async function runMsImageGen(id: string) {
   const data = node.data as MsImageGenData;
   if (data.status === "running") return;
   const { texts, images } = collectUpstream(id);
-  const prompt = (data.prompt ?? "").trim() || texts.join("\n");
+  const prompt = mergePrompt(data.prompt ?? "", texts.join("\n"));
   if (!prompt && !images.length) {
     toast("请输入提示词，或连接一个提示词/对话节点", "err");
     return;
@@ -1396,7 +1405,7 @@ export async function runVideoGen(id: string) {
   const data = node.data as VideoGenData;
   if (data.status === "running") return;
   const { texts, images, videos, audios } = collectUpstream(id);
-  const prompt = (data.prompt ?? "").trim() || texts.join("\n");
+  const prompt = mergePrompt(data.prompt ?? "", texts.join("\n"));
   if (!prompt && !images.length) {
     toast("请输入视频描述，或连接提示词/图片节点", "err");
     return;
@@ -1514,7 +1523,7 @@ export async function runMinimaxVideo(id: string) {
   const data = node.data as MinimaxVideoData;
   if (data.status === "running") return;
   const { texts, images, audios } = collectUpstream(id);
-  const prompt = (data.prompt ?? "").trim() || texts.join("\n");
+  const prompt = mergePrompt(data.prompt ?? "", texts.join("\n"));
   const mode = data.mode ?? "t2va";
   if (!prompt) {
     toast("请输入提示词，或连接上游文本节点", "err");
