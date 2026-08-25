@@ -273,6 +273,9 @@ function collectResults(results: AgentResult[]) {
   }
 }
 
+/** Agent 循环里，启用模型自带联网时追加到系统提示后的说明段 */
+const NET_HINT = `\n\n【联网——已启用】本次请求已启用你自带的联网搜索能力（tools 已注入请求）。需要实时资料、潮流、事实核查时，直接自行联网检索，再基于结果输出下一个动作；**禁止输出 search 动作**——它专供没有内置联网时使用，在你联网开启期间会被程序直接拒绝执行。若你发现自己实际无法联网（检索不到结果），基于已有知识创作并在回复中说明。`;
+
 async function agentLoop(asstId: string) {
   const st = () => useAgent.getState();
   const scratch: string[] = [];
@@ -282,21 +285,42 @@ async function agentLoop(asstId: string) {
   const spec: { aspect?: string; resolution?: string } = {};
   /** 生成确认闸：已确认过的方案签名（prompt+画幅+张数）。生成扣费前必须先向用户确认一次 */
   let confirmedSig = "";
+  /** 外部搜索接口本会话已失败过（true 后不再执行 search 动作，防止模型反复重试空烧轮数） */
+  let searchFailed = false;
+  /** 联网 tools 被服务端拒绝过（端点不支持/中转站剥参数）：本轮任务内不再尝试注入，避免每轮都白失败一次 */
+  let netBroken = false;
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const card = resolveModelCard("chat", st().modelId);
     // 联网开关开启且模型自带联网（GLM/MiniMax/混元…）→ 让模型自己查，比 search 动作少绕一圈。
     // 必须在系统提示里告知模型「已启用内置联网」，否则模型不知道自己带着 tools，
     // 仍会按协议输出 search 动作去走外部搜索接口（自带联网形同虚设）
-    const useBuiltin = st().webSearch && chatCaps(card).builtinSearch;
-    const system = useBuiltin
-      ? `${AGENT_SYSTEM}\n\n【联网——已启用】本次请求已启用你自带的联网搜索能力（tools 已注入请求）。需要实时资料、潮流、事实核查时，直接自行联网检索，再基于结果输出下一个动作；不要输出 search 动作（那是没有内置联网时的兜底通道）。`
-      : AGENT_SYSTEM;
-    const { text: raw } = await chatStream(card, buildContext(scratch), {
-      system,
-      builtinSearch: useBuiltin,
-      disableThinking: !st().thinkingOn, // 思考模式开关（仅创作助手生效）
-    });
+    const useBuiltin = !netBroken && st().webSearch && chatCaps(card).builtinSearch;
+    let raw: string;
+    try {
+      raw = (
+        await chatStream(card, buildContext(scratch), {
+          system: useBuiltin ? AGENT_SYSTEM + NET_HINT : AGENT_SYSTEM,
+          builtinSearch: useBuiltin,
+          disableThinking: !st().thinkingOn, // 思考模式开关（仅创作助手生效）
+        })
+      ).text;
+    } catch (e) {
+      if (!useBuiltin) throw e;
+      // 端点不认联网 tools（剥参数/400，部分中转站如此）→ 去掉联网按普通请求重发一次，任务不中断；
+      // 本轮任务内记住教训，后续轮次直接走无联网
+      netBroken = true;
+      scratch.push(
+        `（系统提示）联网搜索工具被服务端拒绝（${errMsg(e).slice(0, 140)}），已切换为无联网模式。请基于已有知识继续创作，关键事实不确定时向用户说明信息可能不是最新。`,
+      );
+      raw = (
+        await chatStream(card, buildContext(scratch), {
+          system: AGENT_SYSTEM,
+          builtinSearch: false,
+          disableThinking: !st().thinkingOn,
+        })
+      ).text;
+    }
     const act = parseAction(raw);
 
     // 模型没按协议输出 → 直接当它说的话展示，结束本轮
@@ -311,6 +335,22 @@ async function agentLoop(asstId: string) {
     }
 
     if (act.action === "search") {
+      // 已启用模型自带联网：search 动作（外部搜索接口）没有意义，程序直接拒绝执行。
+      // 提示词劝不住所有模型（输出协议里 search 排在最前，诱导太强），必须硬拦，
+      // 否则会去调未配置的外部接口反复失败，任务卡死
+      if (useBuiltin) {
+        scratch.push(
+          "（系统提示）本次请求已启用你的内置联网搜索，search 动作不会被执行。请直接基于你联网检索到的信息输出下一个动作；若你发现自己实际无法联网（检索不到结果），就基于已有知识创作，并在最终回复中向用户说明信息可能不是最新。",
+        );
+        continue;
+      }
+      // 外部搜索刚失败过就不再执行（接口未配置时模型会反复重试，白白烧轮数）
+      if (searchFailed) {
+        scratch.push(
+          "（系统提示）内置搜索接口刚才已失败（可能未在设置中配置），不会再执行 search 动作。请基于已有知识继续创作，关键事实不确定时向用户说明。",
+        );
+        continue;
+      }
       const sid = st().addStep(asstId, "search", `搜索：${act.query}`);
       try {
         const hits: SearchHit[] = await webSearch(useSettings.getState().settings.search, act.query);
@@ -322,8 +362,11 @@ async function agentLoop(asstId: string) {
               : "（没有搜到结果）"),
         );
       } catch (e) {
+        searchFailed = true;
         st().setStep(asstId, sid, { status: "error", text: `搜索失败：${errMsg(e)}` });
-        scratch.push(`搜索「${act.query}」失败：${errMsg(e)}。请基于已有知识继续创作，不要重试太多次。`);
+        scratch.push(
+          `搜索「${act.query}」失败：${errMsg(e)}。搜索接口当前不可用，不要再输出 search 动作。请基于已有知识继续创作（关键事实不确定时向用户说明），或直接告知用户。`,
+        );
       }
       continue;
     }
