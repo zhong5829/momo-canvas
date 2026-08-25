@@ -196,6 +196,9 @@ function buildReadme() {
 - 版本号：${version}（package.json / src-tauri/tauri.conf.json 同步）
 - 构建时间：${time}
 - 构建命令：\`pnpm app:dist\`（models:prepare 模型校验 → tauri build → collect-app 收集）
+- 签名环境（缺了 .sig/latest.json 不生成，且无终端时 CLI 挂起等密码）：
+  \`TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" pnpm app:dist\`（私钥在 ~/.tauri/momo-canvas.key，空密码加密格式；安装包已产出只缺签名时，可用 \`pnpm tauri signer sign --private-key-path C:\\Users\\96311\\.tauri\\momo-canvas.key --password "" <安装包>\` 单独补）
+- 故障排查：NSIS 阶段报 "mis-hashed files / Downloading nsis_tauri_utils.dll timeout" 时，用可用 IP 手动下载该 DLL 放回 %LOCALAPPDATA%\\tauri\\NSIS\\Plugins\\x86-unicode\\ 即可续跑
 - 本目录（APP/）每次构建整体重建，只保留最新一次的产物，历史版本已自动清除
 
 ## 本版变更（摘自 CHANGELOG.md）
