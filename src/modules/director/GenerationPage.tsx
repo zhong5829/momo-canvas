@@ -13,7 +13,7 @@ import { useDirector } from "../../core/stores/directorStore";
 import { useAssets } from "../../core/stores/assetStore";
 import { toast, useUi } from "../../core/stores/uiStore";
 import { approveTake, createTake, projectProgress } from "../../core/directorEngine";
-import { runBatch, collectBatchTasks, cancelBatch, type BatchOp } from "../../core/directorQueue";
+import { runBatch, collectBatchTasks, cancelBatch, stopBatchHard, type BatchOp } from "../../core/directorQueue";
 import { assetUrl, assetToBlobUrl } from "../../core/services/assetFiles";
 import { extractAudioWav } from "../../core/videoEdit";
 import { RecipeSelect } from "./RecipeSelect";
@@ -22,7 +22,7 @@ import { AskCard } from "./AskCard";
 import { PopSelect, PopLayer } from "../../ui/PopSelect";
 import { Thumb } from "../../ui/Thumb";
 import { ScrubVideoThumb, fmtDur } from "../../ui/VideoThumb";
-import { IcStar, IcCheck, IcUpload, IcLoading, IcZap, IcFilmFrame, IcClapper, IcRefresh, IcClose, IcMic, IcTimer } from "../../ui/icons";
+import { IcStar, IcCheck, IcUpload, IcLoading, IcZap, IcFilmFrame, IcClapper, IcRefresh, IcClose, IcMic, IcTimer, IcStop } from "../../ui/icons";
 import type { DirectorProject, DirectorSegment, DirectorTake } from "../../core/types";
 
 export function GenerationPage({ project }: { project: DirectorProject }) {
@@ -38,6 +38,8 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
   const [batchPct, setBatchPct] = useState<number | undefined>();
   const [batchMsg, setBatchMsg] = useState("");
   const [batchOp, setBatchOp] = useState<BatchOp>("missing");
+  // 「停止」按钮防连点
+  const [stopping, setStopping] = useState(false);
   // 片段多选勾选：批量范围「勾选的片段」一起重新生成（无勾选时退回当前点选片段）
   const [checked, setChecked] = useState<Set<string>>(new Set());
 
@@ -70,7 +72,7 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
     }
     askDialog(
       `即将生成 ${tasks.length} 个视频片段（本地 ComfyUI 串行，不产生 API 费用；若配方使用远程计费接口则按其计费）。` +
-        (project.tailFrameRelay ? "已开启尾帧接力：每段完成后会抽其尾帧，自动作为下一段的参考。" : "") +
+        (project.tailFrameRelay ? "已开启空间接力：每段会读取紧邻上一段的采用/最新成功版本，自动保存稳定桥接帧；配方支持时同时保存末尾 2 秒动作参考。" : "") +
         "确认开始？",
       () => void executeBatch(op, selectedIds),
     );
@@ -100,6 +102,16 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
       setBatchProgress("");
       setBatchPct(undefined);
       setBatchMsg("");
+    }
+  };
+
+  /** 「停止」按钮：立即中断在途生成 + 强停 ComfyUI + 清空显存内存（区别于「取消批量」跑完当前段才停） */
+  const doHardStop = async () => {
+    setStopping(true);
+    try {
+      toast(await stopBatchHard(), "ok");
+    } finally {
+      setStopping(false);
     }
   };
 
@@ -155,6 +167,15 @@ export function GenerationPage({ project }: { project: DirectorProject }) {
                 <span className="spacer" />
                 <button className="btn sm danger" onClick={() => cancelBatch()}>
                   取消批量
+                </button>
+                <button
+                  className="btn sm danger"
+                  disabled={stopping}
+                  title="立即停止当前生成：中断 ComfyUI 执行并清空排队任务、清空显存内存；远程计费任务已提交的部分无法撤销"
+                  onClick={() => void doHardStop()}
+                >
+                  {stopping ? <IcLoading size={13} /> : <IcStop size={13} />}
+                  {stopping ? " 停止中…" : " 停止"}
                 </button>
               </div>
               <div className="dsg-bar" title={`批量总进度 ${batchDone}/${batchTotal}`}>

@@ -11,6 +11,13 @@ export type CollectInput = {
   kind?: AssetKind;
   name?: string;
   prompt?: string;
+  promptZh?: string;
+  promptEn?: string;
+  catalogId?: string;
+  catalogSource?: string;
+  catalogRole?: AssetItem["catalogRole"];
+  spatialLockZh?: string;
+  spatialLockEn?: string;
   model?: string;
   /** 生成参数快照（Remix 还原用） */
   gen?: AssetGenMeta;
@@ -111,7 +118,26 @@ export const useAssets = create<AssetState>((set, get) => {
         if (input.director?.role === "reference") {
           const h = input.contentHash ?? (input.src.startsWith("data:") ? hashDataUrl(input.src) : undefined);
           const hit = h ? get().items.find((i) => i.contentHash === h && !i.deletedAt) : undefined;
-          if (hit) return hit;
+          if (hit) {
+            // 资产册重复导入复用同一份二进制，同时刷新双语提示词与空间锁元数据。
+            const enriched: AssetItem = {
+              ...hit,
+              name: input.name ?? hit.name,
+              prompt: input.prompt ?? hit.prompt,
+              promptZh: input.promptZh ?? hit.promptZh,
+              promptEn: input.promptEn ?? hit.promptEn,
+              catalogId: input.catalogId ?? hit.catalogId,
+              catalogSource: input.catalogSource ?? hit.catalogSource,
+              catalogRole: input.catalogRole ?? hit.catalogRole,
+              spatialLockZh: input.spatialLockZh ?? hit.spatialLockZh,
+              spatialLockEn: input.spatialLockEn ?? hit.spatialLockEn,
+            };
+            if (JSON.stringify(enriched) !== JSON.stringify(hit)) {
+              set((s) => ({ items: s.items.map((i) => (i.id === hit.id ? enriched : i)) }));
+              persist();
+            }
+            return enriched;
+          }
         }
         const { bytes, mime } = await fetchBytes(input.src);
         // mime 不可靠（中转站常给 octet-stream）→ 落盘扩展名以文件头识别为准，避免存成 .bin
@@ -138,6 +164,13 @@ export const useAssets = create<AssetState>((set, get) => {
           width: stored.width,
           height: stored.height,
           prompt: input.prompt,
+          promptZh: input.promptZh,
+          promptEn: input.promptEn,
+          catalogId: input.catalogId,
+          catalogSource: input.catalogSource,
+          catalogRole: input.catalogRole,
+          spatialLockZh: input.spatialLockZh,
+          spatialLockEn: input.spatialLockEn,
           model: input.model,
           folderId,
           source: "canvas",

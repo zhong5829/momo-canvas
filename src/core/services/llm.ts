@@ -9,7 +9,7 @@
 import type { ChatMsg, ModelCard } from "../types";
 import { xfetch, trimBase, readErrorBody } from "./http";
 import { shrinkForVision } from "../utils";
-import { builtinSearchTools } from "../modelMeta";
+import { builtinSearchTools, anthropicWebSearchTools } from "../modelMeta";
 import { streamOllamaChat } from "./ollama";
 import { ensureRunningFromCard, isLocalGgufCard } from "./localLlm";
 
@@ -154,6 +154,10 @@ async function streamAnthropic(card: ModelCard, msgs: ChatMsg[], opts: StreamOpt
         ]
       : m.text,
   }));
+  // 自带联网（Anthropic 协议）：服务端 web_search 工具（MiniMax/GLM 的 Anthropic 兼容端点支持）。
+  // 流里的 server_tool_use / web_search_tool_result 等内容块不被下面的解析处理、自然忽略，
+  // 模型最终输出的 text 块照常累积
+  const tools = opts.builtinSearch ? anthropicWebSearchTools(card.model) : undefined;
   const resp = await xfetch(url, {
     method: "POST",
     headers: {
@@ -167,6 +171,7 @@ async function streamAnthropic(card: ModelCard, msgs: ChatMsg[], opts: StreamOpt
       ...(opts.system ? { system: opts.system } : {}),
       messages: apiMsgs,
       stream: true,
+      ...(tools ? { tools } : {}),
     }),
     signal: opts.signal,
   });

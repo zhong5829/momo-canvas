@@ -63,20 +63,18 @@ export function EnhanceModelsTab() {
   };
 
   return (
-    <div className="set-tab">
-      <div className="set-sec-title">
-        本地超清模型（DirectML）
-        <span className="set-hint">必需模型随安装包内嵌开箱即用；可选模型与重下副本存 AppData/models</span>
+    <div className="set-page">
+      <div className="set-page-h">
+        <div className="set-page-t">本地超清模型（DirectML）</div>
+        <div className="set-page-d">必需模型随安装包内嵌开箱即用；可选模型与重下副本存 AppData/models。</div>
       </div>
       {TASK_GROUPS.map((g) => {
         const models = LOCAL_MODELS.filter((m) => m.task === g.task);
         if (!models.length) return null;
         return (
-          <div key={g.task}>
-            <div className="set-sec-title" style={{ marginTop: 14, fontSize: 13 }}>
-              {g.label}
-              <span className="set-hint">{g.hint}</span>
-            </div>
+          <div key={g.task} className="set-card">
+            <div className="set-card-h">{g.label}</div>
+            <div className="set-hint">{g.hint}</div>
             <div className="lm-list">
               {models.map((m) => {
                 const st = statuses[m.id];
@@ -123,8 +121,8 @@ export function EnhanceModelsTab() {
           </div>
         );
       })}
-      <div className="set-hint" style={{ marginTop: 12 }}>
-        模型文件不入 git。首跑已预拷，通常无需手动管理；仅在排查"模型损坏/想换版本"时用这里。
+      <div className="set-hint">
+        模型文件不入 git。首跑已预拷，通常无需手动管理；仅在排查“模型损坏/想换版本”时用这里。
       </div>
     </div>
   );

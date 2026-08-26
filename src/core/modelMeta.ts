@@ -238,12 +238,18 @@ export function chatCaps(card: Pick<ModelCard, "id" | "protocol" | "model">): Ch
     card.protocol === "anthropic" ||
     card.protocol === "gemini" ||
     /(claude|gemini)/.test(m) ||
-    // 明确带视觉的系列 / 视觉后缀（vl、-v、vision、omni）；纯推理模型（o1/o3）不算
-    /(gpt-4o|gpt-4\.1|gpt-4v|gpt-5|kimi-latest|kimi-thinking|moonshot-v1-.*vision|minimax-(vl|m\d)|glm-4\.\dv|glm-4v|glm-5|qwen.*(vl|omni)|doubao.*(vision|seed-1|1\.5-vision)|step-1o|step-1v|hunyuan-vision|internvl|minicpm-v|llava|deepseek-vl|pixtral|llama.*vision|grok.*vision)/.test(
+    // 明确带视觉的系列 / 视觉后缀（vl、-v、vision、omni）；纯推理模型（o1/o3）不算。
+    // kimi/moonshot 与 minimax 全系按多模态放行：经中转站提供的这些对话模型普遍带视觉，
+    // 名字判定只影响提示文案（不拦截请求），漏判会让用户误以为「视觉完全不可用」，宁可宽放
+    /(gpt-4o|gpt-4\.1|gpt-4v|gpt-5|kimi|moonshot|minimax|glm-4\.\dv|glm-4v|glm-5|qwen.*(vl|omni)|doubao.*(vision|seed-1|1\.5-vision)|step-1o|step-1v|hunyuan-vision|internvl|minicpm-v|llava|deepseek-vl|pixtral|llama.*vision|grok.*vision)/.test(
       m,
     );
-  // 「自带联网」以能否真的构造出 tools 请求体为准，判定与发送不再各说各话
-  const builtinSearch = !!builtinSearchTools(card.model);
+  // 「自带联网」以能否真的构造出该协议下的 tools 请求体为准，判定与发送不再各说各话：
+  // anthropic 协议走服务端 web_search 工具形态；gemini/ollama 没有对应形态，不注入
+  const builtinSearch =
+    card.protocol === "anthropic"
+      ? !!anthropicWebSearchTools(card.model)
+      : card.protocol !== "gemini" && card.protocol !== "ollama" && !!builtinSearchTools(card.model);
   const notes: string[] = [];
   if (vision) notes.push("视觉");
   if (builtinSearch) {
@@ -264,8 +270,22 @@ export function chatCaps(card: Pick<ModelCard, "id" | "protocol" | "model">): Ch
 export function builtinSearchTools(model: string): unknown[] | undefined {
   const m = model.toLowerCase();
   if (m.includes("glm")) return [{ type: "web_search", web_search: { enable: true, search_result: true } }];
-  if (m.includes("minimax")) return [{ type: "web_search" }];
+  // MiniMax chatcompletion_v2 规范要求 web_search.enable 显式为 true，缺省可能被服务端忽略
+  if (m.includes("minimax")) return [{ type: "web_search", web_search: { enable: true } }];
   if (m.includes("hunyuan")) return [{ type: "web_search", web_search: { enable: true } }];
+  return undefined;
+}
+
+/**
+ * Anthropic 协议（/v1/messages）下「自带联网」的工具形态：服务端 web_search 工具。
+ * MiniMax 官方确认其 Anthropic 兼容端点支持 web_search（Beta，按次计费），
+ * GLM 的 Anthropic 兼容端点同样支持；沿用 Anthropic 官方的版本化类型 web_search_20250305。
+ */
+export function anthropicWebSearchTools(model: string): unknown[] | undefined {
+  const m = model.toLowerCase();
+  if (m.includes("minimax") || m.includes("glm")) {
+    return [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }];
+  }
   return undefined;
 }
 

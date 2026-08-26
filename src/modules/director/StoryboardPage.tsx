@@ -21,41 +21,21 @@ import {
   analyzeSegmentsWithLLM,
   type ComfyTplLike,
 } from "../../core/directorEngine";
-import { runBatch, cancelBatch, previewSegmentPrompt } from "../../core/directorQueue";
-import { isVideoLoaderClass, isAudioLoaderClass } from "../../core/services/comfy";
+import { runBatch, cancelBatch, stopBatchHard, previewSegmentPrompt } from "../../core/directorQueue";
+import { catalogReferenceOrder, parseDirectorAssetCatalog } from "../../core/directorAssetCatalog";
+import { directorReferenceSupport } from "../../core/directorRecipeSupport";
 import { useAssets } from "../../core/stores/assetStore";
 import { errMsg, fileToDataUrl, isTauri } from "../../core/utils";
 import { RecipeSelect } from "./RecipeSelect";
 import { BatchSwitches } from "./BatchSwitches";
 import { SegmentRefEditor } from "./SegmentRefEditor";
 import { PopLayer } from "../../ui/PopSelect";
-import { IcChevronD, IcClapper, IcLoading, IcPlay, IcSparkles, IcBrain, IcText, IcFolder, IcLock, IcMusic } from "../../ui/icons";
-import type { DirectorProject, DirectorRecipe, DirectorScene, DirectorSegment } from "../../core/types";
+import { IcChevronD, IcClapper, IcLoading, IcPlay, IcSparkles, IcBrain, IcText, IcFolder, IcLock, IcMusic, IcStop } from "../../ui/icons";
+import type { DirectorProject, DirectorScene, DirectorSegment } from "../../core/types";
 
 /** 片段是否已有被采用的成片 take（只读统计用） */
 const hasApprovedTake = (seg: DirectorSegment) =>
   !!seg.takes?.some((t) => t.id === seg.approvedTakeId && t.status === "done");
-
-/**
- * 配方对视频/音频参考的支持度：
- *  - ComfyUI 配方：按模板工作流里有没有 LoadVideo/LoadAudio 类节点判定（REF2VA 有、FL2VA 没有）
- *  - 远程配方：按能力快照的 referenceVideos/referenceAudio
- */
-function recipeAvSupport(
-  templates: Array<{ id: string; workflow: unknown }>,
-  recipe: DirectorRecipe | undefined,
-): { video: boolean; audio: boolean } {
-  if (!recipe) return { video: false, audio: false };
-  if (recipe.engine === "comfy" && recipe.templateId) {
-    const tpl = templates.find((t) => t.id === recipe.templateId);
-    if (tpl) {
-      const types = Object.values(tpl.workflow as Record<string, { class_type?: string }>).map((n) => n?.class_type ?? "");
-      return { video: types.some(isVideoLoaderClass), audio: types.some(isAudioLoaderClass) };
-    }
-  }
-  const cap = recipe.capabilitySnapshot;
-  return { video: (cap?.referenceVideos ?? 0) > 0, audio: (cap?.referenceAudio ?? 0) > 0 };
-}
 
 export function StoryboardPage({ project }: { project: DirectorProject }) {
   const updateProject = useDirector((s) => s.updateProject);
@@ -65,8 +45,12 @@ export function StoryboardPage({ project }: { project: DirectorProject }) {
   const [refineProg, setRefineProg] = useState<{ done: number; total: number } | null>(null);
   const [readProg, setReadProg] = useState<{ done: number; total: number } | null>(null);
   const [genProg, setGenProg] = useState<{ done: number; total: number; name: string } | null>(null);
+  // 「停止」按钮防连点
+  const [stopping, setStopping] = useState(false);
   const [folderBusy, setFolderBusy] = useState(false);
+  const [catalogBusy, setCatalogBusy] = useState(false);
   const dirRef = useRef<HTMLInputElement>(null);
+  const catalogDirRef = useRef<HTMLInputElement>(null);
   // B3 修复：拆分后 expanded 里的 id 全失效，检测到全部失效时自动展开首个
   useEffect(() => {
     if (!project.scenes.length) return;
@@ -255,6 +239,148 @@ export function StoryboardPage({ project }: { project: DirectorProject }) {
     }
   };
 
+  /**
+   * 导入 MOMO_ASSET_CATALOG_V1：图片只收录一次，按“使用分段”建立逻辑槽位绑定。
+   * 资产册重导会原位同步同 catalogId/同图片，不在分段目录制造执行副本。
+   */
+  const applyAssetCatalog = async (
+    markdown: string,
+    source: string,
+    readImage: (relativePath: string) => Promise<string>,
+  ) => {
+    const parsed = parseDirectorAssetCatalog(markdown);
+    if (!parsed.entries.length) {
+      toast(parsed.warnings[0] ?? "资产册没有可导入条目", "err");
+      return;
+    }
+    setCatalogBusy(true);
+    try {
+      const imported: Array<{ entry: (typeof parsed.entries)[number]; assetId: string }> = [];
+      const failed: string[] = [];
+      for (const entry of parsed.entries) {
+        try {
+          const dataUrl = await readImage(entry.file);
+          const asset = await useAssets.getState().collect({
+            src: dataUrl,
+            kind: "image",
+            name: entry.name,
+            prompt: entry.promptEn || entry.promptZh,
+            promptZh: entry.promptZh,
+            promptEn: entry.promptEn,
+            catalogId: entry.id,
+            catalogSource: source,
+            catalogRole: entry.role,
+            spatialLockZh: entry.spatialLockZh,
+            spatialLockEn: entry.spatialLockEn,
+            director: { projectId: project.id, role: "reference" },
+          });
+          if (asset) imported.push({ entry, assetId: asset.id });
+          else failed.push(entry.id);
+        } catch {
+          failed.push(entry.id);
+        }
+      }
+      if (!imported.length) throw new Error("资产册图片均读取失败，请确认 MD 图片路径相对资产册目录填写");
+      const cur = useDirector.getState().getById(project.id) ?? project;
+      const segs = cur.scenes.flatMap((s) => s.segments);
+      const segIndex = new Map(segs.map((s, i) => [s.id, i + 1]));
+      const importedIds = new Set(imported.map((x) => x.assetId));
+      const importedCatalogIds = new Set(imported.map((x) => x.entry.id));
+      const scenes = cur.scenes.map((scene) => ({
+        ...scene,
+        segments: scene.segments.map((segment) => {
+          const n = segIndex.get(segment.id) ?? 0;
+          const binds = imported
+            .filter(({ entry }) => entry.segments.includes(-1) || entry.segments.includes(n))
+            .map((item, catalogIndex) => ({ ...item, catalogIndex }))
+            .sort((a, b) =>
+              catalogReferenceOrder(a.entry, n) - catalogReferenceOrder(b.entry, n) || a.catalogIndex - b.catalogIndex,
+            );
+          // 先从旧槽中拿掉本资产册掌管的条目，再按资产册顺序追加，保证 Picture 编号稳定。
+          const kept = (segment.slots ?? [])
+            .filter((slot) => !slot.catalogId || !importedCatalogIds.has(slot.catalogId))
+            .map((slot) => ({ ...slot, assetIds: slot.assetIds.filter((id) => !importedIds.has(id)) }))
+            .filter((slot) => slot.assetIds.length > 0);
+          const catalogSlots = binds.map(({ entry, assetId }) => ({
+            semantic: entry.role === "spatialLayout" ? "layoutGuide" as const : "referenceImage" as const,
+            assetIds: [assetId],
+            auto: false,
+            label: entry.role === "spatialLayout" ? `${entry.name}（空间站位）` : entry.name,
+            referenceRole: entry.role,
+            catalogId: entry.id,
+          }));
+          return { ...segment, slots: [...kept, ...catalogSlots] };
+        }),
+      }));
+      updateProject(project.id, { scenes, assetCatalogSource: source, assetCatalogImportedAt: Date.now() });
+      const bound = imported.filter((x) => x.entry.segments.length > 0).length;
+      const layouts = imported.filter((x) => x.entry.role === "spatialLayout").length;
+      toast(
+        `资产册已导入 ${imported.length} 项并绑定 ${bound} 项（站位图 ${layouts} 张）` +
+          `${failed.length ? `；${failed.length} 项图片读取失败` : ""}` +
+          `${parsed.warnings.length ? `；${parsed.warnings.length} 条格式提醒` : ""}`,
+        failed.length ? "info" : "ok",
+      );
+    } catch (e) {
+      toast(`资产册导入失败：${errMsg(e)}`, "err");
+    } finally {
+      setCatalogBusy(false);
+    }
+  };
+
+  /** 浏览器预览降级：从 webkitdirectory 文件列表读取资产册及其相对图片。 */
+  const importCatalogFolderInput = async (files: FileList) => {
+    const list = Array.from(files);
+    const relOf = (f: File) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
+    const manifest = list.find((f) => /(^|\/)资产提示词\.md$/i.test(relOf(f).replace(/\\/g, "/")));
+    if (!manifest) {
+      toast("所选目录中没有找到 资产提示词.md", "err");
+      return;
+    }
+    const manifestRel = relOf(manifest).replace(/\\/g, "/");
+    const base = manifestRel.slice(0, manifestRel.lastIndexOf("/") + 1);
+    const byRel = new Map(list.map((f) => [relOf(f).replace(/\\/g, "/"), f]));
+    await applyAssetCatalog(await manifest.text(), manifestRel, async (rel) => {
+      const f = byRel.get(`${base}${rel}`);
+      if (!f) throw new Error(`缺少图片 ${rel}`);
+      return fileToDataUrl(f);
+    });
+  };
+
+  /** Tauri 原生目录导入：可选择“全部素材”或项目根目录，自动寻找唯一资产册。 */
+  const pickAssetCatalogFolder = async () => {
+    if (!isTauri) {
+      catalogDirRef.current?.click();
+      return;
+    }
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({ directory: true, multiple: false, title: "选择全部素材文件夹（或项目根目录）" });
+      if (!selected || typeof selected !== "string") return;
+      const { exists, readFile, readTextFile } = await import("@tauri-apps/plugin-fs");
+      const join = (a: string, b: string) => `${a.replace(/[\\/]+$/, "")}/${b.replace(/^[\\/]+/, "")}`;
+      const direct = join(selected, "资产提示词.md");
+      const nested = join(selected, "全部素材/资产提示词.md");
+      const manifestPath = await exists(direct) ? direct : await exists(nested) ? nested : "";
+      if (!manifestPath) {
+        toast("所选目录中没有找到 资产提示词.md 或 全部素材/资产提示词.md", "err");
+        return;
+      }
+      const base = manifestPath.slice(0, manifestPath.lastIndexOf("/") + 1);
+      const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", bmp: "image/bmp" };
+      await applyAssetCatalog(await readTextFile(manifestPath), manifestPath, async (rel) => {
+        const path = join(base, rel);
+        const ext = (rel.match(/\.([^.]+)$/)?.[1] ?? "png").toLowerCase();
+        const buf = await readFile(path);
+        let bin = "";
+        for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+        return `data:${MIME[ext] ?? "application/octet-stream"};base64,${btoa(bin)}`;
+      });
+    } catch (e) {
+      toast(`读取资产册失败：${errMsg(e)}`, "err");
+    }
+  };
+
   /** 批量精炼：项目绑定 Skill 后可用 */
   const hasSkillBound = (project.skillBindings ?? []).some((b) => b.enabled);
   const doRefineAll = async () => {
@@ -302,6 +428,16 @@ export function StoryboardPage({ project }: { project: DirectorProject }) {
       else toast(`生成结束：完成 ${r.done}${r.failed ? ` · 失败 ${r.failed}` : ""}${r.cancelled ? ` · 取消 ${r.cancelled}` : ""}`, r.failed ? "info" : "ok");
     } finally {
       setGenProg(null);
+    }
+  };
+
+  /** 「停止」按钮：立即中断在途生成 + 强停 ComfyUI + 清空显存内存（区别于「取消生成」跑完当前段才停） */
+  const doHardStop = async () => {
+    setStopping(true);
+    try {
+      toast(await stopBatchHard(), "ok");
+    } finally {
+      setStopping(false);
     }
   };
 
@@ -360,9 +496,20 @@ export function StoryboardPage({ project }: { project: DirectorProject }) {
           ) : null}
           <span className="spacer" />
           {genProg ? (
-            <button className="btn sm ghost" onClick={cancelBatch}>
-              取消生成
-            </button>
+            <>
+              <button className="btn sm ghost" onClick={cancelBatch}>
+                取消生成
+              </button>
+              <button
+                className="btn sm danger"
+                disabled={stopping}
+                title="立即停止当前生成：中断 ComfyUI 执行并清空排队任务、清空显存内存；远程计费任务已提交的部分无法撤销"
+                onClick={() => void doHardStop()}
+              >
+                {stopping ? <IcLoading size={13} /> : <IcStop size={13} />}
+                {stopping ? " 停止中…" : " 停止"}
+              </button>
+            </>
           ) : null}
           <button className="btn sm primary" disabled={!!genProg} onClick={() => void doGenerate("missing")}>
             {genProg ? <IcLoading size={13} /> : <IcPlay size={13} />}
@@ -381,14 +528,34 @@ export function StoryboardPage({ project }: { project: DirectorProject }) {
               e.target.value = "";
             }}
           />
+          <input
+            ref={catalogDirRef}
+            type="file"
+            hidden
+            multiple
+            {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+            onChange={(e) => {
+              if (e.target.files?.length) void importCatalogFolderInput(e.target.files);
+              e.target.value = "";
+            }}
+          />
           <button
             className="btn sm"
-            title="智能导入参考图文件夹：一个分段一个子文件夹。子文件夹名以序号开头（01_xxx / H3-01 / 第1段）优先按序号对位，否则按名称排序依次对应片段（名字中间的数字如「3岁」不作序号）；子文件夹内图片按文件名顺序填入该段参考图格"
+             title="先导入剧本，再选择全部素材/资产提示词.md；按每项的参考顺序和使用分段绑定图片，同时导入中英文生图提示词与空间锁。与右侧文件夹绑定二选一"
+            disabled={catalogBusy || folderBusy || !!genProg || !segCount}
+            onClick={() => void pickAssetCatalogFolder()}
+          >
+            {catalogBusy ? <IcLoading size={13} /> : <IcFolder size={13} />}
+            {catalogBusy ? " 资产册绑定中…" : " 资产册绑定（推荐）"}
+          </button>
+          <button
+            className="btn sm"
+            title="没有资产提示词.md 时使用的备用方式；与左侧资产册绑定二选一。一个分段一个子文件夹，图片按文件名顺序填入该段参考图格"
             disabled={folderBusy || !!genProg || !segCount}
             onClick={() => void pickRefFolder()}
           >
             {folderBusy ? <IcLoading size={13} /> : <IcFolder size={13} />}
-            {folderBusy ? " 导入中…" : " 参考图文件夹"}
+            {folderBusy ? " 文件夹绑定中…" : " 文件夹绑定（备用）"}
           </button>
           <button
             className="btn sm"
@@ -509,8 +676,14 @@ function SegmentCard({
   onPatch: (id: string, patch: Partial<DirectorSegment>) => void;
 }) {
   const approved = segment.takes?.find((t) => t.id === segment.approvedTakeId && t.status === "done");
-  const recipe = project.recipes.find((r) => r.id === segment.recipeId);
-  const av = recipeAvSupport(templates, recipe);
+  // 与生成队列保持一致：片段未单独指定配方时，继承项目默认配方。
+  // 旧逻辑只看 segment.recipeId，导致实际会用默认 REF2VA 生成，界面却把视频/音频槽误判为无接口并置灰。
+  const effectiveRecipeId = segment.recipeId ?? project.defaultRecipeId;
+  const recipe = project.recipes.find((r) => r.id === effectiveRecipeId);
+  const recipeTemplate = recipe?.engine === "comfy" && recipe.templateId
+    ? templates.find((t) => t.id === recipe.templateId)
+    : undefined;
+  const refSupport = directorReferenceSupport(recipe, recipeTemplate);
   const h3Ready = !!segment.promptOverride && isH3ReadyPrompt(segment.promptOverride);
   const h3 = h3Ready ? parseH3Prompt(segment.promptOverride!) : null;
   const [refining, setRefining] = useState(false);
@@ -738,7 +911,7 @@ function SegmentCard({
       {segment.continuityOut ? <div className="ds-cont">结束：{segment.continuityOut}</div> : null}
       {/* 分段提示词按钮已上移片段头（与最终提示词合并为一个弹窗）；H3 段另有结构化弹窗 */}
       {/* 参考槽：固定格子（首帧/尾帧 1 格、参考图 6 格、视频/音频各 2 格），卡片高度一致 */}
-      <SegmentRefEditor project={project} segment={segment} allowVideo={av.video} allowAudio={av.audio} />
+      <SegmentRefEditor project={project} segment={segment} support={refSupport} />
     </div>
   );
 }

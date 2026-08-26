@@ -4392,59 +4392,6 @@
   white-space: nowrap;
 }
 
-/* ---- 设置：超清模型管理 ---- */
-.lm-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
-}
-.lm-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--node-bg, rgba(255, 255, 255, 0.04));
-}
-.lm-info {
-  min-width: 0;
-}
-.lm-name {
-  font-size: 13px;
-  color: var(--text-1, #333);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.lm-meta {
-  font-size: 11.5px;
-  color: var(--text-2, #6b7280);
-  margin-top: 2px;
-}
-.lm-tag {
-  font-size: 11.5px;
-  padding: 1px 6px;
-  border-radius: var(--r-sm);
-  background: var(--border);
-  color: var(--text-2, #6b7280);
-}
-.lm-tag.on {
-  background: color-mix(in srgb, var(--accent, #5b8cff) 22%, transparent);
-  color: var(--accent, #5b8cff);
-}
-.lm-tag.warn {
-  background: color-mix(in srgb, var(--warn) 22%, transparent);
-  color: var(--warn);
-}
-.lm-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
 /* ---- 矢量化节点：SVG 预览（棋盘格底看透明） ---- */
 .vec-preview {
   display: block;
@@ -4705,4 +4652,78 @@
 }
 .gd-slot-cell.on {
   border-color: var(--accent);
+}
+
+/* ============ 系统资源仪表盘（画布右上角：默认收起小圆钮，点开为环形仪表） ============ */
+.sysmon-wrap {
+  position: absolute;
+  top: 14px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: right 0.24s var(--ease);
+}
+.sysmon-toggle {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-full);
+  color: var(--text-2);
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 0.2s var(--ease);
+}
+.sysmon-toggle:hover,
+.sysmon-toggle.on {
+  opacity: 1;
+}
+.sysmon {
+  display: flex;
+  gap: 14px;
+  padding: 8px 14px 7px;
+  border-radius: var(--r-lg);
+  user-select: none;
+  animation: slideIn 180ms var(--ease);
+}
+.sm-g {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.sm-ring {
+  width: 26px;
+  height: 26px;
+  display: block;
+}
+.sm-track {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text-3) 25%, transparent);
+  stroke-width: 3;
+}
+.sm-val {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.4s var(--ease);
+}
+.sm-g.hot .sm-val {
+  stroke: var(--danger);
+}
+.sm-num {
+  font-size: 8.5px;
+  font-weight: 700;
+  fill: var(--text-1);
+}
+.sm-g.hot .sm-num {
+  fill: var(--danger);
+}
+.sm-label {
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-3);
 }

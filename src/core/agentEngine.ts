@@ -31,21 +31,27 @@ const AGENT_SYSTEM = `你是 MOMO 智能画布的「创作 Agent」，一位全�
 【输出协议】你的每次回复必须且只是一个 JSON 对象（不要输出任何其他文字、不要用代码块包裹），从以下动作中选择一个：
 
 {"action":"search","query":"搜索词"} —— 联网搜索资料/参考/灵感，结果下一轮给你。
-{"action":"ask","question":"问题","options":["选项A","选项B","选项C"]} —— 需求存在关键分叉（风格、用途、画幅、色调等）且不同选择会明显影响成品时，给用户 2-4 个互斥选项。用户的选择下一轮告诉你。只为真正影响方向的抉择提问，整个任务最多问 1-2 轮。
+{"action":"ask","question":"问题","options":["选项A","选项B","选项C"]} —— 需求存在关键分叉（风格、用途、画幅、色调等）且不同选择会明显影响成品时，给用户 2-4 个互斥选项。用户的选择下一轮告诉你。只为真正影响方向的抉择提问，整个任务最多问 1-2 轮。想给用户多个风格/方向候选时必须用这个动作（选项=各方案的简短描述），用户选定后直接 image——禁止一边介绍多个方案一边直接发起 image：程序的「确认生成」卡不是风格选择工具。
 {"action":"image","prompt":"完整绘图提示词","count":1,"aspect":"1:1","resolution":"1K","useRefs":true} —— 生成图片。prompt 必须是成品级中文提示词：主体、细节、构图、光影、色彩、风格、质感、镜头，宁详勿略。useRefs=true 表示把用户的参考图传给绘图模型（图生图/参考风格）。
 {"action":"video","prompt":"完整视频提示词","useRefs":true,"duration":"5"} —— 生成视频。useRefs=true 时用最近生成/用户提供的图片作为首帧或主体参考。
 {"action":"reply","text":"对用户说的话"} —— 收尾：汇报成果/回答问题/闲聊。生成图片或视频后必须用它结束本轮。
 
 【画幅与清晰度——必须遵守】
 - 用户明确指定了比例（如 9:16、16:9、竖屏、横屏、方图）时，image 动作的 aspect 必须严格按用户要求填写（竖屏=高度大于宽度的比例，如 "9:16"；横屏如 "16:9"）。
+- 用户给的是像素尺寸（如 1920×1080、1080p）时，换算成最接近的比例填 aspect（如 "16:9"），清晰度按像素量定档（1080p≈"2K"）。
 - 用户没提比例且画幅会明显影响用途（海报/壁纸/头像/短视频封面等）时，先 ask 一轮确认，把比例和清晰度合并成一个问题，选项如：「竖屏 9:16 · 标清」「横屏 16:9 · 标清」「方图 1:1 · 高清」。用户选完后按其执行。
 - resolution 仅三档："1K"（默认）/"2K"（高清）/"4K"（超清）；用户要高清、大图、印刷时填 "2K" 或 "4K"，未提及时一律 "1K"。
 
+【生成确认闸——程序强制】
+- image / video 动作第一次执行前，程序会自动向用户确认方案（汇总提示词/画幅/模型），用户确认后**程序直接执行该动作**，执行结果下一轮告诉你——你不需要重发动作，也不要自己在 ask 里做确认。
+- 若用户选择「再改改」，先与用户完善方案（reply / ask），在用户明确要求前不要再输出生成动作。
+
 【行为准则】
-- 目标导向：用户要的是成品，不是聊天。需求明确（含画幅）时尽快进入生成，不要无谓地多问。
+- 目标导向：用户要的是成品，不是聊天。需求明确（含画幅）时尽快进入生成，不要无谓地多问。用户没指定风格时，用你的专业判断直接定一个高质量方向生成——用户不满意自然会说「再改改」，这比先抛一堆方案问一圈更受欢迎。
 - 需要事实、潮流、参考资料时先 search，把搜到的要点织进提示词。
 - 用户要求 N 张时把 count 填成 N（上限 4）；一轮可以生成多张方案图对比，但总数不超过 3 张图或 1 条视频，除非用户明确要求更多。
 - 【重要】历史里的「已交付」只属于当时那一轮。用户在后续消息中再次要求生成、要求修改后重新生成、或说"再来一张/换个风格"时，你必须重新执行 image / video 动作产出新图——只用 reply 说"已生成/已完成"而不执行动作，等于什么都没做。
+- 【禁止虚构系统状态】生成是否失败、失败原因，一律以「【系统反馈】」里的原文为准——不要自己编造"通道异常/模型未返回结果/连续失败"这类说辞，也不要引用不存在的界面按钮（如「重新生成」按钮）。用户说"重新生成/再来一次"时，正确做法是你自己重新输出 image / video 动作，而不是让用户去点什么。
 - 全程使用中文。`;
 
 type AgentAction =
@@ -118,18 +124,29 @@ function sizingToNodeData(sizing: { aspect?: string; resolution?: string; size?:
 
 /** 会话历史 → LLM 上下文（助手消息压缩成一句话摘要，附工具反馈） */
 function buildContext(scratch: string[]): ChatMsg[] {
-  const msgs = useAgent.getState().messages;
+  const st = useAgent.getState();
+  const msgs = st.messages;
   const ctx: ChatMsg[] = [];
+  // 前情摘要（与聊天模式共用一份）：窗口之外的早期讨论以要点形式延续，Agent 多轮任务不断片
+  if (st.summary) {
+    ctx.push({
+      role: "user",
+      text: `【前情摘要】以下是更早对话的要点（供你延续上下文，不必向用户复述）：\n${st.summary}`,
+    });
+  }
   for (const m of msgs.slice(-14)) {
     if (m.role === "user") {
       ctx.push({ role: "user", text: m.text || "（参考图）", images: m.images });
     } else {
       // 进行中的那条助手消息不进上下文
       if (!m.text && !m.results?.length) continue;
+      // 已交付内容必须带提示词回注——用户说「把刚才那张改成蓝色」时，模型得知道「刚才那张」是什么
       const done = [
         m.text,
         m.question ? `（曾向你确认「${m.question.text}」，你选择：${m.question.answer ?? "未答"}）` : "",
-        m.results?.length ? `（已交付 ${m.results.length} 个${m.results[0].kind === "video" ? "视频" : "图片"}）` : "",
+        m.results?.length
+          ? `（已交付 ${m.results.length} 个${m.results[0].kind === "video" ? "视频" : "图片"}，提示词：${(m.results[0].prompt ?? "").slice(0, 80)}）`
+          : "",
       ].filter(Boolean).join("\n");
       ctx.push({ role: "assistant", text: done || "…" });
     }
@@ -143,8 +160,15 @@ function buildContext(scratch: string[]): ChatMsg[] {
   return ctx;
 }
 
-/** 从一段文本里识别画幅（"9:16" / "竖屏" / "横屏" / "方图"） */
+/** 从一段文本里识别画幅（"9:16" / "竖屏" / "横屏" / "方图" / "1920×1080" 像素写法） */
 function sniffAspectFrom(text: string): string | undefined {
+  // 像素写法优先（"1920×1080"）：折算成最接近的常用比例档
+  const px = text.match(/(\d{3,4})\s*[x×*]\s*(\d{3,4})/);
+  if (px) {
+    const w = Number(px[1]);
+    const h = Number(px[2]);
+    if (w > 0 && h > 0) return nearestAspect(w / h);
+  }
   const m = text.match(/(\d{1,2})\s*[:：]\s*(\d{1,2})/);
   if (m) return `${m[1]}:${m[2]}`;
   if (/竖(屏|版|图|构图)|纵向|手机屏/.test(text)) return "9:16";
@@ -153,12 +177,36 @@ function sniffAspectFrom(text: string): string | undefined {
   return undefined;
 }
 
-/** 从一段文本里识别清晰度档（1K/2K/4K） */
+/** 从一段文本里识别清晰度档（1K/2K/4K，含 1080p / 像素尺寸写法） */
 function sniffResolutionFrom(text: string): string | undefined {
-  if (/4k|超清|超高清/i.test(text)) return "4K";
-  if (/2k|高清|大图|印刷/i.test(text)) return "2K";
-  if (/1k|标清/i.test(text)) return "1K";
+  if (/4k|2160p|超清|超高清/i.test(text)) return "4K";
+  if (/2k|1440p|1080p|高清|大图|印刷/i.test(text)) return "2K";
+  if (/1k|720p|标清/i.test(text)) return "1K";
+  // 只给了像素尺寸（"1920×1080"）：按长边定档
+  const px = text.match(/(\d{3,4})\s*[x×*]\s*(\d{3,4})/);
+  if (px) {
+    const long = Math.max(Number(px[1]), Number(px[2]));
+    return long >= 3000 ? "4K" : long >= 1400 ? "2K" : "1K";
+  }
   return undefined;
+}
+
+/** 画幅字段归一化：模型可能填 "竖屏"、"1920×1080" 这类非标准值，一律折算成 "9:16" 式比例，认不出就丢弃走下一级兜底 */
+function normAspect(a?: string): string | undefined {
+  if (!a) return undefined;
+  return parseRatio(a) ? a : sniffAspectFrom(a);
+}
+
+/** 清晰度字段归一化：只认 1K/2K/4K，其余（"高清" 等）折算，认不出丢弃 */
+function normResolution(r?: string): string | undefined {
+  if (!r) return undefined;
+  const up = r.toUpperCase();
+  return up === "1K" || up === "2K" || up === "4K" ? up : sniffResolutionFrom(r);
+}
+
+/** 生成确认闸的答案判定：点了「确认生成」或输入肯定语才算数，其余一律视为「再改改」 */
+function isConfirmAnswer(a: string): boolean {
+  return /确认|开始|生成|可以|好的?|行|嗯|来吧|yes|ok|go/i.test(a) && !/不|别|改|等|取消/.test(a);
 }
 
 /** 扫描整段对话里用户说过的画幅/清晰度（模型漏填 JSON 字段的兜底，用户的原话优先级最高） */
@@ -226,6 +274,9 @@ function collectResults(results: AgentResult[]) {
   }
 }
 
+/** Agent 循环里，启用模型自带联网时追加到系统提示后的说明段 */
+const NET_HINT = `\n\n【联网——已启用】本次请求已启用你自带的联网搜索能力（tools 已注入请求）。需要实时资料、潮流、事实核查时，直接自行联网检索，再基于结果输出下一个动作；**禁止输出 search 动作**——它专供没有内置联网时使用，在你联网开启期间会被程序直接拒绝执行。若你发现自己实际无法联网（检索不到结果），基于已有知识创作并在回复中说明。`;
+
 async function agentLoop(asstId: string) {
   const st = () => useAgent.getState();
   const scratch: string[] = [];
@@ -233,16 +284,44 @@ async function agentLoop(asstId: string) {
   let lastGenImages: string[] = [];
   /** 本轮已确认的成图规格：确认一次后所有 image 动作复用，不再反复问 */
   const spec: { aspect?: string; resolution?: string } = {};
+  /** 生成确认闸：已确认过的方案签名（prompt+画幅+张数）。生成扣费前必须先向用户确认一次 */
+  let confirmedSig = "";
+  /** 外部搜索接口本会话已失败过（true 后不再执行 search 动作，防止模型反复重试空烧轮数） */
+  let searchFailed = false;
+  /** 联网 tools 被服务端拒绝过（端点不支持/中转站剥参数）：本轮任务内不再尝试注入，避免每轮都白失败一次 */
+  let netBroken = false;
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const card = resolveModelCard("chat", st().modelId);
-    // 联网开关开启且模型自带联网（GLM/MiniMax/混元…）→ 让模型自己查，比 search 动作少绕一圈
-    const useBuiltin = st().webSearch && chatCaps(card).builtinSearch;
-    const { text: raw } = await chatStream(card, buildContext(scratch), {
-      system: AGENT_SYSTEM,
-      builtinSearch: useBuiltin,
-      disableThinking: !st().thinkingOn, // 思考模式开关（仅创作助手生效）
-    });
+    // 联网开关开启且模型自带联网（GLM/MiniMax/混元…）→ 让模型自己查，比 search 动作少绕一圈。
+    // 必须在系统提示里告知模型「已启用内置联网」，否则模型不知道自己带着 tools，
+    // 仍会按协议输出 search 动作去走外部搜索接口（自带联网形同虚设）
+    const useBuiltin = !netBroken && st().webSearch && chatCaps(card).builtinSearch;
+    let raw: string;
+    try {
+      raw = (
+        await chatStream(card, buildContext(scratch), {
+          system: useBuiltin ? AGENT_SYSTEM + NET_HINT : AGENT_SYSTEM,
+          builtinSearch: useBuiltin,
+          disableThinking: !st().thinkingOn, // 思考模式开关（仅创作助手生效）
+        })
+      ).text;
+    } catch (e) {
+      if (!useBuiltin) throw e;
+      // 端点不认联网 tools（剥参数/400，部分中转站如此）→ 去掉联网按普通请求重发一次，任务不中断；
+      // 本轮任务内记住教训，后续轮次直接走无联网
+      netBroken = true;
+      scratch.push(
+        `（系统提示）联网搜索工具被服务端拒绝（${errMsg(e).slice(0, 140)}），已切换为无联网模式。请基于已有知识继续创作，关键事实不确定时向用户说明信息可能不是最新。`,
+      );
+      raw = (
+        await chatStream(card, buildContext(scratch), {
+          system: AGENT_SYSTEM,
+          builtinSearch: false,
+          disableThinking: !st().thinkingOn,
+        })
+      ).text;
+    }
     const act = parseAction(raw);
 
     // 模型没按协议输出 → 直接当它说的话展示，结束本轮
@@ -257,6 +336,22 @@ async function agentLoop(asstId: string) {
     }
 
     if (act.action === "search") {
+      // 已启用模型自带联网：search 动作（外部搜索接口）没有意义，程序直接拒绝执行。
+      // 提示词劝不住所有模型（输出协议里 search 排在最前，诱导太强），必须硬拦，
+      // 否则会去调未配置的外部接口反复失败，任务卡死
+      if (useBuiltin) {
+        scratch.push(
+          "（系统提示）本次请求已启用你的内置联网搜索，search 动作不会被执行。请直接基于你联网检索到的信息输出下一个动作；若你发现自己实际无法联网（检索不到结果），就基于已有知识创作，并在最终回复中向用户说明信息可能不是最新。",
+        );
+        continue;
+      }
+      // 外部搜索刚失败过就不再执行（接口未配置时模型会反复重试，白白烧轮数）
+      if (searchFailed) {
+        scratch.push(
+          "（系统提示）内置搜索接口刚才已失败（可能未在设置中配置），不会再执行 search 动作。请基于已有知识继续创作，关键事实不确定时向用户说明。",
+        );
+        continue;
+      }
       const sid = st().addStep(asstId, "search", `搜索：${act.query}`);
       try {
         const hits: SearchHit[] = await webSearch(useSettings.getState().settings.search, act.query);
@@ -268,8 +363,11 @@ async function agentLoop(asstId: string) {
               : "（没有搜到结果）"),
         );
       } catch (e) {
+        searchFailed = true;
         st().setStep(asstId, sid, { status: "error", text: `搜索失败：${errMsg(e)}` });
-        scratch.push(`搜索「${act.query}」失败：${errMsg(e)}。请基于已有知识继续创作，不要重试太多次。`);
+        scratch.push(
+          `搜索「${act.query}」失败：${errMsg(e)}。搜索接口当前不可用，不要再输出 search 动作。请基于已有知识继续创作（关键事实不确定时向用户说明），或直接告知用户。`,
+        );
       }
       continue;
     }
@@ -281,11 +379,11 @@ async function agentLoop(asstId: string) {
     }
 
     if (act.action === "image") {
-      /* 画幅解析（模型经常漏填 JSON 字段，必须自己兜底，否则一律回落 1024x1024 出方图）：
-         已确认的规格 > 动作里的字段 > 提示词里的措辞 > 用户在对话中说过的原话 */
+      /* 画幅解析（模型经常漏填/乱填 JSON 字段，必须自己兜底，否则一律回落 1024x1024 出方图）：
+         已确认的规格 > 动作里的字段 > 提示词里的措辞 > 用户在对话中说过的原话；每一级都先归一化（"竖屏"/"1920×1080" → "9:16"/"16:9"） */
       const fromChat = sniffSpecFromChat();
-      const aspect = spec.aspect ?? act.aspect ?? sniffAspectFrom(act.prompt) ?? fromChat.aspect;
-      const resolution = spec.resolution ?? act.resolution ?? fromChat.resolution;
+      const aspect = normAspect(spec.aspect) ?? normAspect(act.aspect) ?? sniffAspectFrom(act.prompt) ?? fromChat.aspect;
+      const resolution = normResolution(spec.resolution) ?? normResolution(act.resolution) ?? fromChat.resolution;
       // 画幅完全没着落 → 强制问一轮再生成（用户明确要求过"要问分辨率"）
       if (!aspect || !resolution) {
         const answer = await st().askQuestion(
@@ -303,6 +401,36 @@ async function agentLoop(asstId: string) {
       spec.aspect = aspect;
       spec.resolution = resolution;
 
+      /* 生成前最终确认（防自动扣费）：规格齐了也不直接跑，先把完整方案给用户看，确认后才真正发起 */
+      const n0 = clamp(Math.round(act.count ?? sniffCountFromChat() ?? 1), 1, 4);
+      const sig = `img|${act.prompt}|${aspect}|${resolution}|${n0}`;
+      if (confirmedSig !== sig) {
+        let modelLab = "默认";
+        try {
+          modelLab = resolveModelCard("image", st().imageModelId).name;
+        } catch {
+          /* 没配绘画模型时让后面 generateImage 的报错去提示 */
+        }
+        const brief0 = act.prompt.length > 60 ? `${act.prompt.slice(0, 60)}…` : act.prompt;
+        const answer = await st().askQuestion(
+          asstId,
+          `方案已就绪，确认后开始生成（会调用模型扣费）：\n· 提示词：${brief0}\n· 画幅：${aspect} · ${resolution} · ${n0} 张\n· 模型：${modelLab}`,
+          ["确认生成", "再改改"],
+        );
+        if (!isConfirmAnswer(answer)) {
+          // 方案要改，旧规格不作数（改完会重新走规格确认 + 生成确认）
+          spec.aspect = undefined;
+          spec.resolution = undefined;
+          scratch.push(
+            `用户暂不生成，想继续调整方案：「${answer}」。请据此完善提示词或规格（reply 讨论 / ask 确认方向），在用户明确确认前不要再输出 image 动作。`,
+          );
+          continue;
+        }
+        // 确认通过：记录签名后**当场执行**这个动作（不再回炉让模型重发——
+        // 模型复现 prompt 几乎必然有细微措辞差异，签名永远对不上会造成反复弹确认）
+        confirmedSig = sig;
+      }
+
       const brief = act.prompt.length > 42 ? `${act.prompt.slice(0, 42)}…` : act.prompt;
       const sid = st().addStep(asstId, "image", `生成图片：${brief}`);
       // 点下生成的那一瞬间，画布上就先出一个「生成中」的节点（波光动效由 .mnode.running 提供），
@@ -318,7 +446,7 @@ async function agentLoop(asstId: string) {
       const nodeId = board.addNode("imageGen", canvasCenterPos(-165, -120), {
         prompt: act.prompt,
         status: "running",
-        count: clamp(Math.round(act.count ?? sniffCountFromChat() ?? 1), 1, 4),
+        count: n0,
         ...(st().imageModelId ? { modelId: st().imageModelId } : {}),
         ...sizingToNodeData(sizingPre, aspect),
       });
@@ -326,7 +454,7 @@ async function agentLoop(asstId: string) {
       const signal = beginTask(nodeId, "imageGen");
       try {
         const imgCard = resolveModelCard("image", st().imageModelId);
-        const n = clamp(Math.round(act.count ?? sniffCountFromChat() ?? 1), 1, 4);
+        const n = n0;
         const refs = act.useRefs ? lastUserImages() : undefined;
         // 比例/清晰度 → 该模型家族的实际参数（用户指定的画幅必须生效，不再静默退回 1:1）
         const sizing = agentImageParams(imgCard, aspect, resolution);
@@ -348,6 +476,8 @@ async function agentLoop(asstId: string) {
         st().appendResults(asstId, items);
         st().setStep(asstId, sid, { status: "done", text: `已生成 ${results.length} 张图片（${imgCard.name} · ${sizeLab}）` });
         collectResults(items);
+        // 本次方案已交付：确认闸复位，用户之后的新需求要重新确认一轮（防再次自动扣费）
+        confirmedSig = "";
         scratch.push(
           `本轮已成功生成 ${results.length} 张图片并展示给用户（提示词：${act.prompt}；画幅：${sizeLab}）。注意：这只算完成当前这次请求；用户之后再提生成/修改需求时，必须重新执行 image 动作。`,
         );
@@ -369,6 +499,30 @@ async function agentLoop(asstId: string) {
     }
 
     if (act.action === "video") {
+      /* 视频更贵：与生图同款确认闸，方案没确认过就先问一轮再发起 */
+      const vSig = `vid|${act.prompt}|${act.duration ?? ""}`;
+      if (confirmedSig !== vSig) {
+        let modelLab = "默认";
+        try {
+          modelLab = resolveModelCard("video", st().videoModelId).name;
+        } catch {
+          /* 没配视频模型时让后面 generateVideo 的报错去提示 */
+        }
+        const brief0 = act.prompt.length > 60 ? `${act.prompt.slice(0, 60)}…` : act.prompt;
+        const answer = await st().askQuestion(
+          asstId,
+          `视频方案已就绪，确认后开始生成（视频生成费用较高）：\n· 提示词：${brief0}\n· 时长：${act.duration ?? "默认"} 秒\n· 模型：${modelLab}`,
+          ["确认生成", "再改改"],
+        );
+        if (!isConfirmAnswer(answer)) {
+          scratch.push(
+            `用户暂不生成，想继续调整方案：「${answer}」。请据此完善提示词或规格（reply 讨论 / ask 确认方向），在用户明确确认前不要再输出 video 动作。`,
+          );
+          continue;
+        }
+        // 与生图同款：确认通过即当场执行，不回炉让模型重发（防复现偏差导致的反复确认）
+        confirmedSig = vSig;
+      }
       const brief = act.prompt.length > 42 ? `${act.prompt.slice(0, 42)}…` : act.prompt;
       const sid = st().addStep(asstId, "video", `生成视频：${brief}`);
       // 与生图同款：先在画布落一个「生成中」的视频节点，进度与结果都写回它
@@ -399,6 +553,8 @@ async function agentLoop(asstId: string) {
         useBoard.getState().updateData(nodeId, { status: "done", resultUrl: src, resultUrls: [src], picked: 0, progress: "" });
         st().appendResults(asstId, [{ kind: "video", src, prompt: act.prompt }]);
         st().setStep(asstId, sid, { status: "done", text: "已生成视频" });
+        // 与生图同款：交付后确认闸复位，下一个新需求重新确认
+        confirmedSig = "";
         scratch.push("本轮已成功生成视频并展示给用户。用户之后再提生成需求时，必须重新执行动作。");
       } catch (e) {
         if (isAbortError(e)) {
@@ -450,6 +606,12 @@ export async function sendAgentMessage() {
     pushError("Agent", errMsg(e));
   } finally {
     useAgent.setState({ running: false });
+    // Agent 的多轮任务同样推进前情摘要（与聊天模式共用；失败静默，结果留给下一轮）
+    try {
+      void maybeCompressHistory(resolveModelCard("chat", useAgent.getState().modelId)).catch(() => {});
+    } catch {
+      /* 对话模型缺失/未配置时跳过 */
+    }
   }
 }
 
@@ -523,7 +685,7 @@ export async function sendSideChat() {
           const ctx = searchContext(hits ?? []);
           if (ctx) parts.push(ctx);
         } catch (e) {
-          toast(`联网搜索失败，将直接回答：${errMsg(e)}`, "err");
+          toast(`联网搜索失败，将直接回答：${errMsg(e)}`, "info");
         }
         useAgent.getState().updateMsg(asstId, { reasoning: "" });
       }
@@ -557,7 +719,7 @@ export async function sendSideChat() {
     } catch (e) {
       if (!builtin) throw e;
       // 中转站不认自带联网的 tools 参数 → 降级为内置搜索重试一次
-      toast(`「${card.name}」自带联网调用失败，改用内置搜索重试`, "err");
+      toast(`「${card.name}」自带联网调用失败，改用内置搜索重试`, "info");
       useAgent.getState().updateMsg(asstId, { text: "", reasoning: "正在联网搜索…" });
       try {
         const hits = await webSearch(useSettings.getState().settings.search, text);
@@ -595,14 +757,9 @@ export function canvasCenterPos(offsetX = 0, offsetY = 0) {
   };
 }
 
-/** 从聊天文本里识别用户点名的画幅（"9:16" / "竖屏" / "横屏" / "方图"），用于一键生图时对齐比例 */
+/** 从聊天文本里识别用户点名的画幅（"9:16" / "竖屏" / "1920×1080"），用于一键生图时对齐比例 */
 function sniffAspect(text: string): string | undefined {
-  const m = text.match(/\b(\d{1,2})\s*[:：]\s*(\d{1,2})\b/);
-  if (m) return `${m[1]}:${m[2]}`;
-  if (/竖(屏|版|构图)|纵向/.test(text)) return "9:16";
-  if (/横(屏|版|构图)|宽屏/.test(text)) return "16:9";
-  if (/方(图|形)|正方形/.test(text)) return "1:1";
-  return undefined;
+  return sniffAspectFrom(text);
 }
 
 /** 聊天消息一键在画布生图：以该文本为提示词创建生成图像节点并立即运行

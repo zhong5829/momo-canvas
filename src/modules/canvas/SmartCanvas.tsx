@@ -43,6 +43,7 @@ import { FlowEdge } from "./FlowEdge";
 import { AddNodeMenu } from "./AddNodeMenu";
 import { CanvasSearch, Spotlight } from "./CanvasPalette";
 import { AiWirePanel } from "./AiWirePanel";
+import { SysMonitor } from "./SysMonitor";
 import { RUNNABLE_KINDS, runAllFlows, runFlow } from "../../core/runner";
 import { abortAll, abortNode, useRunTasks } from "../../core/runControl";
 import { ContextMenu, type CmItem } from "./ContextMenu";
@@ -1163,6 +1164,9 @@ export function SmartCanvas() {
           </p>
         </div>
       ) : null}
+
+      {/* 系统资源仪表盘：CPU/内存/GPU/显存，右上；右侧生成记录坞打开时随 dockShift 左移 */}
+      {!zen ? <SysMonitor shift={dockShift} /> : null}
 
       {!zen ? (
         <div className="tool-bar glass">

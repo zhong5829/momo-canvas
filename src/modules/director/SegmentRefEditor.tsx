@@ -19,6 +19,7 @@ import { assetUrl, assetToBlobUrl } from "../../core/services/assetFiles";
 import { errMsg, fileToDataUrl } from "../../core/utils";
 import { IcClose, IcPlus } from "../../ui/icons";
 import type { AssetItem, ComfySemantic, DirectorProject, DirectorSegment, DirectorSlotValue } from "../../core/types";
+import type { DirectorReferenceSupport } from "../../core/directorRecipeSupport";
 
 type Zone = {
   semantic: ComfySemantic;
@@ -53,23 +54,20 @@ const KIND_NAME: Record<Zone["kind"], string> = { image: "图片", video: "视�
 /** 拖拽负载（模块级：dragover 阶段读不到 dataTransfer.getData） */
 let dragChip: { semantic: ComfySemantic; assetId: string; segmentId: string } | null = null;
 
-/** 取某语义区的有序资产 id（片段槽内该语义的第一个槽承载整组顺序） */
+/** 取某语义区的有序资产 id（同语义可有多个槽——如尾帧接力自动填入的独立槽在末位——按槽序拼成整组顺序） */
 function zoneIds(segment: DirectorSegment, semantic: ComfySemantic): string[] {
-  const slot = (segment.slots ?? []).find((s) => s.semantic === semantic);
-  return slot?.assetIds ?? [];
+  return (segment.slots ?? []).filter((s) => s.semantic === semantic).flatMap((s) => s.assetIds);
 }
 
 export function SegmentRefEditor({
   project,
   segment,
-  allowVideo,
-  allowAudio,
+  support,
 }: {
   project: DirectorProject;
   segment: DirectorSegment;
-  /** 配方是否支持视频/音频参考（REF2VA 有 LoadVideo/LoadAudio 接口才为 true） */
-  allowVideo: boolean;
-  allowAudio: boolean;
+  /** 当前配方真正开放的参考入口；不支持的区保留素材但整体置灰且不参与生成。 */
+  support: DirectorReferenceSupport;
 }) {
   const updateProject = useDirector((s) => s.updateProject);
   const collect = useAssets((s) => s.collect);
@@ -191,10 +189,11 @@ export function SegmentRefEditor({
       writeSegSlots(segment.id, applyToZone(segment.id, targetZone, [src.assetId]));
       return;
     }
-    // 同卡片：摘出源格 → 插入目标格前 / 尾部追加（单例区直接替换）
+    // 同卡片：摘出源格（同语义可能有多个槽，全部过一遍）→ 插入目标格前 / 尾部追加（单例区直接替换）
     const slots = liveSlots(segment.id);
-    const srcSlot = slots.find((s) => s.semantic === src.semantic);
-    if (srcSlot) srcSlot.assetIds = srcSlot.assetIds.filter((id) => id !== src.assetId);
+    for (const s of slots) {
+      if (s.semantic === src.semantic) s.assetIds = s.assetIds.filter((id) => id !== src.assetId);
+    }
     let dst = slots.find((s) => s.semantic === targetZone.semantic);
     if (!dst) {
       dst = { semantic: targetZone.semantic, assetIds: [], auto: false };
@@ -385,7 +384,17 @@ export function SegmentRefEditor({
         }}
       />
       {ZONES.map((zone) => {
-        const disabled = (zone.kind === "video" && !allowVideo) || (zone.kind === "audio" && !allowAudio);
+        const enabled =
+          zone.semantic === "firstFrame"
+            ? support.firstFrame
+            : zone.semantic === "lastFrame"
+              ? support.lastFrame
+              : zone.semantic === "referenceImage"
+                ? support.referenceImage
+                : zone.semantic === "referenceVideo"
+                  ? support.video
+                  : support.audio;
+        const disabled = !enabled;
         const ids = zoneIds(segment, zone.semantic);
         const capacity = Math.max(CAPACITY[zone.semantic], ids.length);
         const empties = Math.max(0, capacity - ids.length);

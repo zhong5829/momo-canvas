@@ -78,6 +78,24 @@ export async function freeComfyMemory(
   }
 }
 
+/** 强制停止 ComfyUI：中断当前执行（/interrupt）+ 清空排队任务（/queue clear，防止中断后下一个立刻顶上）。
+ *  导演台「停止」按钮用；尽力而为，失败只返回 err 不抛异常 */
+export async function interruptComfy(host: string): Promise<{ ok: boolean; err?: string }> {
+  if (!normalizeHost(host)) return { ok: false, err: "未配置 ComfyUI 地址" };
+  try {
+    const resp = await xfetch(`${normalizeHost(host)}/interrupt`, { method: "POST" });
+    if (!resp.ok) return { ok: false, err: `HTTP ${resp.status}: ${await readErrorBody(resp)}` };
+    await xfetch(`${normalizeHost(host)}/queue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clear: true }),
+    }).catch(() => {});
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, err: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /* ---------------- 工作流解析 ---------------- */
 
 export function isApiWorkflow(json: unknown): json is Record<string, ComfyWfNode> {
@@ -827,6 +845,8 @@ export async function runComfyTemplate(
 
   const imageParamNodes = new Set<string>(); // 已由图片参数占用的节点
   const unfilledImgNodes = new Set<string>(); // 没喂到素材的图片入口节点：提交前连坐旁路（不跑模板占位图）
+  let videosUsed = 0;
+  let audiosUsed = 0;
   let hasTextParam = false;
   let firstTextFilled = false;
   for (const p of params) {
@@ -1016,12 +1036,15 @@ export async function runComfyTemplate(
     opts.onProgress?.(`已旁路 ${unfilledImgNodes.size} 个无素材的图片入口`);
   }
 
-  // 2a'. 上游视频 → LoadVideo 类节点（VHS_LoadVideo 等；输入名 video / file / video_path）
+  // 2a'. 上游视频 → LoadVideo 类节点（VHS_LoadVideo 等；输入名 video / file / video_path）。
+  // 实际只保留前 N 个入口：模板里未被本次素材填充的默认 Video 2/3 必须连同拆分链旁路，
+  // 否则它们会把模板自带完整视频重复送进 REF2VA，显著拖慢采样并污染动作参考。
   const vidQueue = [...(opts.upstreamVideos ?? [])];
-  if (vidQueue.length) {
+  {
     const vLoaders = Object.keys(wf)
       .filter((id) => isVideoLoaderClass(wf[id].class_type))
       .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+    const fedVideoLoaders = new Set<string>();
     for (const id of vLoaders) {
       if (!vidQueue.length) break;
       opts.onProgress?.("上传视频到 ComfyUI…");
@@ -1029,6 +1052,7 @@ export async function runComfyTemplate(
       const inputs = wf[id].inputs;
       const key = ["video", "file", "video_path"].find((k) => k in inputs && !isConnection(inputs[k])) ?? "video";
       inputs[key] = name;
+      fedVideoLoaders.add(id);
       opts.onProgress?.(`视频已接入 #${id} ${nodeTitle(id)}`);
     }
     if (vidQueue.length) {
@@ -1036,14 +1060,21 @@ export async function runComfyTemplate(
         "已连接上游视频，但该工作流没有足够的视频加载节点（LoadVideo）。请在模板里加 VHS_LoadVideo 类节点，或断开视频连线。",
       );
     }
+    videosUsed = fedVideoLoaders.size;
+    const unfilledVideoNodes = new Set(vLoaders.filter((id) => !fedVideoLoaders.has(id)));
+    if (unfilledVideoNodes.size) {
+      wf = pruneNodesWithServants(wf, unfilledVideoNodes);
+      opts.onProgress?.(`已旁路 ${unfilledVideoNodes.size} 个未使用的视频入口`);
+    }
   }
 
-  // 2a''. 上游音频 → LoadAudio 类节点（MiniMax H3 REF2VA 的 Audio 1-3 等；输入名 audio / file / audio_path）
+  // 2a''. 上游音频 → LoadAudio 类节点；与视频相同，只保留真实填充的前 N 个入口。
   const audQueue = [...(opts.upstreamAudios ?? [])];
-  if (audQueue.length) {
+  {
     const aLoaders = Object.keys(wf)
       .filter((id) => isAudioLoaderClass(wf[id].class_type))
       .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+    const fedAudioLoaders = new Set<string>();
     for (const id of aLoaders) {
       if (!audQueue.length) break;
       opts.onProgress?.("上传音频到 ComfyUI…");
@@ -1051,6 +1082,7 @@ export async function runComfyTemplate(
       const inputs = wf[id].inputs;
       const key = ["audio", "file", "audio_path"].find((k) => k in inputs && !isConnection(inputs[k])) ?? "audio";
       inputs[key] = name;
+      fedAudioLoaders.add(id);
       opts.onProgress?.(`音频已接入 #${id} ${nodeTitle(id)}`);
     }
     if (audQueue.length) {
@@ -1058,7 +1090,14 @@ export async function runComfyTemplate(
         "已连接上游音频，但该工作流没有足够的音频加载节点（LoadAudio）。请在模板里加 LoadAudio 节点，或断开音频连线。",
       );
     }
+    audiosUsed = fedAudioLoaders.size;
+    const unfilledAudioNodes = new Set(aLoaders.filter((id) => !fedAudioLoaders.has(id)));
+    if (unfilledAudioNodes.size) {
+      wf = pruneNodesWithServants(wf, unfilledAudioNodes);
+      opts.onProgress?.(`已旁路 ${unfilledAudioNodes.size} 个未使用的音频入口`);
+    }
   }
+  opts.onProgress?.(`参考入口已对齐：图片 ${imagesUsed} 路、视频 ${videosUsed} 路、音频 ${audiosUsed} 路；其余入口已旁路`);
 
   // 2b. 模板没有文本参数时，把上游文本填入正面提示词入口
   if (!hasTextParam && opts.upstreamTexts?.length) {

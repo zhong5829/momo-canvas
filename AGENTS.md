@@ -30,7 +30,7 @@ src/core/modelMeta.ts   绘画家族参数推断 + 对话模型能力（vision /
 src/modules/            React UI（canvas / agent / assets / charlib / shell / settings / comfy）
 src/ui/                 手绘 SVG 图标集 icons.tsx、轻组件 kit.tsx、ModelPicker、PopSelect/PopLayer、Thumb
 src/styles/theme.css    三主题设计令牌（云白/深空蓝/深邃黑），样式只用 var(--token)
-src-tauri/              Rust 壳，仅插件配置（dialog/fs/http/store/opener + asset 协议），无自定义命令
+src-tauri/              Rust 壳：插件配置（dialog/fs/http/store/opener + asset 协议）+ 自定义命令（本地超分/矢量化/分层导出/本地 LLM/DPAPI/桌面快捷方式/sysmon 系统资源监控）
 ```
 
 ### 数据流转（读懂 runner.ts 即读懂本项目）
@@ -75,10 +75,13 @@ src-tauri/              Rust 壳，仅插件配置（dialog/fs/http/store/opener
 - **剧本三态导入**（`directorEngine.detectScriptKind`）：完整剧本走 `splitScript`（LLM）；已分段分镜脚本走 `structuredSplit`；成品分段提示词包走 `importPromptSegments` 直录——**通用结构 = 定调前言 + 片段标题 + 片段内容/围栏提示词块**（首选显式围栏 `<<<PROMPT_START>>>…<<<PROMPT_END>>>`（一对即一段，遮罩/计数/切段全链路最优先）；启发式后备：`## H3-XX` 头、`subject_definitions:`、带围栏块的 ## 小节、或「序号-标题-时长」裸标题行（`01-古刹闻客-11秒`，配 `# 第X分段` 中文数字序号头也认）的无围栏包都认；风格/定调类小节不作片段起点）。全文进 `promptOverride` 并标 `locked`，认全角｜与「12 秒」中文单位、剥代码围栏与段尾 ---；裸标题行只认 1-3 位数字前缀防误吞年份。前言主标题作场景名，「风格/定调」小节提取进 `ruleSet.positive.style`，无小节无围栏时逐行筛（故事概述/总分段数/总时长等元信息行不进风格）（H3 成品路径由 `compileSegmentPrompt` 拼在每段提示词前；编译路径由 `compilePrompt` 自己消费，不重复）。`splitScript` 第四参 `skillSystem` 可注入项目绑定 Skill 作拆分补充规范——「拆分能力」就靠它做成 Skill 扩展。规则切段（检测分段）产物的原文存 `segment.scriptText`，用 `analyzeSegmentsWithLLM` 逐段精读提取摘要/时长/对白/镜头（跳过 locked 与已有内容的段）。
 - **Skill 精炼**：`refineSegmentPrompts` 用项目绑定的 Skill（如 MiniMax H3 Prompt）作 system + 参考槽顺序逐段产出 H3 成品提示词（六段式）；`promptOverride` 已是 H3 格式（`isH3ReadyPrompt`）时 `compileSegmentPrompt` 不再重复拼接 Skill 全文。
 - **参考槽三类**（`directorRefs.ts`）：`syncRefSlots` 同步上游图/视/音三类；手动添加的槽位必须 `auto:false`（同步对账只清自动槽，旧数据缺省视为自动）。`resolveSlotMedia` 返回图/视/音有序列表，**槽序即 `<Picture N>/<Video N>/<Audio N>` 编号序**；`refsNoteFromSnapshot` 的编号必须与其严格一致。
+- **空间接力包**（`directorQueue.ts`）：`runBatch` 在每段执行前只读取故事顺序中紧邻的上一段，优先采用Take、否则最新成功Take；从结尾前约0.25秒抽稳定桥接帧，Comfy R2V有空余视频槽时再用 `trimVideo` 截末尾2秒。`fillRelaySlots` 把真实素材收录资产库并追加到下一段 `referenceImage/referenceVideo` 槽，写 `relayKind/relaySourceTakeId` 防重复截取；关闭开关时槽位和资产保留但 `directorRefs.effectiveSlots` 不投喂。执行层 `withRelayFrame` 默认保持追加的Picture位，有首帧入口且无人工首帧时提升为 `firstFrame`；`refsNoteFromSnapshot` 按真实槽序注入对应 `<Picture N>/<Video N>` 空间锁定。容量裁剪移除站位图时，`rewriteOmittedSpatialPictureRefs` 必须同时把静态提示词里原来的站位图 `<Picture N>` 改成文字计划，防止它误指向补位后的桥接帧。不得把“所选/缺失”列表中两个非相邻任务直接串接。
+- **双语资产册**（`directorAssetCatalog.ts` + `StoryboardPage`）：分镜页“**资产册绑定（推荐）**”在剧本已产生片段后选择项目根目录或 `全部素材`，读取 `MOMO_ASSET_CATALOG_V1` 的 `资产提示词.md`；它和“文件夹绑定（备用）”二选一。每项要求 Markdown 图片、中文提示词、English Prompt、可选 `使用分段` 和 `参考顺序`；`参考顺序` 支持统一数字或 `01=2, 03=4` 分段映射，缺省按场景→人物→道具/装备→站位图降级。图片按内容指纹只落库一次，重导按 `catalogId` 原位同步。空间站位图写 `referenceRole:spatialLayout`/`layoutGuide`，运行时 `refsNoteFromSnapshot` 明确只读空间、不复制标注；配方图片槽不足时 `constrainPictureCapacity` 只移除站位图图片，优先保留真实桥接帧和外观参考，并把资产的英文空间锁转成文字注入。
 - **ComfyUI 模板两种格式**：API 格式直接导入；前端格式（nodes/links/definitions）走 `src/modules/comfy/frontendConvert.ts` 转换——需 ComfyUI 在线（/object_info 提供 widget 名序），支持一层子图展开（FL2VA 的「Image to Video (MiniMax H3)」子图节点，接口槽 = 虚拟节点 -10 / 输出 = -20）。
 - **导演台→ComfyUI 必须显式传 `upstreamTexts`**（`directorQueue` 的 comfy 分支），否则编译好的提示词不进工作流。首尾帧模板用 `withOptionalFrameDrop` 按素材缺失临时忽略首/尾帧 LoadImage（降级 T2V/I2V，防占位图 1.png 执行报错，判定只看节点标题的首/尾帧字样）；`buildSlotMap` 把首/尾帧语义精确映射到模板图片入口。
-- **runComfyTemplate 素材通道**：`upstreamImages / upstreamVideos / upstreamAudios` 按节点 id 升序喂 LoadImage / LoadVideo / LoadAudio 类节点（REF2VA 的 4 图 3 视 3 音按编号天然一一对应）。模板暴露的图片参数只占用它自己那个入口；剩余上游图继续按序投喂未占用的 LoadImage，仍不够且有其它空缺 IMAGE 必填输入时自动注入 `momo_in_N` 节点——「只暴露 1 个框、拖 3 张图」时另 2 张会自动落到其余图片入口。
+- **runComfyTemplate 素材通道**：`upstreamImages / upstreamVideos / upstreamAudios` 按节点 id 升序喂 LoadImage / LoadVideo / LoadAudio 类节点（REF2VA 的 4 图 3 视 3 音按编号天然一一对应）。各媒体入口严格只保留本次真实素材数量：例如只有一条末尾短视频时只保留 Video 1，模板默认 Video 2/3 及其 `GetVideoComponents` 拆分链必须由 `pruneNodesWithServants` 一并旁路，绝不能继续使用模板内的完整视频或占位视频。模板暴露的图片参数只占用它自己那个入口；剩余上游图继续按序投喂未占用的 LoadImage，仍不够且有其它空缺 IMAGE 必填输入时自动注入 `momo_in_N` 节点——「只暴露 1 个框、拖 3 张图」时另 2 张会自动落到其余图片入口。
 - **显存清理**（`freeComfyMemory`，ComfyUI `/free`）：导演台按项目开关 `freeMemBetween` 在每段生成/后处理结束后自动清理（`runBatch` / `runBatchPostProcess`）；画布 ComfyUI 节点按 `data.freeAfter` 在运行 finally 里清理；设置页有手动「立即清理显存」。清理会卸载模型，下次运行重新加载——默认不开，用户权衡。
+- **导演台「停止」按钮**（`stopBatchHard`，生成页/分镜页批量进度条）：立即中断在途生成（模块级 `runAbort` 信号穿进 `runComfyTemplate` 的 `opts.signal`，轮询 sleep 立即 reject）+ 强停 ComfyUI（`interruptComfy` = `/interrupt` + `/queue` clear）+ `/free` 清显存内存；被掐断的 Take 标 `cancelled`（不进报错中心、不计失败）。与「取消批量」（`cancelBatch`，跑完当前段才停）是两个语义，别合并。远程计费任务已提交部分无法撤销，按钮 title 已注明。
 - **分镜卡提示词一律弹窗**：H3 段走片段头 H3 弹窗；普通段走「分段提示词」按钮弹窗（查看编译结果 / 编辑 `promptOverride`），卡片上不放展开块与单行覆盖输入框。「最终提示词」弹窗（眼睛按钮）可编辑，保存写 `segment.promptFinalOverride`——`compileSegmentPrompt` 见到它即整段直发（跳过风格/Skill/负向自动拼接；参考素材编号说明仍由执行层前置），分镜卡以「最终稿」角标提示。
 - **批量生成进度**：`runBatch` 的 onProgress 第 4 参 `detail{msg,pct}` 承载细粒度进度（executeXxxTake 的 onSub → `runComfyTemplate.onProgress`，ComfyUI WebSocket 按节点/步数换算百分比；远程任务无百分比）。生成页 `.dsg-batch-live` 双条：总进度 + 当前片段条（无百分比时流动动画）。注意 ComfyUI 0.33 起带源检查，应用内浏览器 WebSocket 握手会 403（服务端日志 non matching host and origin），WS 进度拿不到时 /queue 轮询文案兜底。
 - **分辨率兜底（comfy.ts 1c-2）**：模板没暴露百万像素/宽高/比例参数时按节点输入名直写——`megapixels`/`width`/`height` 数字输入命中即写；`aspect_ratio` 下拉按 object_info 选项表前缀匹配（16:9 → 16:9 (Widescreen)），匹配不到保持模板原值，防下拉写非法值被 ComfyUI 整单拒绝。
@@ -112,14 +115,15 @@ src-tauri/              Rust 壳，仅插件配置（dialog/fs/http/store/opener
 - 撤销/重做快照、贴近自动连线、防环（`wouldCycle`）都在 boardStore，改节点/边操作时留意是否需要入历史。
 - 新图标手绘 SVG 加进 `src/ui/icons.tsx`，不引第三方图标库。
 - 光晕/描边等颜色一律用 `color-mix(in srgb, var(--accent) N%, transparent)`，不要硬编码 `rgba(91,140,255,…)`——黑主题的强调色是暖橙，硬编码会出现橙边配蓝光。
-- 新增快捷键：`types.ts` 的 `HotkeyAction` + `HOTKEY_LABEL` + `DEFAULT_HOTKEYS` 三处同步，`normalize()` 的 `{ ...DEFAULT_HOTKEYS, ...(v.hotkeys ?? {}) }` 会自动给老用户补默认值；再在 SmartCanvas 的 keydown 分支里接线，并加进 SettingsDialog 的 `HOTKEY_GROUPS`。
+- 新增快捷键：`types.ts` 的 `HotkeyAction` + `HOTKEY_LABEL` + `DEFAULT_HOTKEYS` 三处同步，`normalize()` 的 `{ ...DEFAULT_HOTKEYS, ...(v.hotkeys ?? {}) }` 会自动给老用户补默认值；再在 SmartCanvas 的 keydown 分支里接线，并加进 `src/modules/settings/tabs/HotkeysTab.tsx` 的 `HOTKEY_GROUPS`。
 - **UI 精致度规范**（新功能一律照此，不再返工）：
   - 下拉一律用 `src/ui/PopSelect.tsx`，**禁止新增原生 `<select>`**；参数浮层/节点编辑浮层（`.gp-scope`/`.ne-pop`）内的 PopSelect 自动命中 30px 小号样式，不要再叠内联宽高。需要小号输入框用 `className="input sm"`（base.css 已定义，30px）。
   - **下拉选项一律「图标 + 文字」**：options 每项必须带 `icon`（手绘 SVG，从 `src/ui/icons.tsx` 选，缺了就新增），触发器同时传 `triggerIcon` 让当前项图标常显。导演台已统一（配方下拉走 `RecipeSelect`、批量范围、接入点等），后续新增任何下拉沿用此规则。
   - 参数浮层内的布局类（`.gp-wh`/`.gp-opts`/`.gp-check`/`.gp-dur`/`.gp-foot`/`.gp-seed` 等）选择器必须写 `:is(.gen-panel, .gp-scope)` 前缀——只写 `.gen-panel` 会在 Portal 到 body 的浮层里失效，控件塌成全宽傻大粗。
-  - 提示/说明类文字一律灰色小字：`.gp-hint`（分区标题后缀）与 `.gp-foot`（浮层底注）均为 11.5px `var(--text-3)`；导演台用 `.ds-hint`、设置协议页用 `.pt-hint`（同规格）；不要给提示文字用正文大字重，也不要再新增裸 `.hint`（无全局样式，会以正文大小显示）。
+  - 提示/说明类文字一律灰色小字：`.gp-hint`（分区标题后缀）与 `.gp-foot`（浮层底注）均为 11.5px `var(--text-3)`；导演台用 `.ds-hint`、设置页统一用 `.set-hint`（协议页内部旧类为 `.proto-hint`，同规格）；不要给提示文字用正文大字重，也不要再新增裸 `.hint`（无全局样式，会以正文大小显示）。
   - 节点运行结果的关键指标用**角标**承载（如超清放大的分辨率角标、保真分角标），节点底部**不再放报告长文**；无角标可用的节点（如智能矢量）底部摘要（`.enh-report`）只放一行关键指标（10 余字符以内），完整诊断信息写入 `reportDetail` 字段，以悬停 title 展示。
   - 节点空态提示文字用 `.gen-empty`（限宽 220px、两行居中、不贴边），文案拆短句，别写一长串。
+  - **设置页统一骨架**（`src/modules/settings/settings.css`）：每个 tab 套 `.set-page > .set-page-h(.set-page-t+.set-page-d) + 若干 .set-card(.set-card-h)`；说明文字一律 `.set-hint`（含 .warn/.ok/.danger），长段说明收进卡片标题右侧的 `SecHelp`（`settings/shared.tsx`）；指标大数字用 `.set-stats > .set-stat > b+span`，状态徽标用 `.set-badge`（.dim/.ok/.warn）。设置页内不再出现裸 `.hint`/`.sec-desc`。
 
 ## 图片处理（本项目专用）
 
@@ -133,7 +137,8 @@ src-tauri/              Rust 壳，仅插件配置（dialog/fs/http/store/opener
 ### 创作助手 / 语音（agentEngine.ts + voiceChat.ts）
 
 - Agent 走「每次回复只输出一个 JSON 动作」的纯文本协议（search / ask / image / video / reply），不依赖 function calling。
-- **画幅必须自己兜底**：模型经常漏填 `aspect`/`resolution`，`agentLoop` 的解析顺序是「本轮已确认规格 > 动作字段 > 提示词措辞 > 用户对话原话」，全都没有就强制 ask 一轮再生成。
+- **画幅必须自己兜底**：模型经常漏填/乱填 `aspect`/`resolution`，`agentLoop` 的解析顺序是「本轮已确认规格 > 动作字段 > 提示词措辞 > 用户对话原话」，每一级先经 `normAspect`/`normResolution` 归一化（"竖屏"/"1920×1080"/"1080p" 这类写法折算成 "9:16"/"2K"，认不出就丢弃走下一级），全都没有就强制 ask 一轮再生成。
+- **生成确认闸（防自动扣费）**：image / video 动作执行前必须过一次用户确认（`confirmedSig` 记录已确认的方案签名：提示词+画幅+张数/时长，方案变了就重新问；「再改改」类回答会清掉已确认规格并回炉方案）。生成成功交付后确认闸复位，新需求重新确认。系统提示词已告知模型收到「用户已确认」反馈时原样重发动作。
 - 聊天模式的上下文：最近 10 条原样带，更早的每积 8 条压缩成「前情摘要」；压缩带 `epoch` 守卫，清空对话会作废在途的旧摘要。
 - 语音通话是**轮流对讲**（VAD 断句 + 请求/响应 + TTS），不是实时双工；需要 `asr` 角色模型，`audio` 角色可选（没配就只做语音输入不朗读）。
 
