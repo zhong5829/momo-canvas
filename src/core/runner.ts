@@ -1517,6 +1517,20 @@ export async function runVideoGen(id: string) {
 }
 
 /* ---------- MiniMax H3 专用视频 ---------- */
+/** 按上游素材自动推断 MiniMax H3 生成模式（对齐导演台 inferH3Mode；画布无首尾帧语义，按图/音频数量推断）：
+ *  有音频→多参考（图+音频都带）；仅单图→首帧；多图→多参考；无媒体→文生 */
+function resolveMinimaxMode(
+  mode: MinimaxVideoData["mode"] | undefined,
+  images: string[],
+  audios: string[],
+): Exclude<MinimaxVideoData["mode"], "auto"> {
+  if (mode && mode !== "auto") return mode;
+  if (audios.length > 0) return "ref2va";
+  if (images.length > 1) return "ref2va";
+  if (images.length === 1) return "i2va";
+  return "t2va";
+}
+
 export async function runMinimaxVideo(id: string) {
   const node = useBoard.getState().nodes.find((n) => n.id === id);
   if (!node) return;
@@ -1524,7 +1538,7 @@ export async function runMinimaxVideo(id: string) {
   if (data.status === "running") return;
   const { texts, images, audios } = collectUpstream(id);
   const prompt = mergePrompt(data.prompt ?? "", texts.join("\n"));
-  const mode = data.mode ?? "t2va";
+  const mode = resolveMinimaxMode(data.mode, images, audios);
   if (!prompt) {
     toast("请输入提示词，或连接上游文本节点", "err");
     return;
@@ -1709,9 +1723,15 @@ export async function sendChat(id: string) {
   const draft = (data.draft ?? "").trim();
   if (!draft) return;
   const settings = useSettings.getState().settings;
-  const { texts, images } = collectUpstream(id);
+  const { texts, images, videos } = collectUpstream(id);
 
-  const userMsg: ChatMsg = { role: "user", text: draft, images: images.length ? images : undefined };
+  const userMsg: ChatMsg = {
+    role: "user",
+    text: draft,
+    images: images.length ? images : undefined,
+    // 上游视频一并作为多模态输入（Gemini / OpenAI 兼容协议支持，其余协议给出中文提示）
+    videos: videos.length ? videos : undefined,
+  };
   let history: ChatMsg[] = [...(data.messages ?? []), userMsg];
   upd(id, { status: "running", error: undefined, draft: "", messages: history });
 
@@ -1795,7 +1815,7 @@ export async function runLlmText(id: string) {
   if (!node) return;
   const data = node.data as LlmTextData;
   if (data.status === "running") return;
-  const { texts, images } = collectUpstream(id);
+  const { texts, images, videos } = collectUpstream(id);
   const caption = isCaptionOp(data.op);
   if (caption && !images.length) {
     toast("反推需要先连接一个上游图片节点", "err");
@@ -1815,7 +1835,15 @@ export async function runLlmText(id: string) {
         : LLM_TEXT_SYSTEMS[data.op];
     const { text } = await chatStream(
       card,
-      [{ role: "user", text: caption ? "请分析这张图片。" : input, images: caption ? [images[0]] : undefined }],
+      [
+        {
+          role: "user",
+          text: caption ? "请分析这张图片。" : input,
+          images: caption ? [images[0]] : undefined,
+          // 反推只看图；普通对话带上游视频（Gemini / OpenAI 兼容协议支持，其余协议会给出中文提示）
+          videos: caption ? undefined : videos.length ? videos : undefined,
+        },
+      ],
       {
         system,
         signal: taskSignal(id),
@@ -1845,12 +1873,12 @@ export async function runPromptLlm(id: string) {
     upd(id, { status: "done", error: undefined });
     return;
   }
-  const { texts, images } = collectUpstream(id);
+  const { texts, images, videos } = collectUpstream(id);
   const user = (d.prompt ?? "").trim();
   // 上游文本优先拼入；无上游文本时仅用节点内任务提示词
   const prompt = texts.length ? `${user ? user + "\n\n" : ""}${texts.join("\n")}` : user;
-  if (!prompt && !images.length) {
-    toast("请填写任务提示词或连接上游文本/图片", "err");
+  if (!prompt && !images.length && !videos.length) {
+    toast("请填写任务提示词或连接上游文本/图片/视频", "err");
     return;
   }
   upd(id, { status: "running", error: undefined });
@@ -1859,7 +1887,15 @@ export async function runPromptLlm(id: string) {
     const system = (d.system ?? "").trim() || undefined;
     const { text } = await chatStream(
       card,
-      [{ role: "user", text: prompt, images: images.length ? images : undefined }],
+      [
+        {
+          role: "user",
+          text: prompt,
+          images: images.length ? images : undefined,
+          // 上游视频一并传给模型（Gemini / OpenAI 兼容协议支持，其余协议会给出中文提示）
+          videos: videos.length ? videos : undefined,
+        },
+      ],
       {
         system,
         signal: taskSignal(id),
@@ -2777,6 +2813,7 @@ function hasFreshOutput(n: LiteNode): boolean {
     case "llmText":
       return !!(d.result as string | undefined)?.trim();
     case "imageGen":
+    case "msImageGen":
     case "comfy":
       return !!(d.results as string[] | undefined)?.length;
     case "enhanceLocal":
@@ -2786,6 +2823,9 @@ function hasFreshOutput(n: LiteNode): boolean {
     case "multiAngle":
       // 提示词模式的输出由参数即时推导，视为始终新鲜
       return d.outMode === "prompt" || !!(d.results as string[] | undefined)?.length;
+    case "ecomImage":
+      // 提示词模式输出由分析即时推导；出图模式看 result
+      return d.outMode === "prompt" || !!(d.result as string | undefined);
     case "charCard": {
       const cc = d as unknown as CharCardData;
       if (charOutMode(cc) === "prompt") return Object.values(cc.prompts ?? {}).some((t) => t?.trim());

@@ -26,6 +26,8 @@ type AgentState = {
   draft: string;
   /** 待发送的参考图（dataURL） */
   attachments: string[];
+  /** 待发送的上传视频（dataURL，供多模态模型理解；视频体积大，上限 2 个） */
+  videoAttachments: string[];
   running: boolean;
   /** 对话模型复合键「providerId::model」，空 = 角色默认 */
   modelId?: string;
@@ -51,6 +53,8 @@ type AgentState = {
   setDraft: (v: string) => void;
   addAttachments: (imgs: string[]) => void;
   removeAttachment: (i: number) => void;
+  addVideoAttachments: (vids: string[]) => void;
+  removeVideoAttachment: (i: number) => void;
   setModelId: (v?: string) => void;
   setImageModelId: (v?: string) => void;
   setVideoModelId: (v?: string) => void;
@@ -63,7 +67,7 @@ type AgentState = {
   clear: () => void;
 
   /* ---- 引擎内部使用 ---- */
-  pushUser: (text: string, images: string[]) => void;
+  pushUser: (text: string, images: string[], videos?: string[]) => void;
   beginAssistant: (kind?: "chat" | "agent") => string;
   updateMsg: (id: string, patch: Partial<AgentMsg>) => void;
   addStep: (msgId: string, kind: AgentStepKind, text: string) => string;
@@ -78,6 +82,7 @@ export const useAgent = create<AgentState>((set, get) => ({
   messages: [],
   draft: "",
   attachments: [],
+  videoAttachments: [],
   running: false,
   modelId: undefined,
   imageModelId: undefined,
@@ -95,6 +100,8 @@ export const useAgent = create<AgentState>((set, get) => ({
   setDraft: (v) => set({ draft: v }),
   addAttachments: (imgs) => set((s) => ({ attachments: [...s.attachments, ...imgs].slice(0, 6) })),
   removeAttachment: (i) => set((s) => ({ attachments: s.attachments.filter((_, x) => x !== i) })),
+  addVideoAttachments: (vids) => set((s) => ({ videoAttachments: [...s.videoAttachments, ...vids].slice(0, 2) })),
+  removeVideoAttachment: (i) => set((s) => ({ videoAttachments: s.videoAttachments.filter((_, x) => x !== i) })),
   setModelId: (v) => {
     set({ modelId: v });
     savePrefs(get);
@@ -139,17 +146,25 @@ export const useAgent = create<AgentState>((set, get) => ({
       messages: [],
       draft: "",
       attachments: [],
+      videoAttachments: [],
       resolver: null,
       summary: "",
       summaryUpto: 0,
       epoch: s.epoch + 1,
     })),
 
-  pushUser: (text, images) =>
+  pushUser: (text, images, videos) =>
     set((s) => ({
       messages: [
         ...s.messages,
-        { id: uid(), role: "user", text, images: images.length ? images : undefined, time: Date.now() },
+        {
+          id: uid(),
+          role: "user",
+          text,
+          images: images.length ? images : undefined,
+          videos: videos?.length ? videos : undefined,
+          time: Date.now(),
+        },
       ],
     })),
 

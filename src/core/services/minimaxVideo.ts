@@ -8,6 +8,7 @@
  */
 import type { MinimaxVideoData, ModelCard } from "../types";
 import { dataUrlToBlob } from "../utils";
+import { assetToDataUrl, extFromMime } from "./assetFiles";
 import { xfetch, trimBase, readErrorBody } from "./http";
 
 export type MinimaxVideoReq = {
@@ -46,6 +47,16 @@ function settle(status: unknown): "ok" | "fail" | "pending" {
   return "pending";
 }
 
+/** 媒体引用（data:/blob:/momoblob:/asset.localhost/本地路径）→ 可上传 Blob + 正确扩展名文件名。
+ *  上传前必须统一转 data:——节点里的音频/图片常是 asset: URL 或 momoblob: 引用，直接 dataUrlToBlob 会产出 0 字节空文件，服务商报「Input media could not be processed」 */
+async function mediaFile(url: string): Promise<{ blob: Blob; name: string }> {
+  const dataUrl = await assetToDataUrl(url);
+  const mime = dataUrl.match(/^data:([^;]+)/)?.[1] ?? "";
+  const ext = extFromMime(mime);
+  const origExt = url.match(/\.([a-z0-9]{2,4})(?:$|\?)/i)?.[1] ?? "";
+  return { blob: dataUrlToBlob(dataUrl), name: `ref.${ext !== "bin" ? ext : origExt || "mp4"}` };
+}
+
 export async function generateMinimaxVideo(card: ModelCard, req: MinimaxVideoReq): Promise<string> {
   if (!card.baseUrl || !card.model) throw new Error(`模型「${card.name}」缺少 Base URL 或模型名称`);
   const base = trimBase(card.baseUrl);
@@ -64,8 +75,14 @@ export async function generateMinimaxVideo(card: ModelCard, req: MinimaxVideoReq
     fd.append("aspect_ratio", req.aspect);
     fd.append("prompt_optimization", String(req.promptOptimization));
     fd.append("prompt", req.prompt);
-    req.images.forEach((img, i) => fd.append("images", dataUrlToBlob(img), `ref_${i}.png`));
-    req.audios.forEach((au, i) => fd.append("audios", dataUrlToBlob(au), `ref_${i}.m4a`));
+    for (let i = 0; i < req.images.length; i++) {
+      const f = await mediaFile(req.images[i]);
+      fd.append("images", f.blob, f.name);
+    }
+    for (let i = 0; i < req.audios.length; i++) {
+      const f = await mediaFile(req.audios[i]);
+      fd.append("audios", f.blob, f.name);
+    }
     req.onProgress?.("提交任务…");
     const resp = await xfetch(`${base}/v1/videos`, { method: "POST", headers, body: fd, signal: req.signal });
     if (!resp.ok) throw new Error(`视频提交失败 ${resp.status}: ${await readErrorBody(resp)}`);
@@ -105,7 +122,15 @@ export async function generateMinimaxVideo(card: ModelCard, req: MinimaxVideoReq
     const j = (await r.json().catch(() => null)) as (Record<string, unknown> & { progress?: number }) | null;
     if (!j) continue;
     const st = settle(j.status ?? j.state ?? j.task_status);
-    if (st === "fail") throw new Error(`视频生成失败: ${String(j.error ?? j.message ?? "") || "供应商返回失败"}`);
+    if (st === "fail") {
+      // 供应商 error 常是 {code, message} 对象，直接 String 会显示成 [object Object]
+      const raw = j.error ?? j.message;
+      const errText =
+        raw && typeof raw === "object"
+          ? (raw as { message?: string }).message ?? JSON.stringify(raw)
+          : String(raw ?? "");
+      throw new Error(`视频生成失败: ${errText || "供应商返回失败"}`);
+    }
     if (st === "ok") break;
     req.onProgress?.(`生成中… ${typeof j.progress === "number" ? Math.round(j.progress * 100) + "%" : `${(i + 1) * 2}s`}`);
   }

@@ -42,7 +42,7 @@ export function defaultData(kind: NodeKind): Record<string, unknown> {
     case "videoGen":
       return { status: "idle", prompt: "" };
     case "minimaxVideo":
-      return { status: "idle", mode: "t2va", modelId: "", resolution: "720p", seconds: "5", aspect: "16:9", promptOptimization: false, prompt: "" };
+      return { status: "idle", mode: "auto", modelId: "", resolution: "720p", seconds: "5", aspect: "16:9", promptOptimization: false, prompt: "" };
     case "storyboard":
       return { status: "idle", story: "", count: 4, shotSec: 5, style: "", tone: "", shots: [] };
     case "enhanceLocal":
@@ -146,16 +146,16 @@ export const NODE_INPUTS: Record<NodeKind, { text?: boolean; image?: boolean; vi
   audio: {},
   audioGen: { text: true },
   videoDub: { video: true, audio: true },
-  prompt: { text: true, image: true },
+  prompt: { text: true, image: true, video: true },
   stylePreset: {},
   note: {},
-  chat: { text: true, image: true },
+  chat: { text: true, image: true, video: true },
   imageGen: { text: true, image: true },
   msImageGen: { text: true, image: true },
   videoGen: { text: true, image: true, video: true, audio: true },
   minimaxVideo: { text: true, image: true, audio: true },
   comfy: { text: true, image: true, video: true },
-  llmText: { text: true, image: true },
+  llmText: { text: true, image: true, video: true },
   combine: { text: true },
   group: {},
   relight: { text: true, image: true },

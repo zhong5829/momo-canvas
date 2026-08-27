@@ -286,6 +286,7 @@ export function AgentPanel() {
   const messages = useAgent((s) => s.messages);
   const draft = useAgent((s) => s.draft);
   const attachments = useAgent((s) => s.attachments);
+  const videoAttachments = useAgent((s) => s.videoAttachments);
   const running = useAgent((s) => s.running);
   const modelId = useAgent((s) => s.modelId);
   const imageModelId = useAgent((s) => s.imageModelId);
@@ -297,6 +298,8 @@ export function AgentPanel() {
   const setDraft = useAgent((s) => s.setDraft);
   const addAttachments = useAgent((s) => s.addAttachments);
   const removeAttachment = useAgent((s) => s.removeAttachment);
+  const addVideoAttachments = useAgent((s) => s.addVideoAttachments);
+  const removeVideoAttachment = useAgent((s) => s.removeVideoAttachment);
   const setModelId = useAgent((s) => s.setModelId);
   const setImageModelId = useAgent((s) => s.setImageModelId);
   const setVideoModelId = useAgent((s) => s.setVideoModelId);
@@ -306,6 +309,7 @@ export function AgentPanel() {
   const awaiting = useAgent((s) => !!s.resolver);
   const listRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [voice, setVoice] = useState<VoiceState>(voiceState);
   const inCall = voice.phase !== "idle";
@@ -325,6 +329,15 @@ export function AgentPanel() {
       Array.from(files).filter((f) => f.type.startsWith("image/")).map((f) => fileToDataUrl(f)),
     );
     if (imgs.length) addAttachments(imgs);
+  };
+
+  /** 上传视频附件：转 dataURL 后随消息发给多模态模型（gemini 等支持视频理解），供分析画面与动作 */
+  const pickVideos = async (files: FileList | File[] | null) => {
+    if (!files?.length) return;
+    const vids = await Promise.all(
+      Array.from(files).filter((f) => f.type.startsWith("video/")).map((f) => fileToDataUrl(f)),
+    );
+    if (vids.length) addVideoAttachments(vids);
   };
 
   /** 拖入/粘贴的视频：落进资产库拿到持久地址后在画布中心建视频节点（聊天模型看不了视频，给画布用） */
@@ -493,6 +506,13 @@ export function AgentPanel() {
                     ))}
                   </div>
                 ) : null}
+                {m.videos?.length ? (
+                  <div className="ag-uimgs">
+                    {m.videos.map((s, i) => (
+                      <video key={i} className="ag-uvid" src={s} muted playsInline controls preload="metadata" />
+                    ))}
+                  </div>
+                ) : null}
                 {m.text ? <div className="ag-bubble">{m.text}</div> : null}
               </div>
             ) : // 按消息产生时的模式渲染（不看当前面板模式），切标签不会让轨迹/待答问题/结果消失
@@ -508,6 +528,18 @@ export function AgentPanel() {
       {inCall ? <VoiceCallOverlay v={voice} onHangup={stopVoiceCall} /> : null}
 
       <div className="ag-input-wrap">
+        {videoAttachments.length ? (
+          <div className="ag-attach">
+            {videoAttachments.map((s, i) => (
+              <span key={i} className="ag-att-item video">
+                <video src={s} muted playsInline preload="metadata" />
+                <button className="ag-att-del" onClick={() => removeVideoAttachment(i)}>
+                  <IcClose size={11} />
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
         {attachments.length ? (
           <div className="ag-attach">
             {attachments.map((s, i) => (
@@ -522,6 +554,13 @@ export function AgentPanel() {
         ) : null}
         <div className="ag-input-row">
           <span className="ag-in-tools">
+            <button
+              className="icon-btn"
+              title="上传视频：发给模型分析画面与动作（gemini 等支持视频理解）"
+              onClick={() => videoRef.current?.click()}
+            >
+              <IcVideo size={18} />
+            </button>
             <button className="icon-btn" title="添加参考图（也可直接粘贴图片）" onClick={() => fileRef.current?.click()}>
               <IcImage size={18} />
             </button>
@@ -542,6 +581,17 @@ export function AgentPanel() {
             hidden
             onChange={(e) => {
               void pickFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <input
+            ref={videoRef}
+            type="file"
+            accept="video/*,.mp4,.webm,.mov,.mkv,.m4v"
+            multiple
+            hidden
+            onChange={(e) => {
+              void pickVideos(e.target.files);
               e.target.value = "";
             }}
           />
@@ -572,7 +622,11 @@ export function AgentPanel() {
               }
             }}
           />
-          <button className="send-btn" disabled={running || (!draft.trim() && !attachments.length)} onClick={send}>
+          <button
+            className="send-btn"
+            disabled={running || (!draft.trim() && !attachments.length && !videoAttachments.length)}
+            onClick={send}
+          >
             {running ? <IcLoading size={18} /> : <IcSend size={18} />}
           </button>
         </div>

@@ -37,6 +37,7 @@ export type ChatMsg = {
   role: "user" | "assistant";
   text: string;
   images?: string[];
+  videos?: string[];
   reasoning?: string;
   sources?: SearchHit[];
 };
@@ -64,6 +65,8 @@ export type AgentMsg = {
   text: string;
   /** 用户附带的参考图（dataURL） */
   images?: string[];
+  /** 用户附带的上传视频（dataURL，供多模态模型理解画面与动作） */
+  videos?: string[];
   /** 助手消息的思考过程（聊天模式，可折叠展示） */
   reasoning?: string;
   /** 过程轨迹：搜索 / 提问 / 生成 */
@@ -387,8 +390,8 @@ export type VideoGenData = {
 export type MinimaxVideoData = {
   status: RunStatus;
   error?: string;
-  /** 生成模式：文生 / 首帧 / 首尾帧 / 尾帧 / 多参考 */
-  mode: "t2va" | "i2va" | "fl2va" | "l2va" | "ref2va";
+  /** 生成模式：auto=按上游素材自动推断（有音频→多参考、仅单图→首帧、多图→多参考、无→文生）；或手动指定 */
+  mode: "auto" | "t2va" | "i2va" | "fl2va" | "l2va" | "ref2va";
   modelId?: string;
   /** 分辨率：480p / 720p */
   resolution: string;

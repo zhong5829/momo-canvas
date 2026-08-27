@@ -102,6 +102,12 @@ export async function hydrateBoards<T>(shape: T): Promise<T> {
   })) as T;
 }
 
+/** 单条 momoblob:<hash> 引用 → 原文（文件缺失返回 undefined；非 momoblob 原样返回）。运行期兜底回填用 */
+export async function hydrateString(url: string): Promise<string | undefined> {
+  if (!url.startsWith(REF_PREFIX)) return url;
+  return readBlob(url.slice(REF_PREFIX.length));
+}
+
 /* ---------------- 内存 map 版（.momoflow 分享包用：不落盘，内容收进 payload.assets） ----------------
    与磁盘版同前缀同 hash：导出时把节点 data 里的大 data: 替换成 momoblob:<hash>、内容进 map；
    导入时从 map 回填。复刻 externalizeBoards/hydrateBoards 的 walk 逻辑，只是目标是 JSON 内嵌而非磁盘文件。 */

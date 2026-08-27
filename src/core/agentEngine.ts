@@ -136,7 +136,7 @@ function buildContext(scratch: string[]): ChatMsg[] {
   }
   for (const m of msgs.slice(-14)) {
     if (m.role === "user") {
-      ctx.push({ role: "user", text: m.text || "（参考图）", images: m.images });
+      ctx.push({ role: "user", text: m.text || (m.images?.length ? "（参考图）" : "（视频）"), images: m.images, videos: m.videos });
     } else {
       // 进行中的那条助手消息不进上下文
       if (!m.text && !m.results?.length) continue;
@@ -595,9 +595,10 @@ export async function sendAgentMessage() {
   if (st.running) return;
   const text = st.draft.trim();
   const images = st.attachments;
-  if (!text && !images.length) return;
-  useAgent.setState({ running: true, draft: "", attachments: [] });
-  st.pushUser(text, images);
+  const videos = st.videoAttachments;
+  if (!text && !images.length && !videos.length) return;
+  useAgent.setState({ running: true, draft: "", attachments: [], videoAttachments: [] });
+  st.pushUser(text, images, videos);
   const asstId = useAgent.getState().beginAssistant();
   try {
     await agentLoop(asstId);
@@ -642,7 +643,7 @@ async function maybeCompressHistory(card: ReturnType<typeof resolveModelCard>) {
   if (upto <= 0 || upto - summaryUpto < COMPRESS_STRIDE) return;
   const seg = messages
     .slice(summaryUpto, upto)
-    .map((m) => `${m.role === "user" ? "用户" : "助手"}：${m.text || (m.images?.length ? "（发了参考图）" : "…")}`)
+    .map((m) => `${m.role === "user" ? "用户" : "助手"}：${m.text || (m.images?.length ? "（发了参考图）" : m.videos?.length ? "（发了视频）" : "…")}`)
     .join("\n");
   const { text } = await chatStream(card, [
     {
@@ -661,9 +662,10 @@ export async function sendSideChat() {
   if (st.running) return;
   const text = st.draft.trim();
   const images = st.attachments;
-  if (!text && !images.length) return;
-  useAgent.setState({ running: true, draft: "", attachments: [] });
-  st.pushUser(text, images);
+  const videos = st.videoAttachments;
+  if (!text && !images.length && !videos.length) return;
+  useAgent.setState({ running: true, draft: "", attachments: [], videoAttachments: [] });
+  st.pushUser(text, images, videos);
   const asstId = useAgent.getState().beginAssistant();
   try {
     const card = resolveModelCard("chat", useAgent.getState().modelId);
@@ -671,6 +673,10 @@ export async function sendSideChat() {
     // 带了参考图但模型可能没有视觉：提前提醒（不拦截，部分中转会静默忽略图片）
     if (images.length && !caps.vision) {
       toast(`当前模型「${card.name}」可能不支持视觉输入，图片可能被忽略——可在面板上方换成多模态模型`, "err");
+    }
+    // 带了视频但模型没有视频理解能力（仅 gemini 家族判定支持）：提前提醒，避免模型回复「没看到视频」
+    if (videos.length && !caps.video) {
+      toast(`当前模型「${card.name}」可能不支持视频输入，视频可能被忽略——gemini 系列支持视频理解`, "err");
     }
     const parts: string[] = [CHAT_SYSTEM];
     let builtin = false;
@@ -701,8 +707,9 @@ export async function sendSideChat() {
       .filter((m) => m.id !== asstId)
       .map((m) => ({
         role: m.role,
-        text: m.text || (m.images?.length ? "（参考图）" : "…"),
+        text: m.text || (m.images?.length ? "（参考图）" : m.videos?.length ? "（视频）" : "…"),
         images: m.role === "user" ? m.images : undefined,
+        videos: m.role === "user" ? m.videos : undefined,
       }));
     // 压缩在后台进行：本轮用旧摘要/近期消息已足够，结果留给下一轮
     void maybeCompressHistory(card).catch(() => {});

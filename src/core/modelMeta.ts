@@ -206,10 +206,12 @@ export function familyMaxRef(f: ImageFamily): number {
   return 8;
 }
 
-/* ================= 对话模型能力（视觉输入 / 自带联网搜索） ================= */
+/* ================= 对话模型能力（视觉输入 / 自带联网搜索 / 视频理解） ================= */
 export type ChatCaps = {
   /** 支持图片输入（多模态） */
   vision: boolean;
+  /** 支持视频输入（多模态；Gemini 全系原生支持，其余按名字/协议推断） */
+  video?: boolean;
   /** 模型自带联网搜索（请求里带 tools 即可，无需外部搜索接口） */
   builtinSearch: boolean;
   /** 能力依据说明（UI 提示用） */
@@ -244,6 +246,8 @@ export function chatCaps(card: Pick<ModelCard, "id" | "protocol" | "model">): Ch
     /(gpt-4o|gpt-4\.1|gpt-4v|gpt-5|kimi|moonshot|minimax|glm-4\.\dv|glm-4v|glm-5|qwen.*(vl|omni)|doubao.*(vision|seed-1|1\.5-vision)|step-1o|step-1v|hunyuan-vision|internvl|minicpm-v|llava|deepseek-vl|pixtral|llama.*vision|grok.*vision)/.test(
       m,
     );
+  // 视频理解：Gemini 全系原生支持（含中转站 openai 协议提供的 gemini）；其余模型暂不判定（避免误报）
+  const video = card.protocol === "gemini" || /(gemini)/.test(m);
   // 「自带联网」以能否真的构造出该协议下的 tools 请求体为准，判定与发送不再各说各话：
   // anthropic 协议走服务端 web_search 工具形态；gemini/ollama 没有对应形态，不注入
   const builtinSearch =
@@ -252,13 +256,14 @@ export function chatCaps(card: Pick<ModelCard, "id" | "protocol" | "model">): Ch
       : card.protocol !== "gemini" && card.protocol !== "ollama" && !!builtinSearchTools(card.model);
   const notes: string[] = [];
   if (vision) notes.push("视觉");
+  if (video) notes.push("视频");
   if (builtinSearch) {
     if (/glm/.test(m)) notes.push("GLM 自带联网");
     else if (/minimax/.test(m)) notes.push("MiniMax 自带联网");
     else if (/hunyuan/.test(m)) notes.push("混元自带联网");
     else notes.push("自带联网");
   }
-  return { vision, builtinSearch, note: notes.join(" · ") || undefined };
+  return { vision, video, builtinSearch, note: notes.join(" · ") || undefined };
 }
 
 /**

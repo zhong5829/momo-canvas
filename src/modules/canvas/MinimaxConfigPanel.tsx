@@ -11,6 +11,7 @@ import { IcVideo } from "../../ui/icons";
 import type { MinimaxVideoData } from "../../core/types";
 
 const MODES: { value: MinimaxVideoData["mode"]; label: string }[] = [
+  { value: "auto", label: "自动" },
   { value: "t2va", label: "文生" },
   { value: "i2va", label: "首帧" },
   { value: "fl2va", label: "首尾" },
@@ -20,6 +21,7 @@ const MODES: { value: MinimaxVideoData["mode"]; label: string }[] = [
 const RESOLUTIONS = ["480p", "720p"];
 const ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21", "4:5", "5:4"];
 const MODE_TIP: Record<string, string> = {
+  auto: "自动：有音频→多参考（图+音频）、仅单图→首帧、多图→多参考、无→文生",
   t2va: "文生视频",
   i2va: "首帧生视频",
   fl2va: "首尾帧过渡",
@@ -37,7 +39,7 @@ export function MinimaxVideoConfigPanel() {
 
   if (!selId || !d) return null;
   const patch = (p: Partial<MinimaxVideoData>) => upd(selId, p);
-  const mode = d.mode ?? "t2va";
+  const mode = d.mode ?? "auto";
 
   return (
     <div className="gen-panel">

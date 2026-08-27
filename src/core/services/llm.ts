@@ -9,6 +9,7 @@
 import type { ChatMsg, ModelCard } from "../types";
 import { xfetch, trimBase, readErrorBody } from "./http";
 import { shrinkForVision } from "../utils";
+import { assetToDataUrl } from "./assetFiles";
 import { builtinSearchTools, anthropicWebSearchTools } from "../modelMeta";
 import { streamOllamaChat } from "./ollama";
 import { ensureRunningFromCard, isLocalGgufCard } from "./localLlm";
@@ -66,6 +67,7 @@ function splitDataUrl(dataUrl: string): { mime: string; b64: string } {
 // 签名适配：把 llm.ts 的 StreamOpts 转成 streamOllamaChat 的参数。
 // builtinSearch 对 Ollama 本地模型无意义（本地模型不联网），直接忽略。
 async function streamOllamaAdapter(card: ModelCard, msgs: ChatMsg[], opts: StreamOpts): Promise<StreamResult> {
+  if (msgs.some((m) => m.videos?.length)) throw new Error("本地 Ollama 模型不支持视频输入");
   return streamOllamaChat(card, msgs, {
     onText: opts.onText,
     onReasoning: opts.onReasoning,
@@ -81,14 +83,13 @@ async function streamOpenAI(card: ModelCard, msgs: ChatMsg[], opts: StreamOpts):
   const apiMsgs: { role: string; content: unknown }[] = [];
   if (opts.system) apiMsgs.push({ role: "system", content: opts.system });
   for (const m of msgs) {
-    if (m.images?.length) {
-      apiMsgs.push({
-        role: m.role,
-        content: [
-          ...m.images.map((url) => ({ type: "image_url", image_url: { url } })),
-          { type: "text", text: m.text },
-        ],
-      });
+    if (m.images?.length || m.videos?.length) {
+      const content: { type: string; [k: string]: unknown }[] = [];
+      for (const url of m.images ?? []) content.push({ type: "image_url", image_url: { url } });
+      // 视频多模态（OpenAI 兼容 / 中转站 Gemini 适配）：视频资产可能是 blob:/data:/本地文件，统一转 dataURL 内联
+      for (const v of m.videos ?? []) content.push({ type: "input_video", video_url: await assetToDataUrl(v) });
+      content.push({ type: "text", text: m.text });
+      apiMsgs.push({ role: m.role, content });
     } else {
       apiMsgs.push({ role: m.role, content: m.text });
     }
@@ -140,6 +141,8 @@ async function streamOpenAI(card: ModelCard, msgs: ChatMsg[], opts: StreamOpts):
 
 /* ---------------- Anthropic Claude ---------------- */
 async function streamAnthropic(card: ModelCard, msgs: ChatMsg[], opts: StreamOpts): Promise<StreamResult> {
+  if (msgs.some((m) => m.videos?.length))
+    throw new Error("Claude（Anthropic 协议）不支持视频输入，请改用 Gemini 或其他支持视频的模型");
   const base = trimBase(card.baseUrl);
   const url = base.endsWith("/v1") ? `${base}/messages` : `${base}/v1/messages`;
   const apiMsgs = msgs.map((m) => ({
@@ -201,21 +204,29 @@ async function streamAnthropic(card: ModelCard, msgs: ChatMsg[], opts: StreamOpt
 /* ---------------- Google Gemini ---------------- */
 function geminiBase(baseUrl: string): string {
   const base = trimBase(baseUrl || "https://generativelanguage.googleapis.com");
-  return base.includes("/v1beta") ? base : `${base}/v1beta`;
+  // openai 兼容服务商的 baseUrl 常以 /v1 结尾（chat/completions 用），Gemini 原生端点在 /v1beta —— 去掉 /v1 尾巴再拼
+  const noV1 = base.replace(/\/v1$/, "");
+  return noV1.includes("/v1beta") ? noV1 : `${noV1}/v1beta`;
 }
 
 async function streamGemini(card: ModelCard, msgs: ChatMsg[], opts: StreamOpts): Promise<StreamResult> {
   const url = `${geminiBase(card.baseUrl)}/models/${card.model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(card.apiKey)}`;
-  const contents = msgs.map((m) => ({
-    role: m.role === "assistant" ? "model" : "user",
-    parts: [
-      ...(m.images ?? []).map((img) => {
+  const contents = await Promise.all(
+    msgs.map(async (m) => {
+      const parts: { inline_data?: { mime_type: string; data: string }; text?: string }[] = [];
+      for (const img of m.images ?? []) {
         const { mime, b64 } = splitDataUrl(img);
-        return { inline_data: { mime_type: mime, data: b64 } };
-      }),
-      { text: m.text },
-    ],
-  }));
+        parts.push({ inline_data: { mime_type: mime, data: b64 } });
+      }
+      // Gemini 视频多模态与图片同用 inline_data（mime 为 video/*，Gemini API 原生支持）
+      for (const v of m.videos ?? []) {
+        const { mime, b64 } = splitDataUrl(await assetToDataUrl(v));
+        parts.push({ inline_data: { mime_type: mime, data: b64 } });
+      }
+      parts.push({ text: m.text });
+      return { role: m.role === "assistant" ? "model" : "user", parts };
+    }),
+  );
   const resp = await xfetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -264,10 +275,17 @@ export async function chatStream(card: ModelCard, msgs: ChatMsg[], opts: StreamO
       m.images?.length ? { ...m, images: await Promise.all(m.images.map((s) => shrinkForVision(s))) } : m,
     ),
   );
+  // 视频理解只认 Gemini 原生格式（/v1beta/...:generateContent + inline_data）：
+  // 中转站以 openai 协议提供 gemini 时，chat/completions 端点会忽略 OpenAI 兼容的 input_video 块、只转发文本，
+  // 模型便「看不到视频」。因此「带视频 + gemini 模型」一律改走 streamGemini（inline_data），无视频仍按原协议。
+  const hasVideo = shrunk.some((m) => m.videos?.length);
+  const geminiNative =
+    card.protocol === "gemini" ||
+    (hasVideo && card.protocol !== "anthropic" && card.protocol !== "ollama" && /gemini/i.test(card.model));
   // ollama 的 system 透传（原生协议走 messages[0]=system，由 streamOllamaChat 内部处理）
   const run =
     card.protocol === "anthropic" ? streamAnthropic
-    : card.protocol === "gemini" ? streamGemini
+    : geminiNative ? streamGemini
     : card.protocol === "ollama" ? streamOllamaAdapter
     : streamOpenAI;
   const result = await run(card, shrunk, opts);

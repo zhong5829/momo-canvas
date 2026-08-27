@@ -67,7 +67,15 @@ export const useRunLog = create<LogState>((set, get) => ({
     const head = list[0];
     // 轮询合并：紧邻的同方法同 URL 同状态 → 累计次数、刷新时间与响应
     if (head && head.method === e.method && head.url === e.url && head.status === e.status && !e.error && !head.error) {
-      const merged: RunLogEntry = { ...head, ts: e.ts, durMs: e.durMs, respBody: e.respBody ?? head.respBody, count: head.count + 1 };
+      const merged: RunLogEntry = {
+        ...head,
+        // 合并时保留最新一次的请求体（此前只更新 ts/durMs/respBody，reqBody 停在旧快照，排查问题看不到真实请求）
+        reqBody: e.reqBody ?? head.reqBody,
+        ts: e.ts,
+        durMs: e.durMs,
+        respBody: e.respBody ?? head.respBody,
+        count: head.count + 1,
+      };
       const next = [merged, ...list.slice(1)];
       set({ entries: next });
       scheduleSave(next);

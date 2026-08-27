@@ -5,7 +5,8 @@
  */
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { AssetKind } from "../types";
-import { dataUrlToBytes, isTauri, uid } from "../utils";
+import { dataUrlToBlob, dataUrlToBytes, isTauri, uid } from "../utils";
+import { hydrateString } from "../blobStore";
 import { xfetch } from "./http";
 
 export const EXT_KIND: Record<string, AssetKind> = {
@@ -259,6 +260,18 @@ export async function assetToDataUrl(path: string, mime?: string): Promise<strin
 
 /** 资产文件 → Blob（asset:// 协议在 WebView2 里不支持视频流式播放的 Range 请求，播放一律转 blob URL） */
 export async function assetToBlob(path: string, mime?: string): Promise<Blob> {
+  // momoblob:<hash> 外置引用 → 回填成 data:（画布载入已整体回填，这里兜底运行期新产生的引用）
+  if (path.startsWith("momoblob:")) {
+    const content = await hydrateString(path);
+    if (content !== undefined) return dataUrlToBlob(content);
+  }
+  // asset.localhost / file: / Windows 路径 → 还原本地路径直接读文件（asset 协议在 WebView fetch 有来源/Range 坑）
+  const localPath = isTauri ? localAssetPath(path) : null;
+  if (localPath) {
+    const { readFile } = await import("@tauri-apps/plugin-fs");
+    const bytes = await readFile(localPath);
+    return new Blob([new Uint8Array(bytes)], { type: mime ?? mimeFromExt(localPath.split(".").pop() ?? "") });
+  }
   if (isTauri && !path.startsWith("blob:") && !path.startsWith("http") && !path.startsWith("data:")) {
     const { readFile } = await import("@tauri-apps/plugin-fs");
     const bytes = await readFile(path);

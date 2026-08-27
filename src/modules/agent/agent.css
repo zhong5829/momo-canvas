@@ -486,6 +486,12 @@
   border-radius: var(--r-sm);
   border: 1px solid var(--panel-border);
 }
+/* 视频附件/消息视频：加载期黑底更协调 */
+.ag-att-item.video video,
+.ag-uimgs video.ag-uvid {
+  background: #000;
+  object-fit: cover;
+}
 .ag-att-del {
   position: absolute;
   top: -6px;
